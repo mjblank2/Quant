@@ -15,8 +15,6 @@ steps:
     - '--project=${PROJECT_ID}'
 
 # STEP 2: Create the Pub/Sub topics idempotently.
-# The '|| true' ensures that if the topic already exists, the command will not
-# return a non-zero exit code, allowing the build to continue.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -32,14 +30,9 @@ steps:
   - '-c'
   - |
     gcloud bigquery mk --dataset --description "Dataset for quant trading data" ${PROJECT_ID}:${_BIGQUERY_DATASET} || echo "Dataset ${_BIGQUERY_DATASET} already exists."
-    gcloud bigquery mk --table \
-      --description "Raw daily OHLCV bars from Alpaca" \
-      --time_partitioning_field timestamp \
-      ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} \
-      ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
+    gcloud bigquery mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
 
 # STEP 4: Create the BigQuery subscription.
-# This step is wrapped in 'bash -c' with '|| true' to prevent errors if the subscription already exists.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
