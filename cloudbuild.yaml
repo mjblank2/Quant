@@ -4,7 +4,6 @@
 
 steps:
 # STEP 1: Enable required APIs.
-# This step now includes run.googleapis.com, which is required for Gen2 Cloud Functions.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -12,16 +11,19 @@ steps:
     - 'enable'
     - 'eventarc.googleapis.com'
     - 'bigquery.googleapis.com'
-    - 'run.googleapis.com' # Added the required Cloud Run API
+    - 'run.googleapis.com'
     - '--project=${PROJECT_ID}'
 
-# STEP 2: Create the Pub/Sub topics.
+# STEP 2: Create the Pub/Sub topics idempotently.
+# The '|| true' ensures that if the topic already exists, the command will not
+# return a non-zero exit code, allowing the build to continue.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'gcloud'
-  args: ['pubsub', 'topics', 'create', '${_TRIGGER_TOPIC}', '--project=${PROJECT_ID}']
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'gcloud'
-  args: ['pubsub', 'topics', 'create', '${_PUB_SUB_TOPIC}', '--project=${PROJECT_ID}']
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    gcloud pubsub topics create ${_TRIGGER_TOPIC} --project=${PROJECT_ID} || true
+    gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
 
 # STEP 3: Create the BigQuery Dataset and Table for raw daily bars.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -37,16 +39,16 @@ steps:
       ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
 
 # STEP 4: Create the BigQuery subscription.
+# This step is wrapped in 'bash -c' with '|| true' to prevent errors if the subscription already exists.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'gcloud'
+  entrypoint: 'bash'
   args:
-    - 'pubsub'
-    - 'subscriptions'
-    - 'create'
-    - '${_BIGQUERY_SUB_ID}'
-    - '--topic=${_PUB_SUB_TOPIC}'
-    - '--bigquery-table=${PROJECT_ID}.${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}'
-    - '--project=${PROJECT_ID}'
+  - '-c'
+  - |
+    gcloud pubsub subscriptions create ${_BIGQUERY_SUB_ID} \
+      --topic=${_PUB_SUB_TOPIC} \
+      --bigquery-table=${PROJECT_ID}.${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} \
+      --project=${PROJECT_ID} || true
 
 # STEP 5: Deploy the Cloud Function.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
