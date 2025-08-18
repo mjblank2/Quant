@@ -24,13 +24,14 @@ steps:
     gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
 
 # STEP 3: Create the BigQuery Dataset and Table for raw daily bars.
+# Corrected 'gcloud bigquery' to the proper 'bq' command.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
   - '-c'
   - |
-    gcloud bigquery mk --dataset --description "Dataset for quant trading data" ${PROJECT_ID}:${_BIGQUERY_DATASET} || echo "Dataset ${_BIGQUERY_DATASET} already exists."
-    gcloud bigquery mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
+    bq mk --dataset --description "Dataset for quant trading data" ${PROJECT_ID}:${_BIGQUERY_DATASET} || echo "Dataset ${_BIGQUERY_DATASET} already exists."
+    bq mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
 
 # STEP 4: Create the BigQuery subscription.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -72,4 +73,3 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
-
