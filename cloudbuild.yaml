@@ -24,7 +24,6 @@ steps:
     gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
 
 # STEP 3: Create the BigQuery Dataset and Table for raw daily bars.
-# Corrected 'gcloud bigquery' to the proper 'bq' command.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -57,15 +56,13 @@ steps:
     - '--source=./data_ingestion'
     - '--trigger-topic=${_TRIGGER_TOPIC}'
     - '--entry-point=ingest_daily_data'
-    # This flag explicitly sets the runtime identity for the function.
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
     - '--set-env-vars'
-    # The ALPACA_SECRET_NAME is now constructed directly here to avoid nested substitution issues.
+    # The ALPACA_SECRET_NAME is now constructed directly here using our custom _GCP_PROJECT_NUMBER variable.
     - '^##^GCP_PROJECT_ID=${PROJECT_ID}##PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}##ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
-# The value should be the service account's literal email address.
 serviceAccount: 'mjblank2@quant-setup.iam.gserviceaccount.com'
 
 # --- Substitutions ---
@@ -82,3 +79,4 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
+
