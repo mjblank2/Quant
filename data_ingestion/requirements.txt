@@ -1,0 +1,12 @@
+requirements.txt
+This file lists the Python package dependencies for the Cloud Function.
+The Cloud Functions runtime uses this file to install packages when deploying the function.
+Google Cloud client libraries
+google-cloud-pubsub==2.13.4
+google-cloud-secret-manager==2.12.2
+Alpaca Trade API client library
+This is used to interact with the Alpaca data and trading APIs.
+alpaca-trade-api==2.3.0
+Pandas is a dependency of alpaca-trade-api for handling DataFrame results,
+but we specify it here to ensure a compatible version.
+pandas==1.5.3
