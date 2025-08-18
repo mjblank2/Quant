@@ -56,11 +56,12 @@ steps:
     - '--runtime=python311'
     - '--source=./data_ingestion'
     - '--trigger-topic=${_TRIGGER_TOPIC}'
-    - '--entry-point=ingest-daily_data'
+    - '--entry-point=ingest_daily_data'
     # This flag explicitly sets the runtime identity for the function.
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
     - '--set-env-vars'
-    - '^##^GCP_PROJECT_ID=${PROJECT_ID}##PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}##ALPACA_SECRET_NAME=${_ALPACA_SECRET_NAME}'
+    # The ALPACA_SECRET_NAME is now constructed directly here to avoid nested substitution issues.
+    - '^##^GCP_PROJECT_ID=${PROJECT_ID}##PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}##ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
@@ -74,7 +75,6 @@ substitutions:
   _PUB_SUB_TOPIC: 'daily-bars-raw'
   # The GCP Project Number is now an explicit substitution variable.
   _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Replace with your actual project number if different.
-  _ALPACA_SECRET_NAME: 'projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
@@ -82,4 +82,3 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
-
