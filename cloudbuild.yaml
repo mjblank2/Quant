@@ -5,9 +5,7 @@
 
 steps:
 # STEP 1: Enable required APIs for the deployment to succeed.
-# Gen 2 Cloud Functions use the Eventarc API to manage triggers. This API
-# is often not enabled by default in new projects, causing the deployment to fail.
-# This step ensures the necessary API is active before attempting to deploy.
+# This ensures the Eventarc API (used for Gen2 function triggers) is active.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -16,8 +14,21 @@ steps:
     - 'eventarc.googleapis.com'
     - '--project=${PROJECT_ID}'
 
-# STEP 2: Deploy the Cloud Function.
-# This step now runs after the required APIs are confirmed to be enabled.
+# STEP 2: Create the Pub/Sub topic that will trigger the function.
+# The function deployment will fail if its trigger topic does not exist.
+# This step explicitly creates the topic to ensure the next step can succeed.
+# The command is idempotent; running it again if the topic exists will not cause an error.
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: 'gcloud'
+  args:
+    - 'pubsub'
+    - 'topics'
+    - 'create'
+    - '${_TRIGGER_TOPIC}'
+    - '--project=${PROJECT_ID}'
+
+# STEP 3: Deploy the Cloud Function.
+# This step now runs after APIs are enabled and the trigger topic is confirmed to exist.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -41,7 +52,7 @@ substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion' # A new topic to trigger the function on a schedule
   _PUB_SUB_TOPIC: 'daily-bars-raw' # The topic where the function will publish data
-  _ALPACA_SECRET_NAME: 'projects/81308911755/secrets/alpaca-api-keys/versions/latest' # IMPORTANT: You must replace ${PROJECT_NUMBER} with your actual GCP project number.
+  _ALPACA_SECRET_NAME: 'projects/${PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest' # IMPORTANT: You must replace ${PROJECT_NUMBER} with your actual GCP project number.
 
 # --- Build Options ---
 # This section configures the behavior of the build itself.
@@ -49,4 +60,3 @@ options:
   # This setting tells Cloud Build to store logs directly in Google Cloud Logging
   # and not in a separate Cloud Storage bucket. This resolves the permission error.
   logging: CLOUD_LOGGING_ONLY
-
