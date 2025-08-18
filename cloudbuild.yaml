@@ -4,6 +4,20 @@
 # Google Cloud Build will execute these steps automatically when triggered by a push to the GitHub repository.
 
 steps:
+# STEP 1: Enable required APIs for the deployment to succeed.
+# Gen 2 Cloud Functions use the Eventarc API to manage triggers. This API
+# is often not enabled by default in new projects, causing the deployment to fail.
+# This step ensures the necessary API is active before attempting to deploy.
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: 'gcloud'
+  args:
+    - 'services'
+    - 'enable'
+    - 'eventarc.googleapis.com'
+    - '--project=${PROJECT_ID}'
+
+# STEP 2: Deploy the Cloud Function.
+# This step now runs after the required APIs are confirmed to be enabled.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -35,3 +49,4 @@ options:
   # This setting tells Cloud Build to store logs directly in Google Cloud Logging
   # and not in a separate Cloud Storage bucket. This resolves the permission error.
   logging: CLOUD_LOGGING_ONLY
+
