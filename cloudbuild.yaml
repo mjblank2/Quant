@@ -56,7 +56,9 @@ steps:
     - '--runtime=python311'
     - '--source=./data_ingestion'
     - '--trigger-topic=${_TRIGGER_TOPIC}'
-    - '--entry-point=ingest_daily_data'
+    - '--entry-point=ingest-daily-data'
+    # This flag explicitly sets the runtime identity for the function.
+    - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
     - '--set-env-vars'
     - '^##^GCP_PROJECT_ID=${PROJECT_ID}##PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}##ALPACA_SECRET_NAME=${_ALPACA_SECRET_NAME}'
 
@@ -78,4 +80,5 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
+
 
