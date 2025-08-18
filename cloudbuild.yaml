@@ -27,5 +27,11 @@ substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion' # A new topic to trigger the function on a schedule
   _PUB_SUB_TOPIC: 'daily-bars-raw' # The topic where the function will publish data
-  _ALPACA_SECRET_NAME: 'projects/81308911755/secrets/alpaca-api-keys/versions/latest'
+  _ALPACA_SECRET_NAME: 'projects/81308911755/secrets/alpaca-api-keys/versions/latest' # IMPORTANT: You must replace ${PROJECT_NUMBER} with your actual GCP project number.
 
+# --- Build Options ---
+# This section configures the behavior of the build itself.
+options:
+  # This setting tells Cloud Build to store logs directly in Google Cloud Logging
+  # and not in a separate Cloud Storage bucket. This resolves the permission error.
+  logging: CLOUD_LOGGING_ONLY
