@@ -34,7 +34,6 @@ steps:
     bq mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
 
 # STEP 4: Create the BigQuery subscription.
-# This step now explicitly uses the specified service account to ensure it has the correct permissions.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -44,10 +43,8 @@ steps:
       --topic=${_PUB_SUB_TOPIC} \
       --bigquery-table=${PROJECT_ID}.${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} \
       --project=${PROJECT_ID} || true
-  serviceAccount: 'projects/${PROJECT_ID}/serviceAccounts/mjblank2@${PROJECT_ID}.iam.gserviceaccount.com'
 
 # STEP 5: Deploy the Cloud Function.
-# This step also explicitly uses the specified service account.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -62,7 +59,11 @@ steps:
     - '--entry-point=ingest_daily_data'
     - '--set-env-vars'
     - '^##^GCP_PROJECT_ID=${PROJECT_ID}##PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}##ALPACA_SECRET_NAME=${_ALPACA_SECRET_NAME}'
-  serviceAccount: 'projects/${PROJECT_ID}/serviceAccounts/mjblank2@${PROJECT_ID}.iam.gserviceaccount.com'
+
+# --- Top-level Service Account ---
+# This service account will be used to execute all the steps in this build.
+# This is the correct location for this field, not within individual steps.
+serviceAccount: 'projects/${PROJECT_ID}/serviceAccounts/mjblank2@${PROJECT_ID}.iam.gserviceaccount.com'
 
 # --- Substitutions ---
 substitutions:
@@ -77,5 +78,4 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
-
 
