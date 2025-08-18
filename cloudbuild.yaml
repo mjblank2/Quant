@@ -62,8 +62,8 @@ steps:
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
-# This is the correct location for this field, not within individual steps.
-serviceAccount: 'projects/${PROJECT_ID}/serviceAccounts/mjblank2@${PROJECT_ID}.iam.gserviceaccount.com'
+# The value should be the service account's literal email address.
+serviceAccount: 'mjblank2@quant-setup.iam.gserviceaccount.com'
 
 # --- Substitutions ---
 substitutions:
