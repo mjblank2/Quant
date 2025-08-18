@@ -3,6 +3,12 @@
 # for our data ingestion Cloud Function and its associated data warehousing components.
 
 steps:
+# STEP 0: Debugging - List all files in the workspace.
+# This helps diagnose file path issues by showing us exactly what the build environment sees.
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: 'bash'
+  args: ['-c', 'ls -R']
+
 # STEP 1: Enable required APIs.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
@@ -24,7 +30,6 @@ steps:
     gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
 
 # STEP 3: Create the BigQuery Dataset and Table for raw daily bars.
-# Corrected 'gcloud bigquery' to the proper 'bq' command.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -73,4 +78,3 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
-
