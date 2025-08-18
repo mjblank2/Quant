@@ -1,0 +1,31 @@
+# cloudbuild.yaml
+# This file defines the Continuous Integration/Continuous Deployment (CI/CD) pipeline
+# for our data ingestion Cloud Function.
+# Google Cloud Build will execute these steps automatically when triggered by a push to the GitHub repository.
+
+steps:
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: 'gcloud'
+  args:
+    - 'functions'
+    - 'deploy'
+    - 'ingest-daily-data' # The name we are giving our Cloud Function
+    - '--gen2' # Use the modern 2nd generation Cloud Functions environment
+    - '--region=${_GCP_REGION}' # The GCP region for deployment (e.g., 'us-central1')
+    - '--runtime=python311' # Specify the Python 3.11 runtime
+    - '--source=./data_ingestion' # The directory containing the function's code
+    - '--trigger-topic=${_TRIGGER_TOPIC}' # The Pub/Sub topic that will trigger this function
+    - '--entry-point=ingest_daily_data' # The name of the Python function to execute
+    - '--set-env-vars'
+    - '^##^GCP_PROJECT_ID=${PROJECT_ID}##PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}##ALPACA_SECRET_NAME=${_ALPACA_SECRET_NAME}'
+  # Use a special delimiter '##' for environment variables to handle them as a single argument.
+
+# --- Substitutions ---
+# These are variables that we can set in our Cloud Build Trigger configuration.
+# This allows us to change settings without editing this file.
+substitutions:
+  _GCP_REGION: 'us-central1'
+  _TRIGGER_TOPIC: 'run-daily-ingestion' # A new topic to trigger the function on a schedule
+  _PUB_SUB_TOPIC: 'daily-bars-raw' # The topic where the function will publish data
+  _ALPACA_SECRET_NAME: 'projects/81308911755/secrets/alpaca-api-keys/versions/latest'
+
