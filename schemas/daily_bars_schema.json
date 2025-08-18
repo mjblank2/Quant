@@ -1,0 +1,56 @@
+[
+  {
+    "name": "symbol",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "The stock ticker symbol."
+  },
+  {
+    "name": "timestamp",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "The timestamp for the beginning of the bar."
+  },
+  {
+    "name": "open",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "The opening price for the bar."
+  },
+  {
+    "name": "high",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "The highest price during the bar."
+  },
+  {
+    "name": "low",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "The lowest price during the bar."
+  },
+  {
+    "name": "close",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "The closing price for the bar."
+  },
+  {
+    "name": "volume",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "The trading volume for the bar."
+  },
+  {
+    "name": "trade_count",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "The number of trades during the bar."
+  },
+  {
+    "name": "vwap",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "The volume-weighted average price for the bar."
+  }
+]
