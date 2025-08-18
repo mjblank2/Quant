@@ -111,6 +111,4 @@ def ingest_daily_data(event, context):
 
     print(f"Backfill complete. Published {total_messages_published} messages to topic '{PUB_SUB_TOPIC}'.")
     return f"Backfill complete. Published {total_messages_published} messages."
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        raise
+
