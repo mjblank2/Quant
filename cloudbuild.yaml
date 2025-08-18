@@ -56,7 +56,7 @@ steps:
     - '--runtime=python311'
     - '--source=./data_ingestion'
     - '--trigger-topic=${_TRIGGER_TOPIC}'
-    - '--entry-point=ingest-daily-data'
+    - '--entry-point=ingest-daily_data'
     # This flag explicitly sets the runtime identity for the function.
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
     - '--set-env-vars'
@@ -72,7 +72,9 @@ substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
-  _ALPACA_SECRET_NAME: 'projects/${PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
+  # The GCP Project Number is now an explicit substitution variable.
+  _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Replace with your actual project number if different.
+  _ALPACA_SECRET_NAME: 'projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
@@ -80,5 +82,4 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
-
 
