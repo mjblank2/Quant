@@ -1,1 +1,22 @@
-
+✔  WriteFile Writing to quant-setup/Dockerfile                                                                                                                                                                │
+ │                                                                                                                                                                                                               │
+ │     1 # Use an official Python runtime as a parent image                                                                                                                                                      │
+ │     2 FROM python:3.9-slim                                                                                                                                                                                    │
+ │     3                                                                                                                                                                                                         │
+ │     4 # Set the working directory in the container                                                                                                                                                            │
+ │     5 WORKDIR /app                                                                                                                                                                                            │
+ │     6                                                                                                                                                                                                         │
+ │     7 # Copy the current directory contents into the container at /app                                                                                                                                        │
+ │     8 COPY . /app                                                                                                                                                                                             │
+ │     9                                                                                                                                                                                                         │
+ │    10 # Install any needed packages specified in requirements.txt                                                                                                                                             │
+ │    11 RUN pip install --no-cache-dir -r requirements.txt                                                                                                                                                      │
+ │    12                                                                                                                                                                                                         │
+ │    13 # Make port 8080 available to the world outside this container                                                                                                                                          │
+ │    14 EXPOSE 8080                                                                                                                                                                                             │
+ │    15                                                                                                                                                                                                         │
+ │    16 # Define environment variable                                                                                                                                                                           │
+ │    17 ENV NAME World                                                                                                                                                                                          │
+ │    18                                                                                                                                                                                                         │
+ │    19 # Run app.py when the container launches                                                                                                                                                                │
+ │    20 CMD ["python", "main.py"]                
