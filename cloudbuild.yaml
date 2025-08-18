@@ -49,6 +49,20 @@ steps:
   args:
   - '-c'
   - |
+    # Debugging Step: Print the command to the log to verify variables.
+    echo "--- Preparing to run the following command: ---"
+    echo "gcloud functions deploy ingest-daily-data \
+      --gen2 \
+      --region=${_GCP_REGION} \
+      --runtime=python311 \
+      --source=./data_ingestion \
+      --trigger-topic=${_TRIGGER_TOPIC} \
+      --entry-point=ingest_daily_data \
+      --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
+      --set-env-vars=\"GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest\""
+    echo "------------------------------------------------"
+
+    # Actual deployment command
     gcloud functions deploy ingest-daily-data \
       --gen2 \
       --region=${_GCP_REGION} \
@@ -77,3 +91,4 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
+
