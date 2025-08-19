@@ -83,6 +83,6 @@ services:
 
 databases:
   - name: bcq-db
-    plan: starter
+    plan: standard-*
     region: oregon
 
