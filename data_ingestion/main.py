@@ -15,6 +15,7 @@ from google.cloud import pubsub_v1, secretmanager
 from tqdm import tqdm # For progress bars
 
 # --- Configuration ---
+# These are retrieved when the function is invoked, not at deploy time.
 GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
 PUB_SUB_TOPIC = os.environ.get('PUB_SUB_TOPIC', 'daily-bars-raw')
 ALPACA_SECRET_NAME = os.environ.get('ALPACA_SECRET_NAME')
@@ -24,7 +25,13 @@ STOCK_UNIVERSE = [
     'ETSY', 'PINS', 'ROKU', 'SQ', 'TDOC', 'TWLO', 'U', 'ZM'
 ]
 
-# --- Initialize Clients (Global Scope) ---
+# --- Client Initialization (Lazy) ---
+# Declare clients globally but initialize them inside the function handler
+# to ensure environment variables are available.
+api = None
+publisher = None
+topic_path = None
+
 def get_alpaca_api_client():
     """
     Retrieves Alpaca API keys from Secret Manager and returns an authenticated Alpaca API client.
@@ -34,27 +41,32 @@ def get_alpaca_api_client():
         response = secret_client.access_secret_version(request={"name": ALPACA_SECRET_NAME})
         payload = response.payload.data.decode("UTF-8")
         secrets = json.loads(payload)
-        api = REST(
+        
+        client = REST(
             key_id=secrets['ALPACA_API_KEY'],
             secret_key=secrets['ALPACA_SECRET_KEY'],
             base_url=secrets.get('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
         )
         print("Successfully created Alpaca API client.")
-        return api
+        return client
     except Exception as e:
         print(f"Error creating Alpaca API client: {e}")
         raise
-
-publisher = pubsub_v1.PublisherClient()
-api = get_alpaca_api_client()
-topic_path = publisher.topic_path(GCP_PROJECT_ID, PUB_SUB_TOPIC)
-
 
 def ingest_daily_data(event, context):
     """
     Google Cloud Function entry point.
     This function now performs a historical backfill for the last 2 years.
     """
+    global api, publisher, topic_path
+
+    # LAZY INITIALIZATION: Initialize clients on first invocation
+    if not api:
+        api = get_alpaca_api_client()
+    if not publisher:
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(GCP_PROJECT_ID, PUB_SUB_TOPIC)
+
     print("Starting historical data backfill process...")
 
     # Define the time range for the backfill
