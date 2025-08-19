@@ -8,7 +8,7 @@ substitutions:
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
   _BIGQUERY_DATASET: 'quant_data'
-  _BIGQUERY_TABLE: 'daily_bars_raw'
+  _BIGQUERY_TABLE: 'daily-bars-raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
 
 steps:
@@ -62,16 +62,19 @@ steps:
         --topic=${_PUB_SUB_TOPIC} \
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: DIAGNOSTICS (Optional, can be removed once successful)
+# NEW STEP 4: Grant Cloud Build SA permission to act as the Function's SA.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
-  id: 'VERIFY_ENVIRONMENT'
   args:
     - '-c'
     - |
-      echo "--- Environment Check ---"
-      gcloud version
-      echo "------------------------"
+      # The Cloud Build SA needs the "Service Account User" role on the Function's SA
+      # to deploy the function with that identity. This command is idempotent.
+      gcloud iam service-accounts add-iam-policy-binding \
+        mjblank2@quant-setup.iam.gserviceaccount.com \
+        --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+        --role="roles/iam.serviceAccountUser" \
+        --project=${PROJECT_ID}
 
 # STEP 5: Deploy the Gen2 Cloud Function
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
@@ -79,19 +82,8 @@ steps:
   args:
     - '-c'
     - |
-      # DEBUG: Print the built-in variables to ensure they are populated.
-      echo "--- DEPLOYMENT VARIABLES ---"
-      echo "PROJECT_ID: '${PROJECT_ID}'"
-      echo "PROJECT_NUMBER: '${PROJECT_NUMBER}'"
-      echo "----------------------------"
-
-      # FIX: Add a check to ensure critical variables are not empty before proceeding.
-      if [ -z "${PROJECT_ID}" ] || [ -z "${PROJECT_NUMBER}" ]; then
-        echo "ERROR: Required substitution variable PROJECT_ID or PROJECT_NUMBER is not set."
-        exit 1
-      fi
-
-      echo "Attempting deployment using the default Build Service Account..."
+      # We can remove the diagnostic checks now that we know the variables are working.
+      echo "Attempting deployment..."
       
       gcloud functions deploy ingest-daily-data \
         --gen2 \
