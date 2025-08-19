@@ -43,30 +43,22 @@ steps:
       --bigquery-table=${PROJECT_ID}.${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} \
       --project=${PROJECT_ID} || true
 
-# STEP 5: Deploy the Cloud Function using a more robust bash script.
+# STEP 5: Deploy the Cloud Function.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'bash'
+  entrypoint: 'gcloud'
   args:
-  - '-c'
-  - |
-    # Construct the environment variables string in a separate, clear step.
-    VARS="GCP_PROJECT_ID=${PROJECT_ID},"
-    VARS+="PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},"
-    VARS+="ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
-
-    # Debugging Step: Print the final variable string.
-    echo "--- Deploying with environment variables: $$VARS ---"
-
-    # Actual deployment command
-    gcloud functions deploy ingest-daily-data \
-      --gen2 \
-      --region=${_GCP_REGION} \
-      --runtime=python311 \
-      --source=./data_ingestion \
-      --trigger-topic=${_TRIGGER_TOPIC} \
-      --entry-point=ingest_daily_data \
-      --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-      --set-env-vars="$$VARS"
+    - 'functions'
+    - 'deploy'
+    - 'ingest-daily-data'
+    - '--gen2'
+    - '--region=${_GCP_REGION}'
+    - '--runtime=python311'
+    - '--source=./data_ingestion'
+    - '--trigger-topic=${_TRIGGER_TOPIC}'
+    - '--entry-point=ingest_daily_data'
+    - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
+    # Construct the environment variables directly in the command's arguments.
+    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
