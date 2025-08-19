@@ -3,7 +3,8 @@
 
 substitutions:
   # Keep the pinned SDK version for stability
-  _SDK_TAG: '489.0.0-stable'
+  # FIX: Rolled back SDK version to rule out a bug in 489.0.0
+  _SDK_TAG: '488.0.0-stable'
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
@@ -75,7 +76,7 @@ steps:
         --role="roles/iam.serviceAccountUser" \
         --project=${PROJECT_ID}
 
-      # FIX: The Cloud Build SA needs the Cloud Run Admin role to create the underlying service for a Gen2 function.
+      # The Cloud Build SA needs the Cloud Run Admin role to create the underlying service for a Gen2 function.
       gcloud projects add-iam-policy-binding ${PROJECT_ID} \
         --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
         --role="roles/run.admin"
@@ -96,7 +97,17 @@ steps:
         --member="serviceAccount:mjblank2@quant-setup.iam.gserviceaccount.com" \
         --role="roles/secretmanager.secretAccessor"
 
-# STEP 6: Deploy the Gen2 Cloud Function
+# NEW STEP 6: Verify source code directory exists before deployment
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - |
+      echo "--- Verifying source directory ---"
+      ls -la ./data_ingestion
+      echo "----------------------------------"
+
+# STEP 7: Deploy the Gen2 Cloud Function
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
@@ -118,3 +129,4 @@ steps:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
+
