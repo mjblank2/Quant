@@ -22,7 +22,7 @@ app = Flask(__name__)
 # --------------------
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://api.alpaca.markets")
 
 # Market data feed: "iex" works on free/paper accounts; "sip" requires paid data
 ALPACA_FEED = os.environ.get("ALPACA_FEED", "iex").lower().strip() or "iex"
@@ -89,28 +89,63 @@ def _ensure_schema(engine: Engine) -> None:
         conn.exec_driver_sql(ddl)
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=30))
-def _insert_rows(engine: Engine, rows: Iterable[dict]) -> int:
-    rows = list(rows)
-    if not rows:
-        return 0
-    sql = text("""
-        INSERT INTO daily_bars (symbol, ts, open, high, low, close, volume, trade_count, vwap)
-        VALUES (:symbol, :ts, :open, :high, :low, :close, :volume, :trade_count, :vwap)
-        ON CONFLICT (symbol, ts) DO UPDATE SET
-            open = EXCLUDED.open,
-            high = EXCLUDED.high,
-            low  = EXCLUDED.low,
-            close= EXCLUDED.close,
-            volume=EXCLUDED.volume,
-            trade_count=EXCLUDED.trade_count,
-            vwap=EXCLUDED.vwap;
-    """)
-    total = 0
-    with engine.begin() as conn:
-        for r in rows:
-            conn.execute(sql, r)
-            total += 1
-    return total
+def _rows_from_alpaca(symbols: List[str], start: datetime, end: datetime) -> List[Dict[str, Any]]:
+    """Fetch daily bars from Alpaca; on any error, log and return [] so callers can fallback."""
+    try:
+        # Use DATE strings to satisfy Alpaca's RFC3339 expectation for daily bars
+        start_s = start.date().isoformat()
+        end_s = end.date().isoformat()
+
+        bars = alpaca.get_bars(
+            symbols,
+            TimeFrame.Day,
+            start=start_s,      # <-- date-only
+            end=end_s,          # <-- date-only
+            adjustment="raw",
+            feed=ALPACA_FEED,
+            limit=None,
+        ).df
+    except Exception as e:
+        print(f"[alpaca] error for symbols={symbols[:5]}... : {e}  (will fallback to Tiingo)", file=sys.stderr)
+        return []
+
+    if bars is None or bars.empty:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    if getattr(bars.index, "nlevels", 1) == 2:
+        for (sym, ts), row in bars.iterrows():
+            rows.append({
+                "symbol": str(sym),
+                "ts": ts.to_pydatetime().replace(tzinfo=None),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row.get("volume", 0)),
+                "trade_count": int(row.get("trade_count", 0)) if "trade_count" in row else None,
+                "vwap": float(row.get("vwap", 0.0)) if "vwap" in row else None,
+            })
+        return rows
+
+    if "symbol" not in bars.columns:
+        return []
+
+    for _, row in bars.iterrows():
+        ts = row["timestamp"] if "timestamp" in row else row.name
+        ts = ts.to_pydatetime().replace(tzinfo=None)
+        rows.append({
+            "symbol": str(row["symbol"]),
+            "ts": ts,
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": int(row.get("volume", 0)),
+            "trade_count": int(row.get("trade_count", 0)) if "trade_count" in row else None,
+            "vwap": float(row.get("vwap", 0.0)) if "vwap" in row else None,
+        })
+    return rows
 
 # --------------------
 # Ingestion
