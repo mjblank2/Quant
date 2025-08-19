@@ -50,7 +50,7 @@ steps:
       
       # Check/Create Table
       # IMPORTANT: Verify the path below. Assuming 'schema.json' is in the root of the repository.
-      bq show quant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw schema.json
+      ant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw ./schemas/daily_bars_schema.json
 
 # Step 3: Ensure Pub/Sub subscription exists
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
