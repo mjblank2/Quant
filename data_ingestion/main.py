@@ -12,7 +12,7 @@ import time
 
 from alpaca_trade_api.rest import REST, APIError
 from google.cloud import pubsub_v1, secretmanager
-from tqdm import tqdm # For progress bars
+# from tqdm import tqdm # DEBUG: Temporarily removed to isolate the deployment crash.
 
 # --- Configuration ---
 # These are retrieved when the function is invoked, not at deploy time.
@@ -77,8 +77,10 @@ def ingest_daily_data(event, context):
     chunk_size = 100
     total_messages_published = 0
 
-    for i in tqdm(range(0, len(STOCK_UNIVERSE), chunk_size), desc="Processing symbol chunks"):
+    # DEBUG: Temporarily removed tqdm wrapper to isolate the deployment crash.
+    for i in range(0, len(STOCK_UNIVERSE), chunk_size):
         chunk = STOCK_UNIVERSE[i:i + chunk_size]
+        print(f"Processing symbol chunk starting with {chunk[0]}...")
         try:
             barset = api.get_bars(
                 chunk,
@@ -123,4 +125,3 @@ def ingest_daily_data(event, context):
 
     print(f"Backfill complete. Published {total_messages_published} messages to topic '{PUB_SUB_TOPIC}'.")
     return f"Backfill complete. Published {total_messages_published} messages."
-
