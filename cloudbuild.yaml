@@ -3,18 +3,20 @@
 
 steps:
 # STEP 0: Enable required APIs (idempotent).
+# Changed to bash entrypoint for consistency and robustness.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'gcloud'
+  entrypoint: 'bash'
   args:
-    - 'services'
-    - 'enable'
-    - 'cloudfunctions.googleapis.com'
-    - 'eventarc.googleapis.com'
-    - 'run.googleapis.com'
-    - 'pubsub.googleapis.com'
-    - 'bigquery.googleapis.com'
-    - 'secretmanager.googleapis.com'
-    - '--project=${PROJECT_ID}'
+    - '-c'
+    - |
+      gcloud services enable \
+        cloudfunctions.googleapis.com \
+        eventarc.googleapis.com \
+        run.googleapis.com \
+        pubsub.googleapis.com \
+        bigquery.googleapis.com \
+        secretmanager.googleapis.com \
+        --project=${PROJECT_ID}
 
 # Step 1: Ensure Pub/Sub topics exist
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -52,8 +54,7 @@ steps:
         --topic=${_PUB_SUB_TOPIC} \
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: DIAGNOSTICS (New Step)
-# This step verifies that substitutions are working correctly.
+# STEP 4: DIAGNOSTICS (Updated)
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   id: 'VERIFY_SUBSTITUTIONS'
@@ -65,38 +66,38 @@ steps:
       echo "Trigger Topic: '${_TRIGGER_TOPIC}'"
       echo "Pub/Sub Topic: '${_PUB_SUB_TOPIC}'"
       echo "GCP Project Number: '${_GCP_PROJECT_NUMBER}'"
+      echo "BUILT-IN Project ID: '${PROJECT_ID}'" # Added check for Project ID
       echo "------------------------"
       
       # Fail the build immediately if critical variables are empty
-      if [[ -z "${_GCP_REGION}" || -z "${_GCP_PROJECT_NUMBER}" || -z "${_TRIGGER_TOPIC}" || -z "${_PUB_SUB_TOPIC}" ]]; then
+      if [[ -z "${_GCP_REGION}" || -z "${_GCP_PROJECT_NUMBER}" || -z "${_TRIGGER_TOPIC}" || -z "${_PUB_SUB_TOPIC}" || -z "${PROJECT_ID}" ]]; then
         echo "ERROR: One or more critical substitution variables are empty."
-        echo "Please ensure that the Cloud Build Trigger settings have NO substitution variables defined."
         exit 1
       fi
       echo "All variables populated. Proceeding to deployment."
 
-# STEP 5: Deploy the Gen2 Cloud Function.
+# STEP 5: Deploy the Gen2 Cloud Function (FIX: Changed Entrypoint to bash)
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'gcloud'
+  entrypoint: 'bash'
   args:
-    - 'functions'
-    - 'deploy'
-    - 'ingest-daily-data'
-    - '--gen2'
-    - '--region=${_GCP_REGION}'
-    - '--runtime=python311'
-    - '--source=./data_ingestion'
-    - '--trigger-topic=${_TRIGGER_TOPIC}'
-    - '--entry-point=ingest_daily_data'
-    - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
-    # Combine all environment variables into a single, comma-separated flag.
-    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
+    - '-c'
+    # The entire command is executed within a bash shell script, avoiding YAML parsing issues.
+    - |
+      gcloud functions deploy ingest-daily-data \
+        --gen2 \
+        --region=${_GCP_REGION} \
+        --runtime=python311 \
+        --source=./data_ingestion \
+        --trigger-topic=${_TRIGGER_TOPIC} \
+        --entry-point=ingest_daily_data \
+        --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
+        --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
 
 # --- Top-level Service Account ---
 serviceAccount: 'mjblank2@quant-setup.iam.gserviceaccount.com'
 
 # --- Substitutions ---
-# NOTE: This block is ignored if ANY variables are set in the Cloud Build Trigger settings.
+# NOTE: Ensure your Cloud Build Trigger settings have NO substitution variables defined.
 substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
