@@ -9,7 +9,7 @@ services:
       pip install -r requirements.txt
     startCommand: |
       gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
-    healthCheckPath: /
+      healthCheckPath: /
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
