@@ -1,32 +1,87 @@
-# render.yaml
-# This file defines the services for deploying the data ingestion job on Render.
-
 services:
-  # A web service that can be triggered to run the ingestion script.
   - type: web
-    name: data-ingestion-service
+    name: bcq-web
     env: python
-    plan: free # Or your preferred instance type
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn main:app"
+    plan: starter
+    region: oregon
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: |
+      gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
+    healthCheckPath: /
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.0
+        value: "3.11.9"
+      - key: ENV
+        value: production
       - key: ALPACA_API_KEY
-        fromSecret: true
+        sync: false
       - key: ALPACA_SECRET_KEY
-        fromSecret: true
-      - key: BIGQUERY_CREDENTIALS_JSON
-        fromSecret: true
-      - key: GCP_PROJECT_ID
-        sync: false # Set this manually in the Render dashboard
-      - key: PUB_SUB_TOPIC
-        value: daily-bars-raw
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: "https://paper-api.alpaca.markets"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bcq-db
+          property: connectionString
 
-  # A cron job to trigger the web service on a schedule.
+  - type: worker
+    name: bcq-worker
+    env: python
+    plan: starter
+    region: oregon
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: |
+      python -m data_ingestion.run_daily
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ENV
+        value: production
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: "https://paper-api.alpaca.markets"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bcq-db
+          property: connectionString
+
   - type: cron
-    name: daily-ingestion-trigger
-    schedule: "0 1 * * *" # Runs once a day at 1 AM UTC
-    command: "curl -X POST https://your-service-url.onrender.com/ingest"
+    name: bcq-cron-daily
+    env: python
+    plan: starter
+    region: oregon
+    schedule: "0 13 * * MON-FRI"   # 8:00am US/Eastern (13:00 UTC) weekdays
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: |
+      python -m data_ingestion.run_daily
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ENV
+        value: production
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: "https://paper-api.alpaca.markets"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bcq-db
+          property: connectionString
 
-
+databases:
+  - name: bcq-db
+    plan: starter
+    region: oregon
