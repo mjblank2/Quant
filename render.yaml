@@ -48,7 +48,7 @@ services:
       - key: ALPACA_SECRET_KEY
         sync: false
       - key: ALPACA_BASE_URL
-        value: "https://paper-api.alpaca.markets"
+        value: "https://api.alpaca.markets"
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
@@ -76,7 +76,7 @@ services:
       - key: ALPACA_SECRET_KEY
         sync: false
       - key: ALPACA_BASE_URL
-        value: "https://paper-api.alpaca.markets"
+        value: "https://api.alpaca.markets"
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
