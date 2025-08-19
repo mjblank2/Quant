@@ -1,14 +1,16 @@
-# Render-ready ingestion web service (psycopg3 + Alpaca v3).
-# - "/"       → health check (200)
-# - "/ingest" → POST {"days": 30} to backfill (defaults to 2 years)
-# - Uses DATABASE_URL from Render; auto-creates daily_bars table if missing.
+# Render-ready ingestion service: SQLAlchemy(psycopg3) + Alpaca v3 with Tiingo fallback
+# Routes:
+#   "/"       -> health
+#   "/ingest" -> POST {"days": 30}   backfill (default 2y)
+#   "/debug"  -> GET ?symbol=AAPL&days=5  quick probe (no DB write)
 
 import os
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Iterable, List
+from typing import Iterable, List, Dict, Any, Optional
 
+import requests
 from flask import Flask, request, jsonify
 from alpaca_trade_api.rest import REST, APIError, TimeFrame
 from sqlalchemy import create_engine, text
@@ -22,13 +24,12 @@ app = Flask(__name__)
 # --------------------
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://api.alpaca.markets")
-
-# Market data feed: "iex" works on free/paper accounts; "sip" requires paid data
+ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 ALPACA_FEED = os.environ.get("ALPACA_FEED", "iex").lower().strip() or "iex"
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
 _STOCKS = os.environ.get("STOCK_UNIVERSE")
 SYMBOLS: List[str] = (
     [s.strip().upper() for s in _STOCKS.split(",") if s.strip()]
@@ -41,33 +42,25 @@ SYMBOLS: List[str] = (
 # --------------------
 if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
     print("[boot] WARNING: ALPACA_API_KEY/ALPACA_SECRET_KEY not set.", file=sys.stderr)
+if not TIINGO_API_KEY:
+    print("[boot] WARNING: TIINGO_API_KEY not set; fallback will be unavailable.", file=sys.stderr)
 
-api = REST(
-    key_id=ALPACA_API_KEY,
-    secret_key=ALPACA_SECRET_KEY,
-    base_url=ALPACA_BASE_URL,
-)
+alpaca = REST(key_id=ALPACA_API_KEY, secret_key=ALPACA_SECRET_KEY, base_url=ALPACA_BASE_URL)
 
 # --------------------
 # DB helpers (psycopg3)
 # --------------------
 def _psycopg3_url(url: str) -> str:
-    """
-    Ensure SQLAlchemy uses the psycopg3 driver.
-    Render provides DATABASE_URL like 'postgresql://...'; switch to 'postgresql+psycopg://...'.
-    """
     if not url:
         raise RuntimeError("DATABASE_URL env var is required")
     if url.startswith("postgresql+psycopg://"):
         return url
     if url.startswith("postgresql://"):
         return "postgresql+psycopg://" + url[len("postgresql://"):]
-    return url  # accept custom schemes
+    return url
 
 def _get_engine() -> Engine:
-    dsn = _psycopg3_url(DATABASE_URL)
-    eng = create_engine(dsn, pool_pre_ping=True)
-    return eng
+    return create_engine(_psycopg3_url(DATABASE_URL), pool_pre_ping=True)
 
 def _ensure_schema(engine: Engine) -> None:
     ddl = """
@@ -83,24 +76,47 @@ def _ensure_schema(engine: Engine) -> None:
         trade_count INTEGER,
         vwap DOUBLE PRECISION,
         UNIQUE(symbol, ts)
-    );
-    """
+    );"""
     with engine.begin() as conn:
         conn.exec_driver_sql(ddl)
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=30))
+def _insert_rows(engine: Engine, rows: Iterable[dict]) -> int:
+    rows = list(rows)
+    if not rows:
+        return 0
+    sql = text("""
+        INSERT INTO daily_bars (symbol, ts, open, high, low, close, volume, trade_count, vwap)
+        VALUES (:symbol, :ts, :open, :high, :low, :close, :volume, :trade_count, :vwap)
+        ON CONFLICT (symbol, ts) DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low  = EXCLUDED.low,
+            close= EXCLUDED.close,
+            volume=EXCLUDED.volume,
+            trade_count=EXCLUDED.trade_count,
+            vwap=EXCLUDED.vwap;
+    """)
+    with engine.begin() as conn:
+        for r in rows:
+            conn.execute(sql, r)
+    return len(rows)
+
+# --------------------
+# Data fetchers
+# --------------------
 def _rows_from_alpaca(symbols: List[str], start: datetime, end: datetime) -> List[Dict[str, Any]]:
     """Fetch daily bars from Alpaca; on any error, log and return [] so callers can fallback."""
     try:
-        # Use DATE strings to satisfy Alpaca's RFC3339 expectation for daily bars
+        # Alpaca daily bars prefer date-only strings (RFC3339 date)
         start_s = start.date().isoformat()
         end_s = end.date().isoformat()
 
         bars = alpaca.get_bars(
             symbols,
             TimeFrame.Day,
-            start=start_s,      # <-- date-only
-            end=end_s,          # <-- date-only
+            start=start_s,
+            end=end_s,
             adjustment="raw",
             feed=ALPACA_FEED,
             limit=None,
@@ -147,83 +163,69 @@ def _rows_from_alpaca(symbols: List[str], start: datetime, end: datetime) -> Lis
         })
     return rows
 
+def _rows_from_tiingo(symbols: List[str], start: datetime, end: datetime) -> List[Dict[str, Any]]:
+    """Fetch daily bars from Tiingo (IEX base) for each symbol."""
+    if not TIINGO_API_KEY:
+        return []
+    headers = {"Content-Type": "application/json"}
+    rows: List[Dict[str, Any]] = []
+    start_s = start.strftime("%Y-%m-%d")
+    end_s = end.strftime("%Y-%m-%d")
+    for sym in symbols:
+        url = (
+            f"https://api.tiingo.com/tiingo/daily/{sym}/prices"
+            f"?startDate={start_s}&endDate={end_s}&format=json&resampleFreq=daily&columns=open,high,low,close,volume"
+            f"&token={TIINGO_API_KEY}"
+        )
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            data = resp.json() or []
+            for d in data:
+                ts = datetime.fromisoformat(d["date"].replace("Z", "+00:00")).replace(tzinfo=None)
+                rows.append({
+                    "symbol": sym,
+                    "ts": ts,
+                    "open": float(d.get("open", 0.0)),
+                    "high": float(d.get("high", 0.0)),
+                    "low": float(d.get("low", 0.0)),
+                    "close": float(d.get("close", 0.0)),
+                    "volume": int(d.get("volume", 0) or 0),
+                    "trade_count": None,
+                    "vwap": None,
+                })
+        except Exception as e:
+            print(f"[tiingo] {sym} error: {e}", file=sys.stderr)
+            time.sleep(1)
+    return rows
+
 # --------------------
-# Ingestion
+# Ingestion orchestration
 # --------------------
 def fetch_and_store(symbols: List[str], start_date: datetime, end_date: datetime) -> int:
-    """
-    Fetch daily bars from Alpaca and store to Postgres.
-    Returns number of rows written.
-    """
     print(f"[fetch_and_store] symbols={len(symbols)} feed={ALPACA_FEED} start={start_date} end={end_date}")
     engine = _get_engine()
     _ensure_schema(engine)
 
-    chunk_size = 100
     written = 0
-    for i in range(0, len(symbols), chunk_size):
-        chunk = symbols[i:i + chunk_size]
-        try:
-            bars_df = api.get_bars(
-                chunk,
-                TimeFrame.Day,
-                start=start_date,
-                end=end_date,
-                adjustment="raw",
-                feed=ALPACA_FEED,
-                limit=None,
-            ).df
-
-            if bars_df is None or bars_df.empty:
-                print(f"[fetch_and_store] Empty bars for chunk (n={len(chunk)}): {chunk[:5]}...")
-                continue
-
-            # bars_df index: MultiIndex(symbol, timestamp)
-            rows = []
-            # Guard against single-index (older clients) by checking .index.nlevels
-            if getattr(bars_df.index, "nlevels", 1) == 2:
-                for (sym, ts), row in bars_df.iterrows():
-                    rows.append({
-                        "symbol": str(sym),
-                        "ts": ts.to_pydatetime().replace(tzinfo=None),
-                        "open": float(row["open"]),
-                        "high": float(row["high"]),
-                        "low": float(row["low"]),
-                        "close": float(row["close"]),
-                        "volume": int(row.get("volume", 0)),
-                        "trade_count": int(row.get("trade_count", 0)) if "trade_count" in row else None,
-                        "vwap": float(row.get("vwap", 0.0)) if "vwap" in row else None,
-                    })
+    try:
+        for i in range(0, len(symbols), 100):
+            chunk = symbols[i:i+100]
+            alpaca_rows = _rows_from_alpaca(chunk, start_date, end_date)
+            if alpaca_rows:
+                w = _insert_rows(engine, alpaca_rows)
+                written += w
+                print(f"[alpaca] chunk {i//100} wrote {w} rows (total {written})")
             else:
-                # Fallback for single-index frames: require a 'symbol' column
-                if "symbol" not in bars_df.columns:
-                    print("[fetch_and_store] Unexpected bars format (missing symbol column); skipping chunk.")
-                    continue
-                for _, row in bars_df.iterrows():
-                    ts = row["timestamp"] if "timestamp" in row else row.name
-                    ts = ts.to_pydatetime().replace(tzinfo=None)
-                    rows.append({
-                        "symbol": str(row["symbol"]),
-                        "ts": ts,
-                        "open": float(row["open"]),
-                        "high": float(row["high"]),
-                        "low": float(row["low"]),
-                        "close": float(row["close"]),
-                        "volume": int(row.get("volume", 0)),
-                        "trade_count": int(row.get("trade_count", 0)) if "trade_count" in row else None,
-                        "vwap": float(row.get("vwap", 0.0)) if "vwap" in row else None,
-                    })
-
-            wrote = _insert_rows(engine, rows)
-            written += wrote
-            print(f"[fetch_and_store] chunk wrote {wrote} rows (total {written})")
-
-        except APIError as e:
-            print(f"[fetch_and_store] Alpaca APIError: {e}", file=sys.stderr)
-            time.sleep(10)
-        except Exception as e:
-            print(f"[fetch_and_store] ERROR: {e}", file=sys.stderr)
-            time.sleep(5)
+                tiingo_rows = _rows_from_tiingo(chunk, start_date, end_date)
+                if tiingo_rows:
+                    w = _insert_rows(engine, tiingo_rows)
+                    written += w
+                    print(f"[tiingo] chunk {i//100} wrote {w} rows (total {written})")
+    except Exception as e:
+        print(f"[fetch_and_store] FATAL: {e}", file=sys.stderr)
 
     return written
 
@@ -232,10 +234,6 @@ def fetch_and_store(symbols: List[str], start_date: datetime, end_date: datetime
 # --------------------
 @app.route("/ingest", methods=["POST"])
 def ingest_daily_data():
-    """
-    POST JSON: {"days": 365}
-    Defaults to 2 years if not provided.
-    """
     try:
         payload = request.get_json(silent=True) or {}
         days = int(payload.get("days", 365 * 2))
@@ -243,25 +241,6 @@ def ingest_daily_data():
         start_date = end_date - timedelta(days=days)
         count = fetch_and_store(SYMBOLS, start_date, end_date)
         return jsonify({
-            "status": "ok",
-            "rows_written": count,
-            "start": start_date.isoformat(),
-            "end": end_date.isoformat(),
-            "symbols": len(SYMBOLS),
-            "feed": ALPACA_FEED,
-        }), 200
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
-
-@app.route("/")
-def health():
-    return "Service is running.", 200
-
-# --------------------
-# Dev entrypoint (Render uses gunicorn)
-# --------------------
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
+            "status
 
 
