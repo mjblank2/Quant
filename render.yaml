@@ -1,0 +1,32 @@
+# render.yaml
+# This file defines the services for deploying the data ingestion job on Render.
+
+services:
+  # A web service that can be triggered to run the ingestion script.
+  - type: web
+    name: data-ingestion-service
+    env: python
+    plan: free # Or your preferred instance type
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn main:app"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+      - key: ALPACA_API_KEY
+        fromSecret: true
+      - key: ALPACA_SECRET_KEY
+        fromSecret: true
+      - key: BIGQUERY_CREDENTIALS_JSON
+        fromSecret: true
+      - key: GCP_PROJECT_ID
+        sync: false # Set this manually in the Render dashboard
+      - key: PUB_SUB_TOPIC
+        value: daily-bars-raw
+
+  # A cron job to trigger the web service on a schedule.
+  - type: cron
+    name: daily-ingestion-trigger
+    schedule: "0 1 * * *" # Runs once a day at 1 AM UTC
+    command: "curl -X POST https://your-service-url.onrender.com/ingest"
+
+
