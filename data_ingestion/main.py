@@ -1,72 +1,51 @@
 # main.py
-# This file contains the main logic for the Google Cloud Function.
-# It is responsible for ingesting daily stock data from Alpaca
-# and publishing it to a Google Cloud Pub/Sub topic.
-# This version is updated to perform a historical backfill.
+# This file contains the main logic for the data ingestion service,
+# adapted to run as a web service on Render.
 
-import base64
-import json
 import os
+import json
 from datetime import datetime, timedelta
 import time
 
 from alpaca_trade_api.rest import REST, APIError
-from google.cloud import pubsub_v1, secretmanager
-from tqdm import tqdm # For progress bars
+from google.cloud import pubsub_v1
+from google.oauth2 import service_account
+from flask import Flask, request
+
+# --- Flask App Initialization ---
+app = Flask(__name__)
 
 # --- Configuration ---
-# These are retrieved when the function is invoked, not at deploy time.
+# On Render, environment variables are set in the dashboard.
+ALPACA_API_KEY = os.environ.get('ALPACA_API_KEY')
+ALPACA_SECRET_KEY = os.environ.get('ALPACA_SECRET_KEY')
 GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
 PUB_SUB_TOPIC = os.environ.get('PUB_SUB_TOPIC', 'daily-bars-raw')
-ALPACA_SECRET_NAME = os.environ.get('ALPACA_SECRET_NAME')
+
+# Load BigQuery credentials from the environment variable
+# This is a secure way to handle the JSON keyfile on Render.
+credentials_json_str = os.environ.get('BIGQUERY_CREDENTIALS_JSON')
+credentials_info = json.loads(credentials_json_str)
+credentials = service_account.Credentials.from_service_account_info(credentials_info)
 
 STOCK_UNIVERSE = [
     'SMCI', 'CRWD', 'DDOG', 'MDB', 'OKTA', 'PLTR', 'SNOW', 'ZS',
     'ETSY', 'PINS', 'ROKU', 'SQ', 'TDOC', 'TWLO', 'U', 'ZM'
 ]
 
-# --- Client Initialization (Lazy) ---
-# Declare clients globally but initialize them inside the function handler
-# to ensure environment variables are available.
-api = None
-publisher = None
-topic_path = None
+# --- Client Initialization ---
+# Clients are initialized once when the application starts.
+api = REST(key_id=ALPACA_API_KEY, secret_key=ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets')
+publisher = pubsub_v1.PublisherClient(credentials=credentials)
+topic_path = publisher.topic_path(GCP_PROJECT_ID, PUB_SUB_TOPIC)
 
-def get_alpaca_api_client():
-    """
-    Retrieves Alpaca API keys from Secret Manager and returns an authenticated Alpaca API client.
-    """
-    try:
-        secret_client = secretmanager.SecretManagerServiceClient()
-        response = secret_client.access_secret_version(request={"name": ALPACA_SECRET_NAME})
-        payload = response.payload.data.decode("UTF-8")
-        secrets = json.loads(payload)
-        
-        client = REST(
-            key_id=secrets['ALPACA_API_KEY'],
-            secret_key=secrets['ALPACA_SECRET_KEY'],
-            base_url=secrets.get('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
-        )
-        print("Successfully created Alpaca API client.")
-        return client
-    except Exception as e:
-        print(f"Error creating Alpaca API client: {e}")
-        raise
 
-def ingest_daily_data(event, context):
+@app.route('/ingest', methods=['POST'])
+def ingest_daily_data():
     """
-    Google Cloud Function entry point.
-    This function now performs a historical backfill for the last 2 years.
+    Flask route to trigger the historical data backfill process.
+    This is called by the Render Cron Job.
     """
-    global api, publisher, topic_path
-
-    # LAZY INITIALIZATION: Initialize clients on first invocation
-    if not api:
-        api = get_alpaca_api_client()
-    if not publisher:
-        publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(GCP_PROJECT_ID, PUB_SUB_TOPIC)
-
     print("Starting historical data backfill process...")
 
     # Define the time range for the backfill
@@ -77,8 +56,9 @@ def ingest_daily_data(event, context):
     chunk_size = 100
     total_messages_published = 0
 
-    for i in tqdm(range(0, len(STOCK_UNIVERSE), chunk_size), desc="Processing symbol chunks"):
+    for i in range(0, len(STOCK_UNIVERSE), chunk_size):
         chunk = STOCK_UNIVERSE[i:i + chunk_size]
+        print(f"Processing symbol chunk starting with {chunk[0]}...")
         try:
             barset = api.get_bars(
                 chunk,
@@ -94,9 +74,7 @@ def ingest_daily_data(event, context):
             print(f"Retrieved {len(barset)} bars for chunk starting with {chunk[0]}.")
 
             for symbol, row in barset.iterrows():
-                # The symbol is part of the multi-index, extract it
                 actual_symbol = symbol[0]
-                
                 message_payload = {
                     'symbol': actual_symbol,
                     'timestamp': row.name.isoformat(),
@@ -116,10 +94,20 @@ def ingest_daily_data(event, context):
 
         except APIError as e:
             print(f"Alpaca API Error for chunk {chunk}: {e}")
-            time.sleep(30) # Wait before retrying next chunk
+            time.sleep(30)
         except Exception as e:
             print(f"An unexpected error occurred for chunk {chunk}: {e}")
             time.sleep(30)
 
-    print(f"Backfill complete. Published {total_messages_published} messages to topic '{PUB_SUB_TOPIC}'.")
-    return f"Backfill complete. Published {total_messages_published} messages."
+    result_message = f"Backfill complete. Published {total_messages_published} messages to topic '{PUB_SUB_TOPIC}'."
+    print(result_message)
+    return result_message, 200
+
+# Health check route
+@app.route('/')
+def health_check():
+    return "Service is running.", 200
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
