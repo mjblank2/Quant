@@ -94,13 +94,10 @@ steps:
     - '-c'
     - |
       echo "--- GCloud Config List ---"
-      # Log the configuration state before the attempt
       gcloud config list
       echo "--------------------------"
-
       echo "Attempting deployment with debug verbosity..."
-      
-      # CRITICAL: Added --verbosity=debug to get stack trace if the crash persists
+
       gcloud functions deploy ingest-daily-data \
         --gen2 \
         --region=${_GCP_REGION} \
@@ -109,8 +106,11 @@ steps:
         --trigger-topic=${_TRIGGER_TOPIC} \
         --entry-point=ingest_daily_data \
         --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-        --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
+        --build-service-account=${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com \
+        --set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest \
+        --project=${PROJECT_ID} \
         --verbosity=debug
+
 
 # --- Build Options ---
 options:
