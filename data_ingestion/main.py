@@ -1,9 +1,8 @@
-# Render-ready ingestion web service.
-# - Flask app exposes /ingest and / for health
+# Render-ready ingestion web service (psycopg3).
+# - Flask app exposes "/" (health) and "/ingest" (POST) to backfill data
 # - Uses Alpaca for market data
-# - Writes OHLCV to Postgres via SQLAlchemy (DATABASE_URL)
+# - Writes OHLCV to Postgres via SQLAlchemy + psycopg3 (psycopg[binary])
 import os
-import json
 import time
 from datetime import datetime, timedelta
 from typing import Iterable, List
@@ -14,7 +13,6 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# --- Flask App ---
 app = Flask(__name__)
 
 # --- Config ---
@@ -23,22 +21,34 @@ ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-STOCK_UNIVERSE = os.environ.get("STOCK_UNIVERSE")
-if STOCK_UNIVERSE:
-    SYMBOLS: List[str] = [s.strip().upper() for s in STOCK_UNIVERSE.split(",") if s.strip()]
-else:
-    SYMBOLS = [
-        "SMCI","CRWD","DDOG","MDB","OKTA","PLTR","SNOW","ZS",
-        "ETSY","PINS","ROKU","SQ","TDOC","TWLO","U","ZM"
-    ]
+# Universe can be overridden via env STOCK_UNIVERSE="AAPL,MSFT,GOOG"
+_STOCKS = os.environ.get("STOCK_UNIVERSE")
+SYMBOLS: List[str] = (
+    [s.strip().upper() for s in _STOCKS.split(",") if s.strip()]
+    if _STOCKS else
+    ["SMCI","CRWD","DDOG","MDB","OKTA","PLTR","SNOW","ZS","ETSY","PINS","ROKU","SQ","TDOC","TWLO","U","ZM"]
+)
 
 # --- Clients ---
 api = REST(key_id=ALPACA_API_KEY, secret_key=ALPACA_SECRET_KEY, base_url=ALPACA_BASE_URL)
 
+def _psycopg3_url(url: str) -> str:
+    """
+    Ensure SQLAlchemy uses the psycopg3 driver.
+    Render provides DATABASE_URL like 'postgresql://...'
+    We switch to 'postgresql+psycopg://...' unless it's already set.
+    """
+    if not url:
+        raise RuntimeError("DATABASE_URL env var is required")
+    if url.startswith("postgresql+psycopg://"):
+        return url
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    # Accept custom schemes (e.g., when proxied); fallback to given URL
+    return url
+
 def _get_engine() -> Engine:
-    assert DATABASE_URL, "DATABASE_URL env var is required"
-    # Render provides a full Postgres connection string; SQLAlchemy v2 engine
-    eng = create_engine(DATABASE_URL, pool_pre_ping=True)
+    eng = create_engine(_psycopg3_url(DATABASE_URL), pool_pre_ping=True)
     return eng
 
 def _ensure_schema(engine: Engine) -> None:
@@ -62,6 +72,7 @@ def _ensure_schema(engine: Engine) -> None:
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=30))
 def _insert_rows(engine: Engine, rows: Iterable[dict]) -> int:
+    rows = list(rows)
     if not rows:
         return 0
     sql = text("""
@@ -77,9 +88,8 @@ def _insert_rows(engine: Engine, rows: Iterable[dict]) -> int:
             vwap=EXCLUDED.vwap;
     """)
     total = 0
-    batch = list(rows)
     with engine.begin() as conn:
-        for r in batch:
+        for r in rows:
             conn.execute(sql, r)
             total += 1
     return total
@@ -92,7 +102,6 @@ def fetch_and_store(symbols: List[str], start_date: datetime, end_date: datetime
     engine = _get_engine()
     _ensure_schema(engine)
 
-    # Alpaca supports list of symbols; chunk to keep payloads manageable
     chunk_size = 100
     written = 0
     for i in range(0, len(symbols), chunk_size):
@@ -107,7 +116,7 @@ def fetch_and_store(symbols: List[str], start_date: datetime, end_date: datetime
             if bars.empty:
                 continue
 
-            # bars index is MultiIndex(symbol, timestamp) in newer API
+            # Index is MultiIndex(symbol, timestamp) in newer SDKs
             rows = []
             for (sym, ts), row in bars.iterrows():
                 rows.append({
@@ -123,11 +132,9 @@ def fetch_and_store(symbols: List[str], start_date: datetime, end_date: datetime
                 })
             written += _insert_rows(engine, rows)
 
-        except APIError as e:
-            # Back off on API errors
+        except APIError:
             time.sleep(10)
-        except Exception as e:
-            # Log and continue
+        except Exception:
             time.sleep(5)
 
     return written
@@ -135,7 +142,7 @@ def fetch_and_store(symbols: List[str], start_date: datetime, end_date: datetime
 @app.route("/ingest", methods=["POST"])
 def ingest_daily_data():
     """
-    Trigger a 2-year backfill. You can pass JSON like {"days": 365} to override.
+    POST JSON: {"days": 365}  (defaults to 2 years)
     """
     try:
         payload = request.get_json(silent=True) or {}
@@ -143,7 +150,12 @@ def ingest_daily_data():
         end_date = datetime.utcnow()
         start_date = end_date - timedelta(days=days)
         count = fetch_and_store(SYMBOLS, start_date, end_date)
-        return jsonify({"status": "ok", "rows_written": count, "start": start_date.isoformat(), "end": end_date.isoformat()}), 200
+        return jsonify({
+            "status": "ok",
+            "rows_written": count,
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat()
+        }), 200
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -152,6 +164,6 @@ def health():
     return "Service is running.", 200
 
 if __name__ == "__main__":
-    # Local dev only; on Render use gunicorn
+    # Local dev only; on Render we use gunicorn
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
 
