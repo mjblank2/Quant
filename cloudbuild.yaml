@@ -36,9 +36,9 @@ steps:
       bq show quant_data || bq mk -d quant_data
       
       # Check/Create Table
-      # IMPORTANT: When creating a table, you must provide a schema. 
-      # Ensure you include the path to your schema file (e.g., ./schema.json) at the end of the command.
-      bq show quant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw [PATH_TO_YOUR_SCHEMA_FILE]
+      # IMPORTANT: Verify the path below. Assuming 'schema.json' is in the root of the repository.
+      # If your schema is located elsewhere (e.g., data_ingestion/schema.json), update the path accordingly.
+      bq show quant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw schema.json
 
 # Step 3: Ensure Pub/Sub subscription exists
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -47,27 +47,13 @@ steps:
     - '-c'
     - |
       # Check/Create Subscription
-      gcloud pubsub subscriptions describe daily-bars-raw-bq-sub || \
-      gcloud pubsub subscriptions create daily-bars-raw-bq-sub \
-        --topic=daily-bars-raw \
-        --bigquery-table=${PROJECT_ID}:quant_data.daily_bars_raw
-      # Note: We use the built-in ${PROJECT_ID} variable for robustness.
+      # Using substitutions defined at the bottom for consistency
+      gcloud pubsub subscriptions describe ${_BIGQUERY_SUB_ID} || \
+      gcloud pubsub subscriptions create ${_BIGQUERY_SUB_ID} \
+        --topic=${_PUB_SUB_TOPIC} \
+        --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: Deploy the Gen2 Cloud Function with explicit env var flags.
-# Example of debugging Step 4
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      echo "--- Debugging Step 4 ---"
-      echo "Variable _MY_SETTING is: $_MY_SETTING"
-      echo "Variable _LOCATION is: $_LOCATION"
-      echo "------------------------"
-
-      # Your original gcloud command goes here...
-      # gcloud functions deploy MyFunction --region=$_LOCATION --set-env-vars=SETTING=$_MY_SETTING
-
+# STEP 4: Deploy the Gen2 Cloud Function.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -81,10 +67,8 @@ steps:
     - '--trigger-topic=${_TRIGGER_TOPIC}'
     - '--entry-point=ingest_daily_data'
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
-    # Set each environment variable with a separate, explicit flag for robustness.
-    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID}'
-    - '--set-env-vars=PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}'
-    - '--set-env-vars=ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
+    # FIX: Combine all environment variables into a single, comma-separated flag.
+    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
@@ -95,7 +79,7 @@ substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
-  _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Replace with your actual project number if different.
+  _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Ensure this project number is correct.
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
