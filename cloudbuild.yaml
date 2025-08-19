@@ -3,7 +3,7 @@
 # for our data ingestion Cloud Function and its associated data warehousing components.
 
 steps:
-# STEP 1: Enable required APIs.
+# STEP 0: Enable required APIs.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -14,7 +14,7 @@ steps:
     - 'run.googleapis.com'
     - '--project=${PROJECT_ID}'
 
-# STEP 2: Create the Pub/Sub topics idempotently.
+# STEP 1: Create the Pub/Sub topics idempotently.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -23,7 +23,7 @@ steps:
     gcloud pubsub topics create ${_TRIGGER_TOPIC} --project=${PROJECT_ID} || true
     gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
 
-# STEP 3: Create the BigQuery Dataset and Table for raw daily bars.
+# STEP 2: Create the BigQuery Dataset and Table for raw daily bars.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -32,7 +32,7 @@ steps:
     bq mk --dataset --description "Dataset for quant trading data" ${PROJECT_ID}:${_BIGQUERY_DATASET} || echo "Dataset ${_BIGQUERY_DATASET} already exists."
     bq mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
 
-# STEP 4: Create the BigQuery subscription.
+# STEP 3: Create the BigQuery subscription.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -43,7 +43,7 @@ steps:
       --bigquery-table=${PROJECT_ID}.${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} \
       --project=${PROJECT_ID} || true
 
-# STEP 5: Deploy the Cloud Function.
+# STEP 4: Deploy the Cloud Function.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -57,8 +57,7 @@ steps:
     - '--trigger-topic=${_TRIGGER_TOPIC}'
     - '--entry-point=ingest_daily_data'
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
-    # Construct the environment variables directly in the command's arguments.
-    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
+    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
@@ -69,8 +68,6 @@ substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
-  # The GCP Project Number is now an explicit substitution variable.
-  _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Replace with your actual project number if different.
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
