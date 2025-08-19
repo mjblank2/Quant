@@ -79,7 +79,7 @@ steps:
           --trigger-topic="${_TRIGGER_TOPIC}" \
           --entry-point=ingest_daily_data \
           --service-account="${_RUNTIME_SA}" \
-          --set-env-vars="${VARS}" \
+          --set-env-vars="$${VARS}" \
           --project="${PROJECT_ID}"
 
 # Cloud Build's execution service account (for running the steps above).
