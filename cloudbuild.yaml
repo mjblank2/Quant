@@ -44,13 +44,13 @@ steps:
   entrypoint: 'bash'
   args:
     - '-c'
-    - |
+    - | 
       # Check/Create Dataset
       bq show quant_data || bq mk -d quant_data
       
       # Check/Create Table
-      # IMPORTANT: Verify the path below. Assuming 'schema.json' is in the root of the repository.
-      ant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw ./schemas/daily_bars_schema.json
+      # CORRECTED: Use the proper path and filename for the schema.
+      bq show quant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw ./schemas/daily_bars_schema.json
 
 # Step 3: Ensure Pub/Sub subscription exists
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
@@ -81,11 +81,8 @@ steps:
   args:
     - '-c'
     - |
-      # FIX: Explicitly define the build service account to bypass the failed automatic detection.
-      # We construct the default account using the project number.
-      BUILD_SA="${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
-      
-      echo "Attempting deployment using Build Service Account: ${BUILD_SA}"
+      # FIX: Construct the build service account email directly using the project number substitution.
+      echo "Attempting deployment using Build Service Account: ${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
       
       gcloud functions deploy ingest-daily-data \
         --gen2 \
@@ -95,9 +92,9 @@ steps:
         --trigger-topic=${_TRIGGER_TOPIC} \
         --entry-point=ingest_daily_data \
         --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-        --build-service-account=${BUILD_SA} \
+        --build-service-account=${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com \
         --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
-        --verbosity=info # Reduced verbosity now that the crash is understood
+        --verbosity=info
 
 # --- Build Options ---
 options:
