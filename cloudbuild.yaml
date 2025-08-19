@@ -57,7 +57,8 @@ steps:
     - '--trigger-topic=${_TRIGGER_TOPIC}'
     - '--entry-point=ingest_daily_data'
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
-    - '--set-env-vars=^,^GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
+    # The secret path now uses our explicit and reliable _GCP_PROJECT_NUMBER variable.
+    - '--set-env-vars=^,^GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
@@ -68,9 +69,15 @@ substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
+  # Re-introducing the explicit project number variable for reliability.
+  _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Replace with your actual project number if different.
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
+
+# --- Build Options ---
+options:
+  logging: CLOUD_LOGGING_ONLY
 
 # --- Build Options ---
 options:
