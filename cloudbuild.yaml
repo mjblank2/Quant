@@ -81,7 +81,7 @@ steps:
         --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
         --role="roles/run.admin"
 
-      # 3. FINAL FIX: Allow it to manage Eventarc triggers (for Pub/Sub integration)
+      # 3. Allow it to manage Eventarc triggers (for Pub/Sub integration)
       gcloud projects add-iam-policy-binding ${PROJECT_ID} \
         --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
         --role="roles/eventarc.admin"
@@ -108,7 +108,7 @@ steps:
       gcloud functions deploy ingest-daily-data \
         --gen2 \
         --region=${_GCP_REGION} \
-        --runtime=python311 \
+        --runtime=python310 \
         --source=./data_ingestion \
         --trigger-topic=${_TRIGGER_TOPIC} \
         --entry-point=ingest_daily_data \
