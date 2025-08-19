@@ -1,110 +1,125 @@
-# cloudbuild.yaml
-# CI/CD for data ingestion Cloud Function + Pub/Sub + BigQuery wiring.
-# THIS VERSION IS CONFIGURED FOR A GEN1 FUNCTION.
+# main.py
+# This file contains the main logic for the Google Cloud Function.
+# It is responsible for ingesting daily stock data from Alpaca
+# and publishing it to a Google Cloud Pub/Sub topic.
+# This version is updated to perform a historical backfill.
 
-substitutions:
-  # Using a known stable SDK version
-  _SDK_TAG: '488.0.0-stable'
-  _GCP_REGION: 'us-central1'
-  _TRIGGER_TOPIC: 'run-daily-ingestion'
-  _PUB_SUB_TOPIC: 'daily-bars-raw'
-  _BIGQUERY_DATASET: 'quant_data'
-  _BIGQUERY_TABLE: 'daily-bars-raw'
-  _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
+import base64
+import json
+import os
+from datetime import datetime, timedelta
+import time
 
-steps:
-# STEP 0: Enable required APIs (idempotent).
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      gcloud services enable \
-        cloudfunctions.googleapis.com \
-        pubsub.googleapis.com \
-        bigquery.googleapis.com \
-        secretmanager.googleapis.com \
-        --project=${PROJECT_ID}
+from alpaca_trade_api.rest import REST, APIError
+from google.cloud import pubsub_v1, secretmanager
+from tqdm import tqdm # For progress bars
 
-# Step 1: Ensure Pub/Sub topics exist
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      # If 'describe' fails, then run 'create'
-      gcloud pubsub topics describe run-daily-ingestion || gcloud pubsub topics create run-daily-ingestion
-      gcloud pubsub topics describe daily-bars-raw || gcloud pubsub topics create daily-bars-raw
+# --- Configuration ---
+# These are retrieved when the function is invoked, not at deploy time.
+GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
+PUB_SUB_TOPIC = os.environ.get('PUB_SUB_TOPIC', 'daily-bars-raw')
+ALPACA_SECRET_NAME = os.environ.get('ALPACA_SECRET_NAME')
 
-# Step 2: Ensure BigQuery resources exist
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      # Check/Create Dataset
-      bq show quant_data || bq mk -d quant_data
-      
-      # Check/Create Table
-      # IMPORTANT: Verify the path below. Assuming 'schema.json' is in the root of the repository.
-      bq show quant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw schema.json
+STOCK_UNIVERSE = [
+    'SMCI', 'CRWD', 'DDOG', 'MDB', 'OKTA', 'PLTR', 'SNOW', 'ZS',
+    'ETSY', 'PINS', 'ROKU', 'SQ', 'TDOC', 'TWLO', 'U', 'ZM'
+]
 
-# Step 3: Ensure Pub/Sub subscription exists
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      # Check/Create Subscription
-      gcloud pubsub subscriptions describe ${_BIGQUERY_SUB_ID} || \
-      gcloud pubsub subscriptions create ${_BIGQUERY_SUB_ID} \
-        --topic=${_PUB_SUB_TOPIC} \
-        --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
+# --- Client Initialization (Lazy) ---
+# Declare clients globally but initialize them inside the function handler
+# to ensure environment variables are available.
+api = None
+publisher = None
+topic_path = None
 
-# STEP 4: Grant all necessary IAM permissions
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      # DEPLOY-TIME PERMISSION for the Cloud Build Service Account
-      # 1. Allow it to act as the Function's SA
-      gcloud iam service-accounts add-iam-policy-binding \
-        mjblank2@quant-setup.iam.gserviceaccount.com \
-        --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
-        --role="roles/iam.serviceAccountUser" \
-        --project=${PROJECT_ID}
+def get_alpaca_api_client():
+    """
+    Retrieves Alpaca API keys from Secret Manager and returns an authenticated Alpaca API client.
+    """
+    try:
+        secret_client = secretmanager.SecretManagerServiceClient()
+        response = secret_client.access_secret_version(request={"name": ALPACA_SECRET_NAME})
+        payload = response.payload.data.decode("UTF-8")
+        secrets = json.loads(payload)
+        
+        client = REST(
+            key_id=secrets['ALPACA_API_KEY'],
+            secret_key=secrets['ALPACA_SECRET_KEY'],
+            base_url=secrets.get('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
+        )
+        print("Successfully created Alpaca API client.")
+        return client
+    except Exception as e:
+        print(f"Error creating Alpaca API client: {e}")
+        raise
 
-      # RUNTIME PERMISSIONS for the Function's Service Account
-      # 1. Allow it to publish to Pub/Sub
-      gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-        --member="serviceAccount:mjblank2@quant-setup.iam.gserviceaccount.com" \
-        --role="roles/pubsub.publisher"
+def ingest_daily_data(event, context):
+    """
+    Google Cloud Function entry point.
+    This function now performs a historical backfill for the last 2 years.
+    """
+    global api, publisher, topic_path
 
-      # 2. Allow it to access secrets
-      gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-        --member="serviceAccount:mjblank2@quant-setup.iam.gserviceaccount.com" \
-        --role="roles/secretmanager.secretAccessor"
+    # LAZY INITIALIZATION: Initialize clients on first invocation
+    if not api:
+        api = get_alpaca_api_client()
+    if not publisher:
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(GCP_PROJECT_ID, PUB_SUB_TOPIC)
 
-# STEP 5: Deploy the Gen1 Cloud Function
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      echo "All permissions granted. Attempting Gen1 deployment..."
-      
-      gcloud functions deploy ingest-daily-data \
-        --region=${_GCP_REGION} \
-        --runtime=python310 \
-        --source=./data_ingestion \
-        --trigger-resource=${_TRIGGER_TOPIC} \
-        --trigger-event=google.pubsub.topic.publish \
-        --entry-point=ingest_daily_data \
-        --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-        --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
-        --verbosity=info
+    print("Starting historical data backfill process...")
 
-# --- Build Options ---
-options:
-  logging: CLOUD_LOGGING_ONLY
+    # Define the time range for the backfill
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=365 * 2)
+
+    # Process symbols in chunks to respect API rate limits
+    chunk_size = 100
+    total_messages_published = 0
+
+    for i in tqdm(range(0, len(STOCK_UNIVERSE), chunk_size), desc="Processing symbol chunks"):
+        chunk = STOCK_UNIVERSE[i:i + chunk_size]
+        try:
+            barset = api.get_bars(
+                chunk,
+                '1Day',
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d')
+            ).df
+
+            if barset.empty:
+                print(f"No data returned from Alpaca for chunk starting with {chunk[0]}.")
+                continue
+
+            print(f"Retrieved {len(barset)} bars for chunk starting with {chunk[0]}.")
+
+            for symbol, row in barset.iterrows():
+                # The symbol is part of the multi-index, extract it
+                actual_symbol = symbol[0]
+                
+                message_payload = {
+                    'symbol': actual_symbol,
+                    'timestamp': row.name.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume']),
+                    'trade_count': int(row.get('trade_count', 0)),
+                    'vwap': float(row.get('vwap', 0.0))
+                }
+
+                data = json.dumps(message_payload).encode('utf-8')
+                future = publisher.publish(topic_path, data)
+                future.result()
+                total_messages_published += 1
+
+        except APIError as e:
+            print(f"Alpaca API Error for chunk {chunk}: {e}")
+            time.sleep(30) # Wait before retrying next chunk
+        except Exception as e:
+            print(f"An unexpected error occurred for chunk {chunk}: {e}")
+            time.sleep(30)
+
+    print(f"Backfill complete. Published {total_messages_published} messages to topic '{PUB_SUB_TOPIC}'.")
+    return f"Backfill complete. Published {total_messages_published} messages."
