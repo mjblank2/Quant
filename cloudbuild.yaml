@@ -3,7 +3,6 @@
 
 steps:
 # STEP 0: Enable required APIs (idempotent).
-# Changed to bash entrypoint for consistency and robustness.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
@@ -54,7 +53,7 @@ steps:
         --topic=${_PUB_SUB_TOPIC} \
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: DIAGNOSTICS (Updated)
+# STEP 4: DIAGNOSTICS
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   id: 'VERIFY_SUBSTITUTIONS'
@@ -63,25 +62,22 @@ steps:
     - |
       echo "--- Variable Check ---"
       echo "GCP Region: '${_GCP_REGION}'"
-      echo "Trigger Topic: '${_TRIGGER_TOPIC}'"
-      echo "Pub/Sub Topic: '${_PUB_SUB_TOPIC}'"
       echo "GCP Project Number: '${_GCP_PROJECT_NUMBER}'"
-      echo "BUILT-IN Project ID: '${PROJECT_ID}'" # Added check for Project ID
+      echo "BUILT-IN Project ID: '${PROJECT_ID}'"
       echo "------------------------"
       
       # Fail the build immediately if critical variables are empty
-      if [[ -z "${_GCP_REGION}" || -z "${_GCP_PROJECT_NUMBER}" || -z "${_TRIGGER_TOPIC}" || -z "${_PUB_SUB_TOPIC}" || -z "${PROJECT_ID}" ]]; then
+      if [[ -z "${_GCP_REGION}" || -z "${_GCP_PROJECT_NUMBER}" || -z "${PROJECT_ID}" ]]; then
         echo "ERROR: One or more critical substitution variables are empty."
         exit 1
       fi
       echo "All variables populated. Proceeding to deployment."
 
-# STEP 5: Deploy the Gen2 Cloud Function (FIX: Changed Entrypoint to bash)
+# STEP 5: Deploy the Gen2 Cloud Function
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
     - '-c'
-    # The entire command is executed within a bash shell script, avoiding YAML parsing issues.
     - |
       gcloud functions deploy ingest-daily-data \
         --gen2 \
@@ -94,10 +90,10 @@ steps:
         --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
 
 # --- Top-level Service Account ---
-serviceAccount: 'mjblank2@quant-setup.iam.gserviceaccount.com'
+# REMOVED: The 'serviceAccount:' directive was causing the gcloud environment initialization to fail (TypeError).
+# The build will now run as the default Cloud Build Service Account.
 
 # --- Substitutions ---
-# NOTE: Ensure your Cloud Build Trigger settings have NO substitution variables defined.
 substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
