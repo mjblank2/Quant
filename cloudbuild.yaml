@@ -62,47 +62,42 @@ steps:
         --topic=${_PUB_SUB_TOPIC} \
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: Grant DEPLOY-TIME permissions to the Cloud Build Service Account.
+# STEP 4: Grant all necessary IAM permissions
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
     - '-c'
     - |
-      # The Cloud Build SA needs to act as the Function's SA during deployment.
+      # DEPLOY-TIME PERMISSIONS for the Cloud Build Service Account
+      # 1. Allow it to act as the Function's SA
       gcloud iam service-accounts add-iam-policy-binding \
         mjblank2@quant-setup.iam.gserviceaccount.com \
         --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
         --role="roles/iam.serviceAccountUser" \
         --project=${PROJECT_ID}
       
-      echo "Waiting for IAM propagation..."
-      sleep 5
-
-      # The Cloud Build SA needs the Cloud Run Admin role to create the underlying service for a Gen2 function.
+      # 2. Allow it to manage Cloud Run services (for Gen2 Functions)
       gcloud projects add-iam-policy-binding ${PROJECT_ID} \
         --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
         --role="roles/run.admin"
 
-# STEP 5: Grant RUNTIME permissions to the Function's Service Account.
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
-  entrypoint: 'bash'
-  args:
-    - '-c'
-    - |
-      # The Function's SA needs permission to publish to the Pub/Sub topic.
+      # 3. FINAL FIX: Allow it to manage Eventarc triggers (for Pub/Sub integration)
+      gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+        --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+        --role="roles/eventarc.admin"
+
+      # RUNTIME PERMISSIONS for the Function's Service Account
+      # 1. Allow it to publish to Pub/Sub
       gcloud projects add-iam-policy-binding ${PROJECT_ID} \
         --member="serviceAccount:mjblank2@quant-setup.iam.gserviceaccount.com" \
         --role="roles/pubsub.publisher"
 
-      echo "Waiting for IAM propagation..."
-      sleep 5
-
-      # The Function's SA needs permission to access secrets.
+      # 2. Allow it to access secrets
       gcloud projects add-iam-policy-binding ${PROJECT_ID} \
         --member="serviceAccount:mjblank2@quant-setup.iam.gserviceaccount.com" \
         --role="roles/secretmanager.secretAccessor"
 
-# STEP 6: Deploy the Gen2 Cloud Function
+# STEP 5: Deploy the Gen2 Cloud Function
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
@@ -124,4 +119,3 @@ steps:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
-
