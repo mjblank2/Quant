@@ -87,7 +87,6 @@ steps:
   args:
     - '-c'
     - |
-      # FIX: Construct the build service account email directly using the project number substitution.
       echo "Attempting deployment using Build Service Account: ${_BUILD_SERVICE_ACCOUNT}"
       
       gcloud functions deploy ingest-daily-data \
