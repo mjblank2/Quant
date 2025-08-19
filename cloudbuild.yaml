@@ -47,15 +47,7 @@ steps:
         --drop-unknown-fields \
         --project=${PROJECT_ID} || true
 
-# STEP 4: Create gcloud config file for environment variables.
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - |
-    echo "{\"GCP_PROJECT_ID\": \"${PROJECT_ID}\", \"PUB_SUB_TOPIC\": \"${_PUB_SUB_TOPIC}\", \"ALPACA_SECRET_NAME\": \"projects/${PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest\"}" > /workspace/env.json
-
-# STEP 5: Deploy the Gen2 Cloud Function with env vars from file.
+# STEP 4: Deploy the Gen2 Cloud Function with explicit env var flags.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -69,7 +61,10 @@ steps:
     - '--trigger-topic=${_TRIGGER_TOPIC}'
     - '--entry-point=ingest_daily_data'
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
-    - '--env-vars-file=/workspace/env.json'
+    # Set each environment variable with a separate, explicit flag for robustness.
+    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID}'
+    - '--set-env-vars=PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}'
+    - '--set-env-vars=ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
@@ -80,6 +75,7 @@ substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
+  _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Replace with your actual project number if different.
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
@@ -87,4 +83,5 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
+
 
