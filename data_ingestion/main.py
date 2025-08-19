@@ -1,113 +1,157 @@
-# main.py
-# This file contains the main logic for the data ingestion service,
-# adapted to run as a web service on Render.
-
+# Render-ready ingestion web service.
+# - Flask app exposes /ingest and / for health
+# - Uses Alpaca for market data
+# - Writes OHLCV to Postgres via SQLAlchemy (DATABASE_URL)
 import os
 import json
-from datetime import datetime, timedelta
 import time
+from datetime import datetime, timedelta
+from typing import Iterable, List
 
+from flask import Flask, request, jsonify
 from alpaca_trade_api.rest import REST, APIError
-from google.cloud import pubsub_v1
-from google.oauth2 import service_account
-from flask import Flask, request
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-# --- Flask App Initialization ---
+# --- Flask App ---
 app = Flask(__name__)
 
-# --- Configuration ---
-# On Render, environment variables are set in the dashboard.
-ALPACA_API_KEY = os.environ.get('ALPACA_API_KEY')
-ALPACA_SECRET_KEY = os.environ.get('ALPACA_SECRET_KEY')
-GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
-PUB_SUB_TOPIC = os.environ.get('PUB_SUB_TOPIC', 'daily-bars-raw')
+# --- Config ---
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
+ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Load BigQuery credentials from the environment variable
-# This is a secure way to handle the JSON keyfile on Render.
-credentials_json_str = os.environ.get('BIGQUERY_CREDENTIALS_JSON')
-credentials_info = json.loads(credentials_json_str)
-credentials = service_account.Credentials.from_service_account_info(credentials_info)
+STOCK_UNIVERSE = os.environ.get("STOCK_UNIVERSE")
+if STOCK_UNIVERSE:
+    SYMBOLS: List[str] = [s.strip().upper() for s in STOCK_UNIVERSE.split(",") if s.strip()]
+else:
+    SYMBOLS = [
+        "SMCI","CRWD","DDOG","MDB","OKTA","PLTR","SNOW","ZS",
+        "ETSY","PINS","ROKU","SQ","TDOC","TWLO","U","ZM"
+    ]
 
-STOCK_UNIVERSE = [
-    'SMCI', 'CRWD', 'DDOG', 'MDB', 'OKTA', 'PLTR', 'SNOW', 'ZS',
-    'ETSY', 'PINS', 'ROKU', 'SQ', 'TDOC', 'TWLO', 'U', 'ZM'
-]
+# --- Clients ---
+api = REST(key_id=ALPACA_API_KEY, secret_key=ALPACA_SECRET_KEY, base_url=ALPACA_BASE_URL)
 
-# --- Client Initialization ---
-# Clients are initialized once when the application starts.
-api = REST(key_id=ALPACA_API_KEY, secret_key=ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets')
-publisher = pubsub_v1.PublisherClient(credentials=credentials)
-topic_path = publisher.topic_path(GCP_PROJECT_ID, PUB_SUB_TOPIC)
+def _get_engine() -> Engine:
+    assert DATABASE_URL, "DATABASE_URL env var is required"
+    # Render provides a full Postgres connection string; SQLAlchemy v2 engine
+    eng = create_engine(DATABASE_URL, pool_pre_ping=True)
+    return eng
 
-
-@app.route('/ingest', methods=['POST'])
-def ingest_daily_data():
+def _ensure_schema(engine: Engine) -> None:
+    ddl = """
+    CREATE TABLE IF NOT EXISTS daily_bars (
+        id BIGSERIAL PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        ts TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+        open DOUBLE PRECISION NOT NULL,
+        high DOUBLE PRECISION NOT NULL,
+        low DOUBLE PRECISION NOT NULL,
+        close DOUBLE PRECISION NOT NULL,
+        volume BIGINT NOT NULL,
+        trade_count INTEGER,
+        vwap DOUBLE PRECISION,
+        UNIQUE(symbol, ts)
+    );
     """
-    Flask route to trigger the historical data backfill process.
-    This is called by the Render Cron Job.
+    with engine.begin() as conn:
+        conn.exec_driver_sql(ddl)
+
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=30))
+def _insert_rows(engine: Engine, rows: Iterable[dict]) -> int:
+    if not rows:
+        return 0
+    sql = text("""
+        INSERT INTO daily_bars (symbol, ts, open, high, low, close, volume, trade_count, vwap)
+        VALUES (:symbol, :ts, :open, :high, :low, :close, :volume, :trade_count, :vwap)
+        ON CONFLICT (symbol, ts) DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low  = EXCLUDED.low,
+            close= EXCLUDED.close,
+            volume=EXCLUDED.volume,
+            trade_count=EXCLUDED.trade_count,
+            vwap=EXCLUDED.vwap;
+    """)
+    total = 0
+    batch = list(rows)
+    with engine.begin() as conn:
+        for r in batch:
+            conn.execute(sql, r)
+            total += 1
+    return total
+
+def fetch_and_store(symbols: List[str], start_date: datetime, end_date: datetime) -> int:
     """
-    print("Starting historical data backfill process...")
+    Fetch daily bars from Alpaca for symbols and store to Postgres.
+    Returns number of rows written.
+    """
+    engine = _get_engine()
+    _ensure_schema(engine)
 
-    # Define the time range for the backfill
-    end_date = datetime.utcnow()
-    start_date = end_date - timedelta(days=365 * 2)
-
-    # Process symbols in chunks to respect API rate limits
+    # Alpaca supports list of symbols; chunk to keep payloads manageable
     chunk_size = 100
-    total_messages_published = 0
-
-    for i in range(0, len(STOCK_UNIVERSE), chunk_size):
-        chunk = STOCK_UNIVERSE[i:i + chunk_size]
-        print(f"Processing symbol chunk starting with {chunk[0]}...")
+    written = 0
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i+chunk_size]
         try:
-            barset = api.get_bars(
-                chunk,
-                '1Day',
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d')
+            bars = api.get_bars(
+                chunk, "1Day",
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d")
             ).df
 
-            if barset.empty:
-                print(f"No data returned from Alpaca for chunk starting with {chunk[0]}.")
+            if bars.empty:
                 continue
 
-            print(f"Retrieved {len(barset)} bars for chunk starting with {chunk[0]}.")
-
-            for symbol, row in barset.iterrows():
-                actual_symbol = symbol[0]
-                message_payload = {
-                    'symbol': actual_symbol,
-                    'timestamp': row.name.isoformat(),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': int(row['volume']),
-                    'trade_count': int(row.get('trade_count', 0)),
-                    'vwap': float(row.get('vwap', 0.0))
-                }
-
-                data = json.dumps(message_payload).encode('utf-8')
-                future = publisher.publish(topic_path, data)
-                future.result()
-                total_messages_published += 1
+            # bars index is MultiIndex(symbol, timestamp) in newer API
+            rows = []
+            for (sym, ts), row in bars.iterrows():
+                rows.append({
+                    "symbol": sym,
+                    "ts": ts.to_pydatetime().replace(tzinfo=None),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": int(row.get("volume", 0)),
+                    "trade_count": int(row.get("trade_count", 0)) if "trade_count" in row else None,
+                    "vwap": float(row.get("vwap", 0.0)) if "vwap" in row else None,
+                })
+            written += _insert_rows(engine, rows)
 
         except APIError as e:
-            print(f"Alpaca API Error for chunk {chunk}: {e}")
-            time.sleep(30)
+            # Back off on API errors
+            time.sleep(10)
         except Exception as e:
-            print(f"An unexpected error occurred for chunk {chunk}: {e}")
-            time.sleep(30)
+            # Log and continue
+            time.sleep(5)
 
-    result_message = f"Backfill complete. Published {total_messages_published} messages to topic '{PUB_SUB_TOPIC}'."
-    print(result_message)
-    return result_message, 200
+    return written
 
-# Health check route
-@app.route('/')
-def health_check():
+@app.route("/ingest", methods=["POST"])
+def ingest_daily_data():
+    """
+    Trigger a 2-year backfill. You can pass JSON like {"days": 365} to override.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        days = int(payload.get("days", 365*2))
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+        count = fetch_and_store(SYMBOLS, start_date, end_date)
+        return jsonify({"status": "ok", "rows_written": count, "start": start_date.isoformat(), "end": end_date.isoformat()}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.route("/")
+def health():
     return "Service is running.", 200
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+if __name__ == "__main__":
+    # Local dev only; on Render use gunicorn
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
 
