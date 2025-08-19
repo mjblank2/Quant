@@ -12,6 +12,11 @@ substitutions:
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
+  # The service account that the Cloud Function will run as.
+  _FUNCTION_SERVICE_ACCOUNT: 'mjblank2@quant-setup.iam.gserviceaccount.com'
+  # The service account that runs the build process.
+  _BUILD_SERVICE_ACCOUNT: '${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com'
+
 
 steps:
 # STEP 0: Enable required APIs (idempotent).
@@ -64,16 +69,17 @@ steps:
         --topic=${_PUB_SUB_TOPIC} \
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: DIAGNOSTICS (Optional, can be removed once successful)
+# STEP 4: Grant temporary permissions for the build service account
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
+  id: 'GRANT_ACT_AS'
   entrypoint: 'bash'
-  id: 'VERIFY_ENVIRONMENT'
   args:
     - '-c'
     - |
-      echo "--- Environment Check ---"
-      gcloud version
-      echo "------------------------"
+      echo "Granting 'iam.serviceAccountUser' role to Cloud Build service account..."
+      gcloud iam service-accounts add-iam-policy-binding ${_FUNCTION_SERVICE_ACCOUNT} \
+        --member="serviceAccount:${_BUILD_SERVICE_ACCOUNT}" \
+        --role="roles/iam.serviceAccountUser"
 
 # STEP 5: Deploy the Gen2 Cloud Function
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
@@ -82,7 +88,7 @@ steps:
     - '-c'
     - |
       # FIX: Construct the build service account email directly using the project number substitution.
-      echo "Attempting deployment using Build Service Account: ${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+      echo "Attempting deployment using Build Service Account: ${_BUILD_SERVICE_ACCOUNT}"
       
       gcloud functions deploy ingest-daily-data \
         --gen2 \
@@ -91,10 +97,24 @@ steps:
         --source=./data_ingestion \
         --trigger-topic=${_TRIGGER_TOPIC} \
         --entry-point=ingest_daily_data \
-        --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-        --build-service-account=81308911755@cloudbuild.gserviceaccount.com \
+        --service-account=${_FUNCTION_SERVICE_ACCOUNT} \
+        --build-service-account=${_BUILD_SERVICE_ACCOUNT} \
         --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
         --verbosity=info
+
+# STEP 6: Revoke the temporary permissions
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - |
+      echo "Revoking 'iam.serviceAccountUser' role..."
+      gcloud iam service-accounts remove-iam-policy-binding ${_FUNCTION_SERVICE_ACCOUNT} \
+        --member="serviceAccount:${_BUILD_SERVICE_ACCOUNT}" \
+        --role="roles/iam.serviceAccountUser"
+  # This step runs even if a previous step fails.
+  allow_failure: true
+  wait_for: ['-']
 
 # --- Build Options ---
 options:
