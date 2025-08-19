@@ -16,38 +16,58 @@ steps:
     - 'secretmanager.googleapis.com'
     - '--project=${PROJECT_ID}'
 
-# STEP 1: Create Pub/Sub topics (idempotent).
+# Step 1: Ensure Pub/Sub topics exist
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
     - '-c'
     - |
-      gcloud pubsub topics create ${_TRIGGER_TOPIC} --project=${PROJECT_ID} || true
-      gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
+      # If 'describe' fails, then run 'create'
+      gcloud pubsub topics describe run-daily-ingestion || gcloud pubsub topics create run-daily-ingestion
+      gcloud pubsub topics describe daily-bars-raw || gcloud pubsub topics create daily-bars-raw
 
-# STEP 2: Create BigQuery dataset & table (idempotent).
+# Step 2: Ensure BigQuery resources exist
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
     - '-c'
     - |
-      bq mk --dataset --description "Dataset for quant trading data" ${PROJECT_ID}:${_BIGQUERY_DATASET} || echo "Dataset ${_BIGQUERY_DATASET} may already exist."
-      bq mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} may already exist."
+      # Check/Create Dataset
+      bq show quant_data || bq mk -d quant_data
+      
+      # Check/Create Table
+      # IMPORTANT: When creating a table, you must provide a schema. 
+      # Ensure you include the path to your schema file (e.g., ./schema.json) at the end of the command.
+      bq show quant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw [PATH_TO_YOUR_SCHEMA_FILE]
 
-# STEP 3: Create the Pub/Sub -> BigQuery subscription (idempotent).
+# Step 3: Ensure Pub/Sub subscription exists
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
     - '-c'
     - |
-      gcloud pubsub subscriptions create ${_BIGQUERY_SUB_ID} \
-        --topic=${_PUB_SUB_TOPIC} \
-        --bigquery-table=projects/${PROJECT_ID}/datasets/${_BIGQUERY_DATASET}/tables/${_BIGQUERY_TABLE} \
-        --use-table-schema \
-        --drop-unknown-fields \
-        --project=${PROJECT_ID} || true
+      # Check/Create Subscription
+      gcloud pubsub subscriptions describe daily-bars-raw-bq-sub || \
+      gcloud pubsub subscriptions create daily-bars-raw-bq-sub \
+        --topic=daily-bars-raw \
+        --bigquery-table=${PROJECT_ID}:quant_data.daily_bars_raw
+      # Note: We use the built-in ${PROJECT_ID} variable for robustness.
 
 # STEP 4: Deploy the Gen2 Cloud Function with explicit env var flags.
+# Example of debugging Step 4
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - |
+      echo "--- Debugging Step 4 ---"
+      echo "Variable _MY_SETTING is: $_MY_SETTING"
+      echo "Variable _LOCATION is: $_LOCATION"
+      echo "------------------------"
+
+      # Your original gcloud command goes here...
+      # gcloud functions deploy MyFunction --region=$_LOCATION --set-env-vars=SETTING=$_MY_SETTING
+
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
