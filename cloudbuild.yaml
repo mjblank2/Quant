@@ -1,5 +1,6 @@
 # cloudbuild.yaml
 # CI/CD for data ingestion Cloud Function + Pub/Sub + BigQuery wiring.
+# THIS VERSION IS CONFIGURED FOR A GEN2 FUNCTION.
 
 substitutions:
   # Using a known stable SDK version
@@ -119,3 +120,4 @@ steps:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
+
