@@ -59,7 +59,7 @@ steps:
         # If you want Pub/Sub attributes in BQ metadata, add:
         #   --write-metadata
 
-  # STEP 4: Deploy the Gen2 Cloud Function — pass env vars as separate flags.
+  # STEP 4: Deploy the Gen2 Cloud Function — pass ALL envs in a single --set-env-vars.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -83,9 +83,7 @@ steps:
           --trigger-topic="${_TRIGGER_TOPIC}" \
           --entry-point=ingest_daily_data \
           --service-account="${_RUNTIME_SA}" \
-          --set-env-vars GCP_PROJECT_ID="${PROJECT_ID}" \
-          --update-env-vars PUB_SUB_TOPIC="${_PUB_SUB_TOPIC}" \
-          --update-env-vars ALPACA_SECRET_NAME="projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
+          --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
           --project="${PROJECT_ID}" \
           --quiet
 
