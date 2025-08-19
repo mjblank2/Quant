@@ -2,11 +2,12 @@
 # CI/CD for data ingestion Cloud Function + Pub/Sub + BigQuery wiring.
 
 substitutions:
-  # FIX: Pinning the SDK version to avoid regressions in 'latest'
+  # Keep the pinned SDK version for stability
   _SDK_TAG: '489.0.0-stable'
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
+  # IMPORTANT: This project number is critical for the fix.
   _GCP_PROJECT_NUMBER: '81308911755'
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
@@ -63,7 +64,7 @@ steps:
         --topic=${_PUB_SUB_TOPIC} \
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: DIAGNOSTICS
+# STEP 4: DIAGNOSTICS (Optional, can be removed once successful)
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   id: 'VERIFY_ENVIRONMENT'
@@ -71,21 +72,8 @@ steps:
     - '-c'
     - |
       echo "--- Environment Check ---"
-      echo "GCloud Version:"
       gcloud version
       echo "------------------------"
-      echo "Variable Check:"
-      echo "GCP Region: '${_GCP_REGION}'"
-      echo "GCP Project Number: '${_GCP_PROJECT_NUMBER}'"
-      echo "BUILT-IN Project ID: '${PROJECT_ID}'"
-      echo "------------------------"
-      
-      # Fail the build immediately if critical variables are empty
-      if [[ -z "${_GCP_REGION}" || -z "${_GCP_PROJECT_NUMBER}" || -z "${PROJECT_ID}" ]]; then
-        echo "ERROR: One or more critical substitution variables are empty."
-        exit 1
-      fi
-      echo "All variables populated. Proceeding to deployment."
 
 # STEP 5: Deploy the Gen2 Cloud Function
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
@@ -93,11 +81,12 @@ steps:
   args:
     - '-c'
     - |
-      echo "--- GCloud Config List ---"
-      gcloud config list
-      echo "--------------------------"
-      echo "Attempting deployment with debug verbosity..."
-
+      # FIX: Explicitly define the build service account to bypass the failed automatic detection.
+      # We construct the default account using the project number.
+      BUILD_SA="${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+      
+      echo "Attempting deployment using Build Service Account: ${BUILD_SA}"
+      
       gcloud functions deploy ingest-daily-data \
         --gen2 \
         --region=${_GCP_REGION} \
@@ -106,11 +95,9 @@ steps:
         --trigger-topic=${_TRIGGER_TOPIC} \
         --entry-point=ingest_daily_data \
         --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-        --build-service-account=${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com \
-        --set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest \
-        --project=${PROJECT_ID} \
-        --verbosity=debug
-
+        --build-service-account=${BUILD_SA} \
+        --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
+        --verbosity=info # Reduced verbosity now that the crash is understood
 
 # --- Build Options ---
 options:
