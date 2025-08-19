@@ -1,0 +1,25 @@
+# Render Blueprint Deployment (bcq)
+
+## What you get
+- Web service: Flask app with `/` (health) and `/ingest` (POST) to backfill data
+- Worker + Cron: run the backfill on schedule or on demand
+- Postgres: bars saved to `daily_bars`
+
+## Deploy
+1) Commit these files to your repo root.
+2) In Render: New -> Blueprint -> select repo.
+3) Add env vars to each service:
+   - ALPACA_API_KEY
+   - ALPACA_SECRET_KEY
+   - (optional) ALPACA_BASE_URL
+   - DATABASE_URL (auto from the `bcq-db` database defined in render.yaml)
+4) Trigger: `curl -X POST https://<your-web-url>/ingest`
+
+## Local test
+```bash
+pip install -r requirements.txt
+export DATABASE_URL=postgresql://user:pass@localhost:5432/dbname
+export ALPACA_API_KEY=...
+export ALPACA_SECRET_KEY=...
+python -m data_ingestion.main
+```

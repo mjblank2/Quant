@@ -1,2 +1,0 @@
-# Quant
-Google quant dev
