@@ -47,7 +47,22 @@ steps:
         --drop-unknown-fields \
         --project=${PROJECT_ID} || true
 
-# STEP 4: Deploy the Gen2 Cloud Function with env vars.
+# STEP 4: Debugging Step
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    echo "--- DEBUGGING STEP ---"
+    echo "PROJECT_ID: ${PROJECT_ID}"
+    echo "PROJECT_NUMBER: ${PROJECT_NUMBER}"
+    echo "_GCP_REGION: ${_GCP_REGION}"
+    echo "_TRIGGER_TOPIC: ${_TRIGGER_TOPIC}"
+    echo "_PUB_SUB_TOPIC: ${_PUB_SUB_TOPIC}"
+    echo "_GCP_PROJECT_NUMBER (custom): ${_GCP_PROJECT_NUMBER}"
+    echo "--- END DEBUGGING STEP ---"
+
+# STEP 5: Deploy the Gen2 Cloud Function with env vars.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
@@ -61,10 +76,7 @@ steps:
     - '--trigger-topic=${_TRIGGER_TOPIC}'
     - '--entry-point=ingest_daily_data'
     - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
-    # Set each environment variable with a separate, explicit flag for robustness.
-    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID}'
-    - '--set-env-vars=PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}'
-    - '--set-env-vars=ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
+    - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest'
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
