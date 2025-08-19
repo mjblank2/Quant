@@ -49,5 +49,58 @@ steps:
     args:
       - '-c'
       - |
-        set -eu
+        set -euo pipefail
+        gcloud pubsub subscriptions create "${_BIGQUERY_SUB_ID}" \
+          --topic="${_PUB_SUB_TOPIC}" \
+          --bigquery-table="projects/${PROJECT_ID}/datasets/${_BIGQUERY_DATASET}/tables/${_BIGQUERY_TABLE}" \
+          --use-table-schema \
+          --drop-unknown-fields \
+          --project="${PROJECT_ID}" || true
+        # If you want Pub/Sub attributes in BQ metadata, add:
+        #   --write-metadata
 
+  # STEP 4: Deploy the Gen2 Cloud Function with inline env vars (no intermediate VARS).
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        # Optional visibility to confirm resolved values:
+        echo "PROJECT_ID=${PROJECT_ID}"
+        echo "_GCP_REGION=${_GCP_REGION}"
+        echo "_PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}"
+        echo "_GCP_PROJECT_NUMBER=${_GCP_PROJECT_NUMBER}"
+        echo "_RUNTIME_SA=${_RUNTIME_SA}"
+
+        gcloud functions deploy ingest-daily-data \
+          --gen2 \
+          --region="${_GCP_REGION}" \
+          --runtime=python311 \
+          --source=./data_ingestion \
+          --trigger-topic="${_TRIGGER_TOPIC}" \
+          --entry-point=ingest_daily_data \
+          --service-account="${_RUNTIME_SA}" \
+          --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
+          --project="${PROJECT_ID}"
+
+# Cloud Build's execution service account (for running the steps above).
+serviceAccount: '${_BUILD_SA}'
+
+# Substitutions
+substitutions:
+  _GCP_REGION: 'us-central1'
+  _TRIGGER_TOPIC: 'run-daily-ingestion'
+  _PUB_SUB_TOPIC: 'daily-bars-raw'
+  _GCP_PROJECT_NUMBER: '81308911755'  # Update if different for your project
+  _BIGQUERY_DATASET: 'quant_data'
+  _BIGQUERY_TABLE: 'daily_bars_raw'
+  _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
+
+  # Parameterize service accounts so this file works across projects/environments:
+  _BUILD_SA: 'mjblank2@quant-setup.iam.gserviceaccount.com'
+  _RUNTIME_SA: 'mjblank2@quant-setup.iam.gserviceaccount.com'
+
+# Build options
+options:
+  logging: CLOUD_LOGGING_ONLY
