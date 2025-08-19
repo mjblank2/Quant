@@ -59,30 +59,35 @@ steps:
         # If you want Pub/Sub attributes in BQ metadata, add:
         #   --write-metadata
 
-  # STEP 4: Deploy the Gen2 Cloud Function with inline env vars (no intermediate VARS).
+  # STEP 4: Deploy the Gen2 Cloud Function — pass env vars as separate flags.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
         set -euo pipefail
-        # Optional visibility to confirm resolved values:
+
+        # Visibility to confirm values are populated:
         echo "PROJECT_ID=${PROJECT_ID}"
         echo "_GCP_REGION=${_GCP_REGION}"
+        echo "_TRIGGER_TOPIC=${_TRIGGER_TOPIC}"
         echo "_PUB_SUB_TOPIC=${_PUB_SUB_TOPIC}"
         echo "_GCP_PROJECT_NUMBER=${_GCP_PROJECT_NUMBER}"
         echo "_RUNTIME_SA=${_RUNTIME_SA}"
 
         gcloud functions deploy ingest-daily-data \
           --gen2 \
-          --region="${_GCP_REGION}" \
+          --region=${_GCP_REGION} \
           --runtime=python311 \
           --source=./data_ingestion \
-          --trigger-topic="${_TRIGGER_TOPIC}" \
+          --trigger-topic=projects/${PROJECT_ID}/topics/${_TRIGGER_TOPIC} \
           --entry-point=ingest_daily_data \
-          --service-account="${_RUNTIME_SA}" \
-          --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
-          --project="${PROJECT_ID}"
+          --service-account=${_RUNTIME_SA} \
+          --set-env-vars GCP_PROJECT_ID=${PROJECT_ID} \
+          --update-env-vars PUB_SUB_TOPIC=${_PUB_SUB_TOPIC} \
+          --update-env-vars ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest \
+          --project=${PROJECT_ID} \
+          --quiet
 
 # Cloud Build's execution service account (for running the steps above).
 serviceAccount: '${_BUILD_SA}'
