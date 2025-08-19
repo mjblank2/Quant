@@ -79,10 +79,20 @@ steps:
   args:
     - '-c'
     - |
+      # DEBUG: Print the built-in variables to ensure they are populated.
+      echo "--- DEPLOYMENT VARIABLES ---"
+      echo "PROJECT_ID: '${PROJECT_ID}'"
+      echo "PROJECT_NUMBER: '${PROJECT_NUMBER}'"
+      echo "----------------------------"
+
+      # FIX: Add a check to ensure critical variables are not empty before proceeding.
+      if [ -z "${PROJECT_ID}" ] || [ -z "${PROJECT_NUMBER}" ]; then
+        echo "ERROR: Required substitution variable PROJECT_ID or PROJECT_NUMBER is not set."
+        exit 1
+      fi
+
       echo "Attempting deployment using the default Build Service Account..."
       
-      # FIX: Removed the --build-service-account flag.
-      # gcloud will automatically use the correct Cloud Build SA when run in this environment.
       gcloud functions deploy ingest-daily-data \
         --gen2 \
         --region=${_GCP_REGION} \
