@@ -1,9 +1,20 @@
 # cloudbuild.yaml
 # CI/CD for data ingestion Cloud Function + Pub/Sub + BigQuery wiring.
 
+substitutions:
+  # FIX: Pinning the SDK version to avoid regressions in 'latest'
+  _SDK_TAG: '489.0.0-stable'
+  _GCP_REGION: 'us-central1'
+  _TRIGGER_TOPIC: 'run-daily-ingestion'
+  _PUB_SUB_TOPIC: 'daily-bars-raw'
+  _GCP_PROJECT_NUMBER: '81308911755'
+  _BIGQUERY_DATASET: 'quant_data'
+  _BIGQUERY_TABLE: 'daily_bars_raw'
+  _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
+
 steps:
 # STEP 0: Enable required APIs (idempotent).
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
     - '-c'
@@ -18,7 +29,7 @@ steps:
         --project=${PROJECT_ID}
 
 # Step 1: Ensure Pub/Sub topics exist
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
     - '-c'
@@ -28,7 +39,7 @@ steps:
       gcloud pubsub topics describe daily-bars-raw || gcloud pubsub topics create daily-bars-raw
 
 # Step 2: Ensure BigQuery resources exist
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
     - '-c'
@@ -38,11 +49,10 @@ steps:
       
       # Check/Create Table
       # IMPORTANT: Verify the path below. Assuming 'schema.json' is in the root of the repository.
-      # If your schema is located elsewhere (e.g., data_ingestion/schema.json), update the path accordingly.
       bq show quant_data.daily_bars_raw || bq mk -t quant_data.daily_bars_raw schema.json
 
 # Step 3: Ensure Pub/Sub subscription exists
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
     - '-c'
@@ -54,13 +64,17 @@ steps:
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
 # STEP 4: DIAGNOSTICS
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
-  id: 'VERIFY_SUBSTITUTIONS'
+  id: 'VERIFY_ENVIRONMENT'
   args:
     - '-c'
     - |
-      echo "--- Variable Check ---"
+      echo "--- Environment Check ---"
+      echo "GCloud Version:"
+      gcloud version
+      echo "------------------------"
+      echo "Variable Check:"
       echo "GCP Region: '${_GCP_REGION}'"
       echo "GCP Project Number: '${_GCP_PROJECT_NUMBER}'"
       echo "BUILT-IN Project ID: '${PROJECT_ID}'"
@@ -74,11 +88,19 @@ steps:
       echo "All variables populated. Proceeding to deployment."
 
 # STEP 5: Deploy the Gen2 Cloud Function
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
     - '-c'
     - |
+      echo "--- GCloud Config List ---"
+      # Log the configuration state before the attempt
+      gcloud config list
+      echo "--------------------------"
+
+      echo "Attempting deployment with debug verbosity..."
+      
+      # CRITICAL: Added --verbosity=debug to get stack trace if the crash persists
       gcloud functions deploy ingest-daily-data \
         --gen2 \
         --region=${_GCP_REGION} \
@@ -87,21 +109,8 @@ steps:
         --trigger-topic=${_TRIGGER_TOPIC} \
         --entry-point=ingest_daily_data \
         --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-        --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
-
-# --- Top-level Service Account ---
-# REMOVED: The 'serviceAccount:' directive was causing the gcloud environment initialization to fail (TypeError).
-# The build will now run as the default Cloud Build Service Account.
-
-# --- Substitutions ---
-substitutions:
-  _GCP_REGION: 'us-central1'
-  _TRIGGER_TOPIC: 'run-daily-ingestion'
-  _PUB_SUB_TOPIC: 'daily-bars-raw'
-  _GCP_PROJECT_NUMBER: '81308911755'
-  _BIGQUERY_DATASET: 'quant_data'
-  _BIGQUERY_TABLE: 'daily_bars_raw'
-  _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
+        --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
+        --verbosity=debug
 
 # --- Build Options ---
 options:
