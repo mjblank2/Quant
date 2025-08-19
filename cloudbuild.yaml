@@ -43,35 +43,40 @@ steps:
       --bigquery-table=${PROJECT_ID}.${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} \
       --project=${PROJECT_ID} || true
 
-# STEP 4: Deploy the Cloud Function (with hardcoded values for debugging).
+# STEP 4: Deploy the Cloud Function using a robust bash script with correct variable escaping.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'gcloud'
+  entrypoint: 'bash'
   args:
-    - 'functions'
-    - 'deploy'
-    - 'ingest-daily-data'
-    - '--gen2'
-    - '--region=us-central1'
-    - '--runtime=python311'
-    - '--source=./data_ingestion'
-    - '--trigger-topic=run-daily-ingestion'
-    - '--entry-point=ingest_daily_data'
-    - '--service-account=mjblank2@quant-setup.iam.gserviceaccount.com'
-    # All variables are replaced with their literal string values for this test.
-    - '--set-env-vars=GCP_PROJECT_ID=quant-setup'
-    - '--set-env-vars=PUB_SUB_TOPIC=daily-bars-raw'
-    - '--set-env-vars=ALPACA_SECRET_NAME=projects/81308911755/secrets/alpaca-api-keys/versions/latest'
+  - '-c'
+  - |
+    # Construct the environment variables string in a separate, clear step.
+    VARS="GCP_PROJECT_ID=${PROJECT_ID},"
+    VARS+="PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},"
+    VARS+="ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
+
+    # Actual deployment command. The $$VARS syntax is critical.
+    # It tells Cloud Build to use the shell variable 'VARS' we just created,
+    # rather than looking for a Cloud Build substitution variable named 'VARS'.
+    gcloud functions deploy ingest-daily-data \
+      --gen2 \
+      --region=${_GCP_REGION} \
+      --runtime=python311 \
+      --source=./data_ingestion \
+      --trigger-topic=${_TRIGGER_TOPIC} \
+      --entry-point=ingest_daily_data \
+      --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
+      --set-env-vars="$$VARS"
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
 serviceAccount: 'mjblank2@quant-setup.iam.gserviceaccount.com'
 
 # --- Substitutions ---
-# These are still used by the first few steps.
 substitutions:
   _GCP_REGION: 'us-central1'
   _TRIGGER_TOPIC: 'run-daily-ingestion'
   _PUB_SUB_TOPIC: 'daily-bars-raw'
+  _GCP_PROJECT_NUMBER: '81308911755' # IMPORTANT: Replace with your actual project number if different.
   _BIGQUERY_DATASET: 'quant_data'
   _BIGQUERY_TABLE: 'daily_bars_raw'
   _BIGQUERY_SUB_ID: 'daily-bars-raw-bq-sub'
@@ -79,6 +84,7 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
+
 
 
 
