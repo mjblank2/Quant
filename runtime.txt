@@ -1,5 +1,1 @@
-ni runtime.txt -ItemType File
-'python-3.11.9' | Out-File -Encoding ascii runtime.txt
-git add runtime.txt
-git commit -m "Pin Render build runtime to Python 3.11.9"
-git push
+python-3.11.9
