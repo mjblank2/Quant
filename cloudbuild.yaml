@@ -62,7 +62,7 @@ steps:
         --topic=${_PUB_SUB_TOPIC} \
         --bigquery-table=${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE}
 
-# STEP 4: Grant DEPLOY-TIME permissions.
+# STEP 4: Grant DEPLOY-TIME permissions to the Cloud Build Service Account.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
@@ -75,7 +75,12 @@ steps:
         --role="roles/iam.serviceAccountUser" \
         --project=${PROJECT_ID}
 
-# NEW STEP 5: Grant RUNTIME permissions to the Function's Service Account.
+      # FIX: The Cloud Build SA needs the Cloud Run Admin role to create the underlying service for a Gen2 function.
+      gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+        --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+        --role="roles/run.admin"
+
+# STEP 5: Grant RUNTIME permissions to the Function's Service Account.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:${_SDK_TAG}'
   entrypoint: 'bash'
   args:
