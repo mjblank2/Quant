@@ -55,7 +55,7 @@ steps:
     VARS+="ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
 
     # Debugging Step: Print the final variable string.
-    echo "--- Deploying with environment variables: $VARS ---"
+    echo "--- Deploying with environment variables: $$VARS ---"
 
     # Actual deployment command
     gcloud functions deploy ingest-daily-data \
@@ -66,7 +66,7 @@ steps:
       --trigger-topic=${_TRIGGER_TOPIC} \
       --entry-point=ingest_daily_data \
       --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-      --set-env-vars="$VARS"
+      --set-env-vars="$$VARS"
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
@@ -86,5 +86,4 @@ substitutions:
 # --- Build Options ---
 options:
   logging: CLOUD_LOGGING_ONLY
-
 
