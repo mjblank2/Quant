@@ -1,6 +1,8 @@
 google-cloud-pubsub==2.13.4
-google-cloud-secret-manager==2.12.2
+google-oauth2==2.22.0
 alpaca-trade-api==2.3.0
 pandas==1.5.3
-tqdm==4.64.1
+Flask==2.2.2
+gunicorn==20.1.0
+
 
