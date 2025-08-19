@@ -1,71 +1,75 @@
 # cloudbuild.yaml
-# This file defines the Continuous Integration/Continuous Deployment (CI/CD) pipeline
-# for our data ingestion Cloud Function and its associated data warehousing components.
+# CI/CD for data ingestion Cloud Function + Pub/Sub + BigQuery wiring.
 
 steps:
-# STEP 0: Enable required APIs.
+# STEP 0: Enable required APIs (idempotent).
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'gcloud'
   args:
     - 'services'
     - 'enable'
+    - 'cloudfunctions.googleapis.com'
     - 'eventarc.googleapis.com'
-    - 'bigquery.googleapis.com'
     - 'run.googleapis.com'
+    - 'pubsub.googleapis.com'
+    - 'bigquery.googleapis.com'
+    - 'secretmanager.googleapis.com'
     - '--project=${PROJECT_ID}'
 
-# STEP 1: Create the Pub/Sub topics idempotently.
+# STEP 1: Create Pub/Sub topics (idempotent).
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
-  - '-c'
-  - |
-    gcloud pubsub topics create ${_TRIGGER_TOPIC} --project=${PROJECT_ID} || true
-    gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
+    - '-c'
+    - |
+      gcloud pubsub topics create ${_TRIGGER_TOPIC} --project=${PROJECT_ID} || true
+      gcloud pubsub topics create ${_PUB_SUB_TOPIC} --project=${PROJECT_ID} || true
 
-# STEP 2: Create the BigQuery Dataset and Table for raw daily bars.
+# STEP 2: Create BigQuery dataset & table (idempotent).
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
-  - '-c'
-  - |
-    bq mk --dataset --description "Dataset for quant trading data" ${PROJECT_ID}:${_BIGQUERY_DATASET} || echo "Dataset ${_BIGQUERY_DATASET} already exists."
-    bq mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} already exists."
+    - '-c'
+    - |
+      bq mk --dataset --description "Dataset for quant trading data" ${PROJECT_ID}:${_BIGQUERY_DATASET} || echo "Dataset ${_BIGQUERY_DATASET} may already exist."
+      bq mk --table --description "Raw daily OHLCV bars from Alpaca" --time_partitioning_field timestamp ${PROJECT_ID}:${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} ./schemas/daily_bars_schema.json || echo "Table ${_BIGQUERY_TABLE} may already exist."
 
-# STEP 3: Create the BigQuery subscription.
+# STEP 3: Create the Pub/Sub -> BigQuery subscription (idempotent).
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
-  - '-c'
-  - |
-    gcloud pubsub subscriptions create ${_BIGQUERY_SUB_ID} \
-      --topic=${_PUB_SUB_TOPIC} \
-      --bigquery-table=${PROJECT_ID}.${_BIGQUERY_DATASET}.${_BIGQUERY_TABLE} \
-      --project=${PROJECT_ID} || true
+    - '-c'
+    - |
+      gcloud pubsub subscriptions create ${_BIGQUERY_SUB_ID} \
+        --topic=${_PUB_SUB_TOPIC} \
+        --bigquery-table=projects/${PROJECT_ID}/datasets/${_BIGQUERY_DATASET}/tables/${_BIGQUERY_TABLE} \
+        --use-table-schema \
+        --drop-unknown-fields \
+        --project=${PROJECT_ID} || true
 
-# STEP 4: Deploy the Cloud Function using a robust bash script with correct variable escaping.
+# STEP 4: Deploy the Gen2 Cloud Function with env vars.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: 'bash'
   args:
-  - '-c'
-  - |
-    # Construct the environment variables string in a separate, clear step.
-    VARS="GCP_PROJECT_ID=${PROJECT_ID},"
-    VARS+="PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},"
-    VARS+="ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
+    - '-c'
+    - |
+      # Construct the environment variables string in a separate, clear step.
+      VARS="GCP_PROJECT_ID=${PROJECT_ID},"
+      VARS+="PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},"
+      VARS+="ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest"
 
-    # Actual deployment command. The $$VARS syntax is critical.
-    # It tells Cloud Build to use the shell variable 'VARS' we just created,
-    # rather than looking for a Cloud Build substitution variable named 'VARS'.
-    gcloud functions deploy ingest-daily-data \
-      --gen2 \
-      --region=${_GCP_REGION} \
-      --runtime=python311 \
-      --source=./data_ingestion \
-      --trigger-topic=${_TRIGGER_TOPIC} \
-      --entry-point=ingest_daily_data \
-      --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-      --set-env-vars="$$VARS"
+      # Actual deployment command. The $$VARS syntax is critical.
+      # It tells Cloud Build to use the shell variable 'VARS' we just created,
+      # rather than looking for a Cloud Build substitution variable named 'VARS'.
+      gcloud functions deploy ingest-daily-data \
+        --gen2 \
+        --region=${_GCP_REGION} \
+        --runtime=python311 \
+        --source=./data_ingestion \
+        --trigger-topic=${_TRIGGER_TOPIC} \
+        --entry-point=ingest_daily_data \
+        --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
+        --set-env-vars="$$VARS"
 
 # --- Top-level Service Account ---
 # This service account will be used to execute all the steps in this build.
