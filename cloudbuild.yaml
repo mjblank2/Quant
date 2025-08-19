@@ -92,7 +92,7 @@ steps:
         --trigger-topic=${_TRIGGER_TOPIC} \
         --entry-point=ingest_daily_data \
         --service-account=mjblank2@quant-setup.iam.gserviceaccount.com \
-        --build-service-account=${_GCP_PROJECT_NUMBER}@cloudbuild.gserviceaccount.com \
+        --build-service-account=81308911755@cloudbuild.gserviceaccount.com \
         --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${_PUB_SUB_TOPIC},ALPACA_SECRET_NAME=projects/${_GCP_PROJECT_NUMBER}/secrets/alpaca-api-keys/versions/latest" \
         --verbosity=info
 
