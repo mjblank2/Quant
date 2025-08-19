@@ -24,7 +24,7 @@ app = Flask(__name__)
 # --------------------
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://api.alpaca.markets")
 ALPACA_FEED = os.environ.get("ALPACA_FEED", "iex").lower().strip() or "iex"
 
 TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
@@ -241,6 +241,42 @@ def ingest_daily_data():
         start_date = end_date - timedelta(days=days)
         count = fetch_and_store(SYMBOLS, start_date, end_date)
         return jsonify({
-            "status
+            "status": "ok",
+            "rows_written": count,
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+            "symbols": len(SYMBOLS),
+            "feed": ALPACA_FEED,
+            "fallback": bool(TIINGO_API_KEY),
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.route("/debug", methods=["GET"])
+def debug_probe():
+    sym = request.args.get("symbol", "AAPL").upper()
+    days = int(request.args.get("days", "5"))
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=days)
+    info: Dict[str, Any] = {"symbol": sym, "start": start_date.isoformat(), "end": end_date.isoformat()}
+    try:
+        rows = _rows_from_alpaca([sym], start_date, end_date)
+        info["alpaca_rows"] = len(rows)
+        if not rows and TIINGO_API_KEY:
+            rows = _rows_from_tiingo([sym], start_date, end_date)
+            info["tiingo_rows"] = len(rows)
+        info["sample"] = rows[:3] if rows else []
+        return jsonify(info), 200
+    except Exception as e:
+        info["error"] = str(e)
+        return jsonify(info), 200
+
+@app.route("/")
+def health():
+    return "Service is running.", 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+
 
 
