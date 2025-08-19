@@ -59,7 +59,8 @@ services:
     env: python
     plan: starter
     region: oregon
-    schedule: "0 13 * * MON-FRI"   # 8:00am US/Eastern (13:00 UTC) weekdays
+    # 13:00 UTC ~= 8:00am US/Eastern / 7:00am US/Central on Standard Time (adjust if needed)
+    schedule: "0 13 * * MON-FRI"
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
@@ -83,6 +84,9 @@ services:
 
 databases:
   - name: bcq-db
-    plan: standard-*
+    plan: basic-4gb        # cost-conscious, current valid tier
     region: oregon
+    postgresMajorVersion: "16"
+    diskSizeGB: 30         # adjust anytime; increase as data grows
+
 
