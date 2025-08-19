@@ -62,7 +62,7 @@ services:
     schedule: "0 13 * * MON-FRI"   # 8:00am US/Eastern (13:00 UTC) weekdays
     buildCommand: |
       pip install --upgrade pip
-      pip install -r requirements.txt
+      pip install -r data_ingestion/requirements.txt
     startCommand: |
       python -m data_ingestion.run_daily
     envVars:
