@@ -6,7 +6,7 @@ services:
     dockerfilePath: ./dockerfile
     plan: starter
     region: oregon
-    startCommand: |
+    dockerCommand: |
       gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
     healthCheckPath: /
     autoDeploy: true
@@ -38,7 +38,7 @@ services:
     dockerfilePath: ./dockerfile
     plan: starter
     region: oregon
-    startCommand: |
+    dockerCommand: |
       python -m data_ingestion.run_daily
     autoDeploy: true
     envVars:
@@ -67,7 +67,7 @@ services:
     plan: starter
     region: oregon
     schedule: "0 13 * * MON-FRI"
-    startCommand: |
+    dockerCommand: |
       python -m data_ingestion.run_daily
     envVars:
       - key: ENV
