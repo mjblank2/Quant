@@ -51,5 +51,17 @@ USER appuser
 EXPOSE 8080
 
 # Run the application using gunicorn with a standard WSGI worker.
-# This command is compatible with Render's $PORT environment variable.
-CMD ["gunicorn", "-w", "2", "-k", "gthread", "-b", "0.0.0.0:8080", "data_ingestion.main:app"]
+# This command is highly configurable via environment variables.
+CMD gunicorn \
+  -k gthread \
+  -w ${WEB_CONCURRENCY:-2} \
+  --threads ${THREADS:-4} \
+  --timeout ${TIMEOUT:-120} \
+  --keep-alive ${KEEP_ALIVE:-5} \
+  --max-requests ${MAX_REQUESTS:-1000} \
+  --max-requests-jitter ${MAX_REQUESTS_JITTER:-100} \
+  --access-logfile - \
+  --error-logfile - \
+  -b 0.0.0.0:${PORT:-8080} \
+  data_ingestion.main:app
+
