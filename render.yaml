@@ -1,42 +1,102 @@
-# render.yaml
-# This file defines the services for deploying the data ingestion job on Render.
-
 services:
-  # Web service to run the Flask app and handle ingestion triggers.
+  # Web service (Flask + gunicorn)
   - type: web
     name: bcq-web
     env: python
-    plan: starter # Or your preferred instance type
+    plan: starter
     region: oregon
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn data_ingestion.main:app"
+    buildCommand: |
+      pip install --upgrade pip
+      # Only install wheels to avoid compiling heavy packages like pandas
+      pip install -r requirements.txt --only-binary=:all:
+    startCommand: |
+      gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
     healthCheckPath: /
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
-      - key: ALPACA_API_KEY
-        fromSecret: true
-      - key: ALPACA_SECRET_KEY
-        fromSecret: true
+      - key: ENV
+        value: production
+      # Point to the live Alpaca API by default
+      - key: ALPACA_BASE_URL
+        value: "https://api.alpaca.markets"
+      # Use IEX feed on free accounts; change to "sip" if your subscription supports it
+      - key: ALPACA_FEED
+        value: "iex"
+      # Number of days to backfill when triggered via POST /ingest (cron uses its own value)
+      - key: BACKFILL_DAYS
+        value: "5"
+      # Database connection string injected from the managed Postgres service
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
           property: connectionString
 
-  # Cron job to trigger the web service's /ingest endpoint.
+  # Worker service used for manual backfills or on‑demand ingestion
+  - type: worker
+    name: bcq-worker
+    env: python
+    plan: starter
+    region: oregon
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt --only-binary=:all:
+    startCommand: |
+      python -m data_ingestion.run_daily
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ENV
+        value: production
+      - key: ALPACA_BASE_URL
+        value: "https://api.alpaca.markets"
+      - key: ALPACA_FEED
+        value: "iex"
+      # The worker will backfill this many days of data on startup; adjust for large one‑off jobs
+      - key: BACKFILL_DAYS
+        value: "3650"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bcq-db
+          property: connectionString
+
+  # Cron job to run ingestion on a schedule (weekdays at 13:00 UTC ≈ 8 AM US/Central)
   - type: cron
     name: bcq-cron-daily
+    env: python
+    plan: starter
     region: oregon
-    schedule: "0 13 * * MON-FRI" # 8:00am US/Eastern (13:00 UTC) weekdays
-    # This command calls the /ingest endpoint on your already-running web service.
-    # The URL is automatically available via the RENDER_EXTERNAL_URL env var.
-    command: "curl -X POST $RENDER_EXTERNAL_URL/ingest"
+    schedule: "0 13 * * MON-FRI"
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt --only-binary=:all:
+    startCommand: |
+      python -m data_ingestion.run_daily
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ENV
+        value: production
+      - key: ALPACA_BASE_URL
+        value: "https://api.alpaca.markets"
+      - key: ALPACA_FEED
+        value: "iex"
+      # Cron jobs should backfill only a couple of days to stay fresh
+      - key: BACKFILL_DAYS
+        value: "2"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bcq-db
+          property: connectionString
 
 databases:
   - name: bcq-db
-    plan: starter
+    plan: basic-4gb
     region: oregon
-
+    postgresMajorVersion: "16"
+    diskSizeGB: 30
 
 
 
