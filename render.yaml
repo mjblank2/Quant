@@ -2,20 +2,15 @@ services:
   # Web service (Flask + gunicorn)
   - type: web
     name: bcq-web
-    env: python
+    env: docker
+    dockerfilePath: ./dockerfile
     plan: starter
     region: oregon
-    buildCommand: |
-      apt-get update && apt-get install -y build-essential
-      pip install --upgrade pip
-      pip install -r requirements.txt
     startCommand: |
       gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
     healthCheckPath: /
     autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
       - key: ENV
         value: production
       # Point to the live Alpaca API by default
@@ -39,19 +34,14 @@ services:
   # Worker service used for manual backfills or on‑demand ingestion
   - type: worker
     name: bcq-worker
-    env: python
+    env: docker
+    dockerfilePath: ./dockerfile
     plan: starter
     region: oregon
-    buildCommand: |
-      apt-get update && apt-get install -y build-essential
-      pip install --upgrade pip
-      pip install -r requirements.txt
     startCommand: |
       python -m data_ingestion.run_daily
     autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
       - key: ENV
         value: production
       - key: ALPACA_BASE_URL
@@ -72,19 +62,14 @@ services:
   # Cron job to run ingestion on a schedule (weekdays at 13:00 UTC ≈ 8 AM US/Central)
   - type: cron
     name: bcq-cron-daily
-    env: python
+    env: docker
+    dockerfilePath: ./dockerfile
     plan: starter
     region: oregon
     schedule: "0 13 * * MON-FRI"
-    buildCommand: |
-      apt-get update && apt-get install -y build-essential
-      pip install --upgrade pip
-      pip install -r requirements.txt
     startCommand: |
       python -m data_ingestion.run_daily
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
       - key: ENV
         value: production
       - key: ALPACA_BASE_URL
@@ -108,5 +93,4 @@ databases:
     region: oregon
     postgresMajorVersion: "16"
     diskSizeGB: 30
-
 
