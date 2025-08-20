@@ -2,7 +2,7 @@ services:
   # Web service (Flask + gunicorn)
   - type: web
     name: bcq-web
-    env: docker
+    runtime: docker
     dockerfilePath: ./dockerfile
     plan: starter
     region: oregon
