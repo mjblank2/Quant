@@ -1,7 +1,7 @@
 ✔  WriteFile Writing to quant-setup/Dockerfile                                                                                                                                                                │
  │                                                                                                                                                                                                               │
  │     1 # Use an official Python runtime as a parent image                                                                                                                                                      │
- │     2 FROM python:3.9-slim                                                                                                                                                                                    │
+ │     2 FROM python:3.11.9-slim                                                                                                                                                                                    │
  │     3                                                                                                                                                                                                         │
  │     4 # Set the working directory in the container                                                                                                                                                            │
  │     5 WORKDIR /app                                                                                                                                                                                            │
@@ -19,4 +19,4 @@
  │    17 ENV NAME World                                                                                                                                                                                          │
  │    18                                                                                                                                                                                                         │
  │    19 # Run app.py when the container launches                                                                                                                                                                │
- │    20 CMD ["python", "main.py"]                
+ │    20 CMD ["python", "-m", "data_ingestion.main.py"]                
