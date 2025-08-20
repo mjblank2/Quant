@@ -3,29 +3,30 @@ services:
   - type: web
     name: bcq-web
     runtime: docker
-    dockerfilePath: ./dockerfile
+    dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
-    dockerCommand: |
-      gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
+    # Optional: you can omit this to use Dockerfile's CMD
+    dockerCommand: >
+      gunicorn -k gthread -w ${WEB_CONCURRENCY:-2} --threads ${THREADS:-4}
+      --timeout ${TIMEOUT:-120} --keep-alive ${KEEP_ALIVE:-5}
+      --max-requests ${MAX_REQUESTS:-1000} --max-requests-jitter ${MAX_REQUESTS_JITTER:-100}
+      --access-logfile - --error-logfile -
+      -b 0.0.0.0:${PORT:-8080} data_ingestion.main:app
     healthCheckPath: /
     autoDeploy: true
     envVars:
       - key: ENV
         value: production
-      # Point to the live Alpaca API by default
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
-      # Use IEX feed on free accounts; change to "sip" if your subscription supports it
+      # Free accounts generally need "iex"; set "sip" only if your plan supports it
       - key: ALPACA_FEED
-        value: "sip"
-      # Number of days to backfill when triggered via POST /ingest (cron uses its own value)
+        value: "iex"
       - key: BACKFILL_DAYS
         value: "5"
-      # Add your Tiingo API key here or in the Render dashboard
       - key: TIINGO_API_KEY
         value: ""
-      # Database connection string injected from the managed Postgres service
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
@@ -34,11 +35,11 @@ services:
   # Worker service used for manual backfills or on‑demand ingestion
   - type: worker
     name: bcq-worker
-    env: docker
-    dockerfilePath: ./dockerfile
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
-    dockerCommand: |
+    dockerCommand: >
       python -m data_ingestion.run_daily
     autoDeploy: true
     envVars:
@@ -47,11 +48,9 @@ services:
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
-        value: "sip"
-      # The worker will backfill this many days of data on startup; adjust for large one‑off jobs
+        value: "iex"
       - key: BACKFILL_DAYS
         value: "3650"
-      # Add your Tiingo API key here or in the Render dashboard
       - key: TIINGO_API_KEY
         value: ""
       - key: DATABASE_URL
@@ -62,12 +61,12 @@ services:
   # Cron job to run ingestion on a schedule (weekdays at 13:00 UTC ≈ 8 AM US/Central)
   - type: cron
     name: bcq-cron-daily
-    env: docker
-    dockerfilePath: ./dockerfile
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
     schedule: "0 13 * * MON-FRI"
-    dockerCommand: |
+    dockerCommand: >
       python -m data_ingestion.run_daily
     envVars:
       - key: ENV
@@ -75,11 +74,9 @@ services:
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
-        value: "sip"
-      # Cron jobs should backfill only a couple of days to stay fresh
+        value: "iex"
       - key: BACKFILL_DAYS
         value: "2"
-      # Add your Tiingo API key here or in the Render dashboard
       - key: TIINGO_API_KEY
         value: ""
       - key: DATABASE_URL
