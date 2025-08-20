@@ -56,7 +56,7 @@ ALPACA_SECRET_KEY: str | None = os.environ.get("ALPACA_SECRET_KEY")
 ALPACA_BASE_URL: str = os.environ.get("ALPACA_BASE_URL", "https://api.alpaca.markets").strip()
 
 # Market data feed.  Free accounts typically use "iex"; paid plans may use "sip".
-ALPACA_FEED: str = os.environ.get("ALPACA_FEED", "iex").strip().lower() or "iex"
+ALPACA_FEED: str = os.environ.get("ALPACA_FEED", "sip").strip().lower() or "sip"
 
 # API token for Tiingo.  Used as a fallback when Alpaca refuses access.
 TIINGO_API_KEY: str | None = os.environ.get("TIINGO_API_KEY")
