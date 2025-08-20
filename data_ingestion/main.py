@@ -95,8 +95,18 @@ def _psycopg3_url(url: str) -> str:
     """
     if url.startswith("postgresql+psycopg://"):
         return url
+
     if url.startswith("postgresql://"):
         return "postgresql+psycopg://" + url[len("postgresql://"):]
+
+    # Handle common shorthand ``postgres://`` which is often returned by cloud
+    # providers such as Heroku.  SQLAlchemy does not recognise this alias and
+    # would default to the older psycopg2 driver unless it is normalised to the
+    # explicit ``postgresql+psycopg`` scheme.  Supporting this alias makes the
+    # helper more robust when faced with different DSN formats.
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+
     return url
 
 
