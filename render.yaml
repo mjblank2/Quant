@@ -23,7 +23,7 @@ services:
         value: "https://api.alpaca.markets"
       # Use IEX feed on free accounts; change to "sip" if your subscription supports it
       - key: ALPACA_FEED
-        value: "iex"
+        value: "sip"
       # Number of days to backfill when triggered via POST /ingest (cron uses its own value)
       - key: BACKFILL_DAYS
         value: "5"
@@ -53,7 +53,7 @@ services:
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
-        value: "iex"
+        value: "sip"
       # The worker will backfill this many days of data on startup; adjust for large one‑off jobs
       - key: BACKFILL_DAYS
         value: "3650"
@@ -82,7 +82,7 @@ services:
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
-        value: "iex"
+        value: "sip"
       # Cron jobs should backfill only a couple of days to stay fresh
       - key: BACKFILL_DAYS
         value: "2"
