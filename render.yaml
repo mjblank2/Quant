@@ -6,9 +6,9 @@ services:
     plan: starter
     region: oregon
     buildCommand: |
+      apt-get update && apt-get install -y build-essential
       pip install --upgrade pip
-      # Only install wheels to avoid compiling heavy packages like pandas
-      pip install -r requirements.txt --only-binary=:all:
+      pip install -r requirements.txt
     startCommand: |
       gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
     healthCheckPath: /
@@ -27,6 +27,9 @@ services:
       # Number of days to backfill when triggered via POST /ingest (cron uses its own value)
       - key: BACKFILL_DAYS
         value: "5"
+      # Add your Tiingo API key here or in the Render dashboard
+      - key: TIINGO_API_KEY
+        value: ""
       # Database connection string injected from the managed Postgres service
       - key: DATABASE_URL
         fromDatabase:
@@ -40,8 +43,9 @@ services:
     plan: starter
     region: oregon
     buildCommand: |
+      apt-get update && apt-get install -y build-essential
       pip install --upgrade pip
-      pip install -r requirements.txt --only-binary=:all:
+      pip install -r requirements.txt
     startCommand: |
       python -m data_ingestion.run_daily
     autoDeploy: true
@@ -57,12 +61,15 @@ services:
       # The worker will backfill this many days of data on startup; adjust for large one‑off jobs
       - key: BACKFILL_DAYS
         value: "3650"
+      # Add your Tiingo API key here or in the Render dashboard
+      - key: TIINGO_API_KEY
+        value: ""
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
           property: connectionString
 
-  # Cron job to run ingestion on a schedule (weekdays at 13:00 UTC ≈ 8 AM US/Central)
+  # Cron job to run ingestion on a schedule (weekdays at 13:00 UTC ≈ 8 AM US/Central)
   - type: cron
     name: bcq-cron-daily
     env: python
@@ -70,8 +77,9 @@ services:
     region: oregon
     schedule: "0 13 * * MON-FRI"
     buildCommand: |
+      apt-get update && apt-get install -y build-essential
       pip install --upgrade pip
-      pip install -r requirements.txt --only-binary=:all:
+      pip install -r requirements.txt
     startCommand: |
       python -m data_ingestion.run_daily
     envVars:
@@ -86,6 +94,9 @@ services:
       # Cron jobs should backfill only a couple of days to stay fresh
       - key: BACKFILL_DAYS
         value: "2"
+      # Add your Tiingo API key here or in the Render dashboard
+      - key: TIINGO_API_KEY
+        value: ""
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
@@ -97,6 +108,5 @@ databases:
     region: oregon
     postgresMajorVersion: "16"
     diskSizeGB: 30
-
 
 
