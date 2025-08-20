@@ -1,92 +1,42 @@
+# render.yaml
+# This file defines the services for deploying the data ingestion job on Render.
+
 services:
+  # Web service to run the Flask app and handle ingestion triggers.
   - type: web
     name: bcq-web
     env: python
-    plan: starter
+    plan: starter # Or your preferred instance type
     region: oregon
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: |
-      gunicorn -w 2 -k gthread -b 0.0.0.0:$PORT data_ingestion.main:app
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn data_ingestion.main:app"
     healthCheckPath: /
-    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
-      - key: ENV
-        value: production
       - key: ALPACA_API_KEY
-        sync: false
+        fromSecret: true
       - key: ALPACA_SECRET_KEY
-        sync: false
-      - key: ALPACA_BASE_URL
-        value: "https://api.alpaca.markets"
+        fromSecret: true
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
           property: connectionString
 
-  - type: worker
-    name: bcq-worker
-    env: python
-    plan: starter
-    region: oregon
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt --only-binary=:all:
-    startCommand: |
-      python -m data_ingestion.run_daily
-    autoDeploy: true
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
-      - key: ENV
-        value: production
-      - key: ALPACA_API_KEY
-        sync: false
-      - key: ALPACA_SECRET_KEY
-        sync: false
-      - key: ALPACA_BASE_URL
-        value: "https://api.alpaca.markets"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: bcq-db
-          property: connectionString
-
+  # Cron job to trigger the web service's /ingest endpoint.
   - type: cron
     name: bcq-cron-daily
-    env: python
-    plan: starter
     region: oregon
-    # 13:00 UTC ~= 8:00am US/Eastern / 7:00am US/Central on Standard Time (adjust if needed)
-    schedule: "0 13 * * MON-FRI"
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: |
-      python -m data_ingestion.run_daily
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
-      - key: ENV
-        value: production
-      - key: ALPACA_API_KEY
-        sync: false
-      - key: ALPACA_SECRET_KEY
-        sync: false
-      - key: ALPACA_BASE_URL
-        value: "https://api.alpaca.markets"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: bcq-db
-          property: connectionString
+    schedule: "0 13 * * MON-FRI" # 8:00am US/Eastern (13:00 UTC) weekdays
+    # This command calls the /ingest endpoint on your already-running web service.
+    # The URL is automatically available via the RENDER_EXTERNAL_URL env var.
+    command: "curl -X POST $RENDER_EXTERNAL_URL/ingest"
 
 databases:
   - name: bcq-db
-    plan: basic-4gb        # cost-conscious, current valid tier
+    plan: starter
     region: oregon
-    postgresMajorVersion: "16"
-    diskSizeGB: 30         # adjust anytime; increase as data grows
+
+
 
 
