@@ -1,6 +1,7 @@
 --only-binary=:all:
 
 alpaca-trade-api==3.2.0
+websockets>=13,<16        # explicit so pip resolves fast on Py3.12
 pandas==2.2.3
 Flask==3.0.3
 gunicorn==22.0.0
@@ -9,5 +10,4 @@ psycopg[binary]==3.2.1
 python-dateutil==2.9.0.post0
 requests==2.32.3
 tenacity==8.5.0
-
 
