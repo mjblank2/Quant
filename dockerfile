@@ -1,28 +1,55 @@
-# Use an official Python 3.11.9 runtime as a parent image.
-# The 'slim-bookworm' variant is a good balance of size and functionality.
-FROM python:3.11.9-slim-bookworm
+# syntax=docker/dockerfile:1
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+### --- Builder Stage --- ###
+# Use the full bookworm image to build dependencies, as it includes necessary compilers.
+FROM python:3.11.9-bookworm AS builder
 
-# Set the working directory in the container
+# Set environment variables for a clean and efficient build process.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
 WORKDIR /app
 
-# Install system dependencies. While the base image is robust,
-# explicitly installing build-essential can prevent issues with
-# packages that have complex C extensions.
-RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+# Install build-essential for compiling packages with C extensions.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file and install dependencies first.
-# This takes advantage of Docker's layer caching, so dependencies
-# are only re-installed when requirements.txt changes.
+# Install Python dependencies.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install -r requirements.txt
 
-# Copy the rest of the application source code into the container
+# Copy the application code into the builder stage.
 COPY . .
 
-# The CMD is not strictly necessary as Render's startCommand will override it,
-# but it's good practice for local testing.
+
+### --- Final Runtime Stage --- ###
+# Use the slim image for the final stage to keep the image size small.
+FROM python:3.11.9-slim-bookworm
+
+# Set environment variables for runtime.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Install only necessary runtime libraries. libgomp1 is a common one for ML/data packages.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy installed Python packages and the application code from the builder stage.
+COPY --from=builder /usr/local /usr/local
+COPY --from=builder /app /app
+
+# Create a non-root user for security and set appropriate permissions.
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Expose the port the app will run on.
+EXPOSE 8080
+
+# Run the application using gunicorn with a standard WSGI worker.
+# This command is compatible with Render's $PORT environment variable.
 CMD ["gunicorn", "-w", "2", "-k", "gthread", "-b", "0.0.0.0:8080", "data_ingestion.main:app"]
