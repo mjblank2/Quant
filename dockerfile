@@ -1,22 +1,28 @@
-✔  WriteFile Writing to quant-setup/Dockerfile                                                                                                                                                                │
- │                                                                                                                                                                                                               │
- │     1 # Use an official Python runtime as a parent image                                                                                                                                                      │
- │     2 FROM python:3.11.9-slim                                                                                                                                                                                    │
- │     3                                                                                                                                                                                                         │
- │     4 # Set the working directory in the container                                                                                                                                                            │
- │     5 WORKDIR /app                                                                                                                                                                                            │
- │     6                                                                                                                                                                                                         │
- │     7 # Copy the current directory contents into the container at /app                                                                                                                                        │
- │     8 COPY . /app                                                                                                                                                                                             │
- │     9                                                                                                                                                                                                         │
- │    10 # Install any needed packages specified in requirements.txt                                                                                                                                             │
- │    11 RUN pip install --no-cache-dir -r requirements.txt                                                                                                                                                      │
- │    12                                                                                                                                                                                                         │
- │    13 # Make port 8080 available to the world outside this container                                                                                                                                          │
- │    14 EXPOSE 8080                                                                                                                                                                                             │
- │    15                                                                                                                                                                                                         │
- │    16 # Define environment variable                                                                                                                                                                           │
- │    17 ENV NAME World                                                                                                                                                                                          │
- │    18                                                                                                                                                                                                         │
- │    19 # Run app.py when the container launches                                                                                                                                                                │
- │    20 CMD ["python", "-m", "data_ingestion.main.py"]                
+# Use an official Python 3.11.9 runtime as a parent image.
+# The 'slim-bookworm' variant is a good balance of size and functionality.
+FROM python:3.11.9-slim-bookworm
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies. While the base image is robust,
+# explicitly installing build-essential can prevent issues with
+# packages that have complex C extensions.
+RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+
+# Copy the requirements file and install dependencies first.
+# This takes advantage of Docker's layer caching, so dependencies
+# are only re-installed when requirements.txt changes.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application source code into the container
+COPY . .
+
+# The CMD is not strictly necessary as Render's startCommand will override it,
+# but it's good practice for local testing.
+CMD ["gunicorn", "-w", "2", "-k", "gthread", "-b", "0.0.0.0:8080", "data_ingestion.main:app"]
