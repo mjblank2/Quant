@@ -6,13 +6,6 @@ services:
     dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
-    # Optional: you can omit this to use Dockerfile's CMD
-    dockerCommand: >
-      gunicorn -k gthread -w ${WEB_CONCURRENCY:-2} --threads ${THREADS:-4}
-      --timeout ${TIMEOUT:-120} --keep-alive ${KEEP_ALIVE:-5}
-      --max-requests ${MAX_REQUESTS:-1000} --max-requests-jitter ${MAX_REQUESTS_JITTER:-100}
-      --access-logfile - --error-logfile -
-      -b 0.0.0.0:${PORT:-8080} data_ingestion.main:app
     healthCheckPath: /
     autoDeploy: true
     envVars:
@@ -20,13 +13,12 @@ services:
         value: production
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
-      # Free accounts generally need "iex"; set "sip" only if your plan supports it
       - key: ALPACA_FEED
-        value: "iex"
+        value: "sip"
       - key: BACKFILL_DAYS
         value: "5"
       - key: TIINGO_API_KEY
-        value: ""
+        value: "" # Set via Render dashboard
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
@@ -39,7 +31,7 @@ services:
     dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
-    dockerCommand: >
+    dockerCommand: |
       python -m data_ingestion.run_daily
     autoDeploy: true
     envVars:
@@ -48,7 +40,8 @@ services:
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
-        value: "iex"
+        value: "sip"
+      # Adjust for large one‑off jobs
       - key: BACKFILL_DAYS
         value: "3650"
       - key: TIINGO_API_KEY
@@ -58,15 +51,16 @@ services:
           name: bcq-db
           property: connectionString
 
-  # Cron job to run ingestion on a schedule (weekdays at 13:00 UTC ≈ 8 AM US/Central)
+  # Cron job to run ingestion on a schedule
   - type: cron
     name: bcq-cron-daily
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
+    # Weekdays at 13:00 UTC
     schedule: "0 13 * * MON-FRI"
-    dockerCommand: >
+    dockerCommand: |
       python -m data_ingestion.run_daily
     envVars:
       - key: ENV
@@ -74,7 +68,8 @@ services:
       - key: ALPACA_BASE_URL
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
-        value: "iex"
+        value: "sip"
+      # Cron jobs should backfill only a couple of days
       - key: BACKFILL_DAYS
         value: "2"
       - key: TIINGO_API_KEY
@@ -90,4 +85,3 @@ databases:
     region: oregon
     postgresMajorVersion: "16"
     diskSizeGB: 30
-
