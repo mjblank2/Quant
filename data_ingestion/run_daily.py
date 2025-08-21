@@ -1,9 +1,7 @@
-"""
-One-off entry to run ingestion (used by worker/cron).
-"""
+# data_ingestion/run_daily.py
 import os
 from datetime import datetime, timedelta
-from .main import fetch_and_store, SYMBOLS
+from .core import fetch_and_store, SYMBOLS
 
 if __name__ == "__main__":
     try:
