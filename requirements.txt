@@ -1,13 +1,21 @@
---only-binary=:all:
-
-alpaca-trade-api==3.2.0
-websockets>=13,<16        # explicit so pip resolves fast on Py3.12
-pandas==2.2.3
+# web
 Flask==3.0.3
 gunicorn==22.0.0
-SQLAlchemy==2.0.32
-psycopg[binary]==3.2.1
+
+# data
+# Pinned versions as recommended for stability and compatibility
+numpy==2.3.2
+pandas==2.2.3
 python-dateutil==2.9.0.post0
+tzdata==2025.2
+
+# db
+psycopg[binary]==3.2.1
+SQLAlchemy==2.0.32
+
+# http utils
 requests==2.32.3
 tenacity==8.5.0
 
+# alpaca (modern SDK)
+alpaca-py==0.19.1
