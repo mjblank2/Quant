@@ -6,6 +6,7 @@ services:
     dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
+    # Removed redundant dockerCommand; the Dockerfile CMD is used automatically.
     healthCheckPath: /
     autoDeploy: true
     envVars:
@@ -15,41 +16,14 @@ services:
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
         value: "sip"
+      # Default days for the /ingest endpoint if 'days' parameter is not provided
       - key: BACKFILL_DAYS
         value: "5"
-      - key: TIINGO_API_KEY
-        value: "" # Set via Render dashboard
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
           property: connectionString
-
-  # Worker service used for manual backfills or on‑demand ingestion
-  - type: worker
-    name: bcq-worker
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    plan: starter
-    region: oregon
-    dockerCommand: |
-      python -m data_ingestion.run_daily
-    autoDeploy: true
-    envVars:
-      - key: ENV
-        value: production
-      - key: ALPACA_BASE_URL
-        value: "https://api.alpaca.markets"
-      - key: ALPACA_FEED
-        value: "sip"
-      # Adjust for large one‑off jobs
-      - key: BACKFILL_DAYS
-        value: "3650"
-      - key: TIINGO_API_KEY
-        value: ""
-      - key: DATABASE_URL
-        fromDatabase:
-          name: bcq-db
-          property: connectionString
+      # Note: Secrets (ALPACA/TIINGO keys) are now managed by the Env Group
 
   # Cron job to run ingestion on a schedule
   - type: cron
@@ -58,7 +32,6 @@ services:
     dockerfilePath: ./Dockerfile
     plan: starter
     region: oregon
-    # Weekdays at 13:00 UTC
     schedule: "0 13 * * MON-FRI"
     dockerCommand: |
       python -m data_ingestion.run_daily
@@ -69,11 +42,9 @@ services:
         value: "https://api.alpaca.markets"
       - key: ALPACA_FEED
         value: "sip"
-      # Cron jobs should backfill only a couple of days
+      # Cron jobs should backfill only a couple of days to stay fresh
       - key: BACKFILL_DAYS
         value: "2"
-      - key: TIINGO_API_KEY
-        value: ""
       - key: DATABASE_URL
         fromDatabase:
           name: bcq-db
