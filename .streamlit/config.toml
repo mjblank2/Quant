@@ -1,0 +1,4 @@
+[server]
+headless = true
+address = "0.0.0.0"
+# Render provides the $PORT env var; Streamlit will pick it up from the CLI below
