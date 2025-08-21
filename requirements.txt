@@ -1,21 +1,21 @@
-# web
-Flask==3.0.3
-gunicorn==22.0.0
+--only-binary=:all:
 
-# data
-# Pinned versions as recommended for stability and compatibility
-numpy==2.3.2
+# Dashboard & Visualization
+streamlit==1.37.0
+plotly==5.22.0
+xlsxwriter==3.2.0
+
+# Data
 pandas==2.2.3
 python-dateutil==2.9.0.post0
-tzdata==2025.2
 
-# db
-psycopg[binary]==3.2.1
+# DB
 SQLAlchemy==2.0.32
+psycopg[binary]==3.2.1
 
-# http utils
+# HTTP utils
 requests==2.32.3
 tenacity==8.5.0
 
-# alpaca (modern SDK)
-alpaca-py==0.19.1
+# Alpaca (modern SDK, REST only)
+alpaca-py==0.39.4
