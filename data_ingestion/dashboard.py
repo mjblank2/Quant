@@ -8,19 +8,38 @@ import sqlalchemy
 from sqlalchemy import text
 
 # --- Database Connection ---
+# --- Database Connection ---
 @st.cache_resource
 def get_engine():
+    def normalize_db_url(url: str) -> str:
+        # Handle both legacy and generic prefixes:
+        #  - postgres://           -> postgresql+psycopg://
+        #  - postgresql://         -> postgresql+psycopg://
+        if url.startswith("postgres://"):
+            return url.replace("postgres://", "postgresql+psycopg://", 1)
+        if url.startswith("postgresql://") and not url.startswith("postgresql+psycopg://"):
+            return url.replace("postgresql://", "postgresql+psycopg://", 1)
+        return url
+
     try:
         db_url = os.environ.get("DATABASE_URL")
         if not db_url:
             st.error("DATABASE_URL environment variable is not set.")
             return None
-        if db_url.startswith("postgres://"):
-            db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
-        return sqlalchemy.create_engine(db_url, pool_pre_ping=True)
+
+        db_url = normalize_db_url(db_url)
+        engine = sqlalchemy.create_engine(db_url, pool_pre_ping=True)
+
+        # Quick connectivity check so failures are surfaced immediately
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+        return engine
+
     except Exception as e:
         st.error(f"Failed to create database engine: {e}")
         return None
+
 
 # --- Data Fetching ---
 @st.cache_data(ttl=600)
