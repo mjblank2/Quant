@@ -8,7 +8,7 @@ from xgboost import XGBRegressor
 from db import engine, upsert_dataframe, Prediction, BacktestEquity
 from config import BACKTEST_START, TARGET_HORIZON_DAYS, TOP_N, SLIPPAGE_BPS
 
-FEATURE_COLS = ["ret_1d","ret_5d","ret_21","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln"]
+FEATURE_COLS = ["ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln"]
 
 def _latest_feature_date() -> pd.Timestamp | None:
     return pd.read_sql_query(text("SELECT MAX(ts) AS max_ts FROM features"), engine, parse_dates=["max_ts"]).iloc[0,0]
