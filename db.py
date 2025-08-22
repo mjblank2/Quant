@@ -22,8 +22,8 @@ class DailyBar(Base):
     open: Mapped[float] = mapped_column(Float)
     high: Mapped[float] = mapped_column(Float)
     low: Mapped[float] = mapped_column(Float)
-    close: Mapped[float] = mapped_column(Float)         # raw or provider-adjusted
-    adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)  # adjusted if available
+    close: Mapped[float] = mapped_column(Float)         # provider-adjusted if adjustment='all'
+    adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)  # adjusted close when available
     volume: Mapped[int] = mapped_column(BigInteger)
     vwap: Mapped[float | None] = mapped_column(Float, nullable=True)
     trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -104,12 +104,16 @@ class BacktestEquity(Base):
 def create_tables():
     Base.metadata.create_all(engine)
 
-def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str]):
+def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000):
     if df is None or df.empty:
         return
-    cols = list(df.columns)
-    stmt = insert(table).values(df.to_dict(orient="records"))
-    update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
-    stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
-    with engine.begin() as conn:
-        conn.execute(stmt)
+    # split into chunks to avoid huge payloads/transactions
+    for start in range(0, len(df), chunk_size):
+        part = df.iloc[start:start+chunk_size]
+        cols = list(part.columns)
+        stmt = insert(table).values(part.to_dict(orient="records"))
+        update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
+        stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+        with engine.begin() as conn:
+            conn.execute(stmt)
+
