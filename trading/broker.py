@@ -38,3 +38,4 @@ def sync_trades_to_broker(trade_ids: List[int]) -> Dict[int, str]:
                 results[t.id] = "submit_failed"
         s.commit()
     return results
+

@@ -6,45 +6,45 @@ from typing import Dict
 from sqlalchemy import text
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
-from db import engine, upsert_dataframe, Prediction, BacktestEquity
-from config import BACKTEST_START, TARGET_HORIZON_DAYS, TOP_N, SLIPPAGE_BPS, BLEND_WEIGHTS
+from db import get_engine, upsert_dataframe, Prediction, BacktestEquity
+from config import BACKTEST_START, TARGET_HORIZON_DAYS, TOP_N, SLIPPAGE_BPS, BLEND_WEIGHTS, GROSS_LEVERAGE, NET_EXPOSURE
 
 PRICE_SQL = "SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts >= :start AND ts <= :end"
 FEATURE_COLS = ["ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln",
                 "f_pe_ttm","f_pb","f_ps_ttm","f_debt_to_equity","f_roa","f_gm","f_profit_margin","f_current_ratio"]
 
 def _latest_feature_date() -> pd.Timestamp | None:
-    df = pd.read_sql_query(text("SELECT MAX(ts) AS max_ts FROM features"), engine, parse_dates=["max_ts"])
+    df = pd.read_sql_query(text("SELECT MAX(ts) AS max_ts FROM features"), get_engine(), parse_dates=["max_ts"])
     return df.iloc[0,0]
 
 def _load_features_window(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
     return pd.read_sql_query(
         text("SELECT * FROM features WHERE ts >= :start AND ts <= :end"),
-        engine,
-        params={"start": start_ts.date(), "end": end_ts.date()},
-        parse_dates=["ts"]
+        get_engine(), params={"start": start_ts.date(), "end": end_ts.date()}, parse_dates=["ts"]
     ).sort_values(["ts","symbol"])
 
 def _load_prices_window(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
-    return pd.read_sql_query(text(PRICE_SQL), engine, params={"start": start_ts.date(), "end": end_ts.date()}, parse_dates=["ts"]).sort_values(["symbol","ts"])
+    return pd.read_sql_query(text(PRICE_SQL), get_engine(), params={"start": start_ts.date(), "end": end_ts.date()}, parse_dates=["ts"]).sort_values(["symbol","ts"])
 
 def _xgb_threads() -> int:
     c = cpu_count() or 2
     return max(1, c - 1)
 
 def _model_specs() -> Dict[str, Pipeline]:
+    imputer = SimpleImputer(strategy="median")
     return {
-        "xgb": Pipeline([("scaler", StandardScaler()),
+        "xgb": Pipeline([("imputer", imputer), ("scaler", StandardScaler()),
                          ("xgb", XGBRegressor(n_estimators=400, max_depth=4, learning_rate=0.05,
                                               subsample=0.8, colsample_bytree=0.8,
                                               random_state=42, n_jobs=_xgb_threads(), tree_method="hist"))]),
-        "rf": Pipeline([("scaler", StandardScaler()),
+        "rf": Pipeline([("imputer", imputer), ("scaler", StandardScaler()),
                         ("rf", RandomForestRegressor(n_estimators=300, max_depth=10, random_state=42, n_jobs=_xgb_threads()))]),
-        "ridge": Pipeline([("scaler", StandardScaler()),
-                           ("ridge", Ridge(alpha=1.0, random_state=42))])
+        "ridge": Pipeline([("imputer", imputer), ("scaler", StandardScaler()),
+                           ("ridge", Ridge(alpha=1.0))])
     }
 
 def _parse_blend_weights(s: str) -> Dict[str, float]:
@@ -80,7 +80,7 @@ def train_and_predict_all_models(window_years: int = 4) -> Dict[str, pd.DataFram
     px["fwd_ret"] = (px["px_fwd"] / px["px"]) - 1.0
     df = feats.merge(px[["symbol","ts","fwd_ret"]], on=["symbol","ts"], how="left")
 
-    train_df = df.dropna(subset=FEATURE_COLS + ["fwd_ret"]).copy()
+    train_df = df.dropna(subset=["fwd_ret"]).copy()
     latest_df = feats[feats["ts"] == latest_ts].copy()
     if train_df.empty or latest_df.empty:
         return {}
@@ -102,10 +102,9 @@ def train_and_predict_all_models(window_years: int = 4) -> Dict[str, pd.DataFram
         out["model_version"] = f"{name}_v1"
         preds_dict[name] = out[["symbol","y_pred"]].set_index("symbol")["y_pred"]
         outputs[name] = out.copy()
-        # Upsert by (symbol, ts) to keep only preferred/last model if schema PK is (symbol, ts)
         upsert_dataframe(out[["symbol","ts","y_pred","model_version"]], Prediction, ["symbol","ts","model_version"])
 
-    # Blend
+    from config import BLEND_WEIGHTS
     w = _parse_blend_weights(BLEND_WEIGHTS)
     if w:
         sym = latest_df["symbol"].tolist()
@@ -124,10 +123,10 @@ def train_and_predict_all_models(window_years: int = 4) -> Dict[str, pd.DataFram
     return outputs
 
 def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, allow_shorts: bool = False) -> pd.DataFrame:
-    feats_all = pd.read_sql_query(text("SELECT * FROM features WHERE ts >= :start"), engine, params={"start": BACKTEST_START}, parse_dates=["ts"]).sort_values(["ts","symbol"])
+    feats_all = pd.read_sql_query(text("SELECT * FROM features WHERE ts >= :start"), get_engine(), params={"start": BACKTEST_START}, parse_dates=["ts"]).sort_values(["ts","symbol"])
     if feats_all.empty:
         return pd.DataFrame(columns=["ts","equity","daily_return","drawdown"])
-    px_all = pd.read_sql_query(text(PRICE_SQL), engine, params={"start": BACKTEST_START, "end": feats_all["ts"].max().date()}, parse_dates=["ts"]).sort_values(["symbol","ts"])
+    px_all = pd.read_sql_query(text(PRICE_SQL), get_engine(), params={"start": BACKTEST_START, "end": feats_all["ts"].max().date()}, parse_dates=["ts"]).sort_values(["symbol","ts"])
     if px_all.empty:
         return pd.DataFrame(columns=["ts","equity","daily_return","drawdown"])
 
@@ -148,9 +147,10 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
         per_w = min(1.0 / nL, 0.03)
         return {s: per_w for s in longs}
 
-    from sklearn.pipeline import Pipeline  # already imported; local alias for clarity
-    def model_for_window(train_df: pd.DataFrame) -> Pipeline:
-        return _model_specs()["xgb"]
+    def model_for_window() -> Pipeline:
+        imputer = SimpleImputer(strategy="median")
+        return Pipeline([("imputer", imputer), ("scaler", StandardScaler()),
+                         ("xgb", XGBRegressor(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=max(1,(cpu_count() or 2)-1), tree_method="hist"))])
 
     for i, d in enumerate(dates[:-H]):
         d = pd.Timestamp(d)
@@ -166,7 +166,7 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
             if not train_df.empty and not today_feats.empty:
                 X = train_df[FEATURE_COLS].values
                 y = train_df["fwd_ret"].values
-                pipe = model_for_window(train_df)
+                pipe = model_for_window()
                 pipe.fit(X, y)
                 preds = pipe.predict(today_feats[FEATURE_COLS].values)
                 pred_df = today_feats[["symbol"]].copy()
@@ -180,16 +180,22 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
                 scheduled_exits.setdefault(pd.Timestamp(exit_date), {})
                 scheduled_exits[pd.Timestamp(exit_date)].update(tw)
 
+        # Daily P&L with gross exposure scaling
         if i == 0:
             rows.append({"ts": d.date(), "equity": equity})
             continue
         d_prev = dates[i-1]
         day_px = px_all[px_all["ts"].isin([pd.Timestamp(d_prev), d])].pivot(index="symbol", columns="ts", values="px")
-        if day_px.shape[1] == 2:
+        if day_px.shape[1] == 2 and active_weights:
             ret = (day_px.iloc[:,1] / day_px.iloc[:,0]) - 1.0
-            weight_series = pd.Series(active_weights, dtype=float)
-            weight_series = weight_series.reindex(ret.index).fillna(0.0)
-            port_ret = float((weight_series * ret).sum())
+            w = pd.Series(active_weights, dtype=float).reindex(ret.index).fillna(0.0)
+            # Scale to target gross & net exposure each day
+            tgtL = max(0.0, (GROSS_LEVERAGE + NET_EXPOSURE) / 2.0)
+            tgtS = max(0.0, (GROSS_LEVERAGE - NET_EXPOSURE) / 2.0)
+            curL = float(w[w > 0].sum()); curS = float(-w[w < 0].sum())
+            if curL > 0: w[w > 0] *= (tgtL / curL)
+            if curS > 0: w[w < 0] *= (tgtS / curS)
+            port_ret = float((w * ret).sum())
             equity *= (1.0 + port_ret)
         rows.append({"ts": d.date(), "equity": equity})
 
@@ -210,3 +216,4 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
     df["drawdown"] = df["equity"] / rolling_max - 1.0
     upsert_dataframe(df, BacktestEquity, ["ts"])
     return df
+

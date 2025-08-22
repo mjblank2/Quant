@@ -1,11 +1,20 @@
+databases:
+  - name: scq-postgres
+    databaseName: scq
+    user: scq
+    plan: standard
+
 services:
   - type: web
     name: smallcap-quant
     env: docker
     dockerfilePath: Dockerfile
+    plan: standard
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: scq-postgres
+          property: connectionString
       - key: APCA_API_KEY_ID
         sync: false
       - key: APCA_API_SECRET_KEY
@@ -14,13 +23,51 @@ services:
         value: https://paper-api.alpaca.markets
       - key: ALPACA_DATA_FEED
         value: sip
-      - key: TIINGO_API_KEY
+      - key: POLYGON_API_KEY
         sync: false
+      - key: PIPELINE_SYNC_BROKER
+        value: "false"
+      - key: PIPELINE_BACKFILL_DAYS
+        value: "7"
+    autoDeploy: true
 
 cronJobs:
-  - name: ingest-recent
-    schedule: "30 21 * * 1-5"
-    command: "python -m data.ingest --days 7"
+  - name: daily-pipeline
+    schedule: "45 21 * * 1-5"  # after US market close
+    command: "python run_pipeline.py --days 7"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: scq-postgres
+          property: connectionString
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: APCA_API_BASE_URL
+        value: https://paper-api.alpaca.markets
+      - key: ALPACA_DATA_FEED
+        value: sip
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: PIPELINE_SYNC_BROKER
+        value: "false"
+      - key: PIPELINE_BACKFILL_DAYS
+        value: "7"
   - name: refresh-universe
-    schedule: "0 14 * * 1"
+    schedule: "0 14 * * 1"     # Mondays
     command: "python -m data.universe"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: scq-postgres
+          property: connectionString
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: APCA_API_BASE_URL
+        value: https://paper-api.alpaca.markets
+      - key: POLYGON_API_KEY
+        sync: false
+

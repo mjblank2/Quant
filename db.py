@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from sqlalchemy import create_engine, String, Date, DateTime, Integer, Float, Boolean, BigInteger, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.dialects.postgresql import insert
@@ -6,11 +7,20 @@ from datetime import datetime, date
 import pandas as pd
 from config import DATABASE_URL
 
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is required.")
+_engine = None
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+def get_engine():
+    global _engine
+    if _engine is None:
+        url = DATABASE_URL or os.getenv("DATABASE_URL") or os.getenv("DB_URL")
+        if not url:
+            raise RuntimeError("DATABASE_URL is required")
+        _engine = create_engine(url, pool_pre_ping=True, future=True)
+    return _engine
+
+def SessionLocal():
+    # Returns a Session instance for use as: with SessionLocal() as s:
+    return sessionmaker(bind=get_engine(), autoflush=False, expire_on_commit=False, future=True)()
 
 class Base(DeclarativeBase):
     pass
@@ -27,7 +37,6 @@ class DailyBar(Base):
     volume: Mapped[int] = mapped_column(BigInteger)
     vwap: Mapped[float | None] = mapped_column(Float, nullable=True)
     trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
     __table_args__ = (Index("ix_daily_bars_symbol_ts", "symbol", "ts"),)
 
 class Universe(Base):
@@ -52,7 +61,6 @@ class Fundamentals(Base):
     gross_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     profit_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-
     __table_args__ = (Index("ix_fundamentals_symbol_asof", "symbol", "as_of"),)
 
 class AltSignal(Base):
@@ -61,7 +69,6 @@ class AltSignal(Base):
     ts: Mapped[date] = mapped_column(Date, primary_key=True)
     name: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[float | None] = mapped_column(Float, nullable=True)
-
     __table_args__ = (Index("ix_alt_symbol_ts", "symbol", "ts"),)
 
 class Feature(Base):
@@ -85,18 +92,16 @@ class Feature(Base):
     f_gm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_profit_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-
     __table_args__ = (Index("ix_features_symbol_ts", "symbol", "ts"),)
 
 class Prediction(Base):
     __tablename__ = "predictions"
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
     ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    model_version: Mapped[str] = mapped_column(String(32), primary_key=True, default="xgb_v1")
     horizon: Mapped[int] = mapped_column(Integer, default=5)
     y_pred: Mapped[float] = mapped_column(Float)
-    model_version: Mapped[str] = mapped_column(String(32), default="xgb_v1")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
     __table_args__ = (
         Index("ix_predictions_ts", "ts"),
         Index("ix_predictions_symbol_ts", "symbol", "ts"),
@@ -110,7 +115,6 @@ class Position(Base):
     weight: Mapped[float] = mapped_column(Float)
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
     __table_args__ = (Index("ix_positions_ts_symbol", "ts", "symbol"),)
 
 class Trade(Base):
@@ -124,7 +128,6 @@ class Trade(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="generated")
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
     __table_args__ = (Index("ix_trades_status_id", "status", "id"),)
 
 class BacktestEquity(Base):
@@ -135,16 +138,18 @@ class BacktestEquity(Base):
     drawdown: Mapped[float] = mapped_column(Float)
 
 def create_tables():
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(get_engine())
 
 def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000):
     if df is None or df.empty:
         return
+    from sqlalchemy.dialects.postgresql import insert
     for start in range(0, len(df), chunk_size):
         part = df.iloc[start:start+chunk_size]
         cols = list(part.columns)
         stmt = insert(table).values(part.to_dict(orient="records"))
         update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
         stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
-        with engine.begin() as conn:
+        with get_engine().begin() as conn:
             conn.execute(stmt)
+

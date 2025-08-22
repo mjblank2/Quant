@@ -16,3 +16,4 @@ if __name__ == "__main__":
     p.add_argument("name")
     args = p.parse_args()
     load_alt_signals_from_csv(args.csv_path, args.name)
+

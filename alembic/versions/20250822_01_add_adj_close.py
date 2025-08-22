@@ -19,3 +19,4 @@ def upgrade():
 def downgrade():
     with op.batch_alter_table('daily_bars') as batch_op:
         batch_op.drop_column('adj_close')
+

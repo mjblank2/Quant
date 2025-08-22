@@ -1,12 +1,14 @@
 from __future__ import annotations
+import os
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
-from config import DATABASE_URL
-from db import Base
+from db import Base  # Base import does not create engine (lazy)
 
 config = context.config
-config.set_main_option("sqlalchemy.url", DATABASE_URL or "sqlite:///alembic_dummy.db")
+# Prefer ALEMBIC_URL or DATABASE_URL, else use ini
+alembic_url = os.getenv("ALEMBIC_URL") or os.getenv("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+config.set_main_option("sqlalchemy.url", alembic_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -30,3 +32,4 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+
