@@ -21,10 +21,15 @@ def _fetch_alpaca_daily(symbol: str, start: str, end: str) -> pd.DataFrame | Non
         if isinstance(df.index, pd.MultiIndex):
             df = df.xs(symbol, level=0)
         df = df[['open','high','low','close','volume','vwap','trade_count']].copy()
-        df.reset_index(inplace=True)
-        df.rename(columns={'timestamp':'ts'}, inplace=True)
-        df['ts'] = pd.to_datetime(df['timestamp'] if 'timestamp' in df.columns else df['index']).dt.date
-        df.drop(columns=[c for c in ['index','timestamp'] if c in df.columns], inplace=True)
+        df = df.reset_index()
+        if "timestamp" in df.columns:
+        df.rename(columns={"timestamp": "ts"}, inplace=True)
+        # set ts from the 'ts' column you just created (or from the index if unnamed)
+        if "ts" in df.columns:
+        df["ts"] = pd.to_datetime(df["ts"]).dt.date
+        else:
+        df["ts"] = pd.to_datetime(df.index).date
+        df.drop(columns=[c for c in ["index","timestamp"] if c in df.columns], inplace=True)
         df['adj_close'] = df['close']  # 'close' already adjusted when adjustment='all'
         return df
     except Exception:
