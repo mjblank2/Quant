@@ -2,15 +2,15 @@
 
 A database-backed small-cap quant stack with a Streamlit control panel and optional Alpaca order submission.
 
-> ⚠️ Trading is risky. Use at your own risk. Paper trade first. This project is for educational purposes.
+## What's in this release
 
-## What's new in this release
-
-- **Scalable features**: `build_features()` is **incremental and batched**. It computes only for symbols/dates that are new, with a warm-up window for rolling features.
-- **Adjusted prices**: Ingestion stores `adj_close` (when available) and features/returns use **adjusted** prices; volume/turnover still use raw prices.
-- **Safer universe refresh**: We now mark all rows `included=FALSE` and then **upsert** the fresh list, avoiding a momentary empty universe.
-- **Trade targets**: `generate_trades()` writes today's **target positions** via the same `upsert_dataframe` helper for consistency.
-- **Render cron**: Weekday ingestion at **21:30 UTC** (post close). Universe refresh Mondays **14:00 UTC**.
+- **Scalable features**: Incremental, batched feature builds with a warm-up window (no full-table loads).
+- **Adjusted prices**: Ingestion stores `adj_close` and modeling uses `COALESCE(adj_close, close)` for returns/momentum.
+- **Safer universe refresh**: Mark old rows `included=false` and upsert the fresh list (never an empty universe).
+- **Trade targets**: `generate_trades()` writes today's **target positions** via upsert; trades use direct insert (autoincrement id).
+- **Cron CLIs**: `python -m data.ingest --days 7` and `python -m data.universe` now work.
+- **Render-ready**: Dockerfile binds to `$PORT` correctly; `libgomp1` installed for XGBoost; Streamlit headless envs set.
+- **Post-close ingest**: Weekdays **21:30 UTC**; Universe refresh Mondays **14:00 UTC**.
 
 ## Quickstart
 
@@ -20,6 +20,6 @@ A database-backed small-cap quant stack with a Streamlit control panel and optio
 
 ## Notes
 
-- Alpaca Market Data: `ALPACA_DATA_FEED=iex` (or `sip` with entitlements).
+- Alpaca Market Data: `ALPACA_DATA_FEED=sip` (or `sip` with entitlements).
 - All SQL queries are parameterized; key tables have useful indexes.
-- Backtest remains a simple monthly re-train placeholder.
+- Backtest is a simple monthly re-train placeholder; extend as needed.
