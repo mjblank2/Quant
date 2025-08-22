@@ -10,8 +10,7 @@ def _submit_order_alpaca(symbol: str, qty: int, side: str) -> str | None:
         api = tradeapi.REST(key_id=APCA_API_KEY_ID, secret_key=APCA_API_SECRET_KEY, base_url=APCA_API_BASE_URL)
         order = api.submit_order(symbol=symbol, qty=qty, side=side.lower(), type='market', time_in_force='day')
         return getattr(order, "id", None)
-    except APIError as e:
-        # TODO: optionally log e
+    except APIError:
         return None
     except Exception:
         return None
