@@ -1,13 +1,29 @@
 from __future__ import annotations
-import requests
-from datetime import date
+from datetime import date, timedelta
 import pandas as pd
+import requests
 from sqlalchemy import text
 from db import engine, upsert_dataframe, DailyBar
 from config import APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL, ALPACA_DATA_FEED, TIINGO_API_KEY
 
 def _date(s) -> str:
     return pd.Timestamp(s).strftime('%Y-%m-%d')
+
+def _bars_from_alpaca_batch(symbols: list[str], start: date, end: date) -> pd.DataFrame:
+    try:
+        import alpaca_trade_api as tradeapi
+        from alpaca_trade_api.rest import TimeFrame
+        api = tradeapi.REST(key_id=APCA_API_KEY_ID, secret_key=APCA_API_SECRET_KEY, base_url=APCA_API_BASE_URL)
+        df = api.get_bars(symbols, TimeFrame.Day, start.isoformat(), end.isoformat(), adjustment='all', feed=ALPACA_DATA_FEED).df
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.reset_index().rename(columns={"timestamp": "ts"})
+        df["ts"] = pd.to_datetime(df["ts"]).dt.date
+        df["adj_close"] = df["close"]  # adjustment='all' => adjusted close
+        use = ["symbol","ts","open","high","low","close","adj_close","volume","vwap","trade_count"]
+        return df[use]
+    except Exception:
+        return pd.DataFrame()
 
 def _fetch_alpaca_daily(symbol: str, start: str, end: str) -> pd.DataFrame | None:
     try:
@@ -23,14 +39,13 @@ def _fetch_alpaca_daily(symbol: str, start: str, end: str) -> pd.DataFrame | Non
         df = df[['open','high','low','close','volume','vwap','trade_count']].copy()
         df = df.reset_index()
         if "timestamp" in df.columns:
-        df.rename(columns={"timestamp": "ts"}, inplace=True)
-        # set ts from the 'ts' column you just created (or from the index if unnamed)
+            df.rename(columns={"timestamp": "ts"}, inplace=True)
         if "ts" in df.columns:
-        df["ts"] = pd.to_datetime(df["ts"]).dt.date
+            df["ts"] = pd.to_datetime(df["ts"]).dt.date
         else:
-        df["ts"] = pd.to_datetime(df.index).date
+            df["ts"] = pd.to_datetime(df.index).date
         df.drop(columns=[c for c in ["index","timestamp"] if c in df.columns], inplace=True)
-        df['adj_close'] = df['close']  # 'close' already adjusted when adjustment='all'
+        df["adj_close"] = df["close"]  # adjusted
         return df
     except Exception:
         return None
@@ -50,7 +65,6 @@ def _fetch_tiingo_daily(symbol: str, start: str, end: str) -> pd.DataFrame | Non
         if 'date' not in df.columns:
             return None
         df['ts'] = pd.to_datetime(df['date']).dt.date
-        # Some responses include 'adjClose'
         df.rename(columns={'open':'open','high':'high','low':'low','close':'close','volume':'volume'}, inplace=True)
         df['adj_close'] = df['adjClose'] if 'adjClose' in df.columns else df['close']
         return df[['ts','open','high','low','close','adj_close','volume']]
@@ -81,35 +95,46 @@ def _fetch_daily(symbol: str, start: str, end: str) -> pd.DataFrame | None:
         df = fn(symbol, start, end)
         if df is not None and not df.empty:
             df['symbol'] = symbol
-            # optional NA cleanup
-            df = df.dropna(subset=['ts','close'])
-            return df
+            return df.dropna(subset=['ts','close'])
     return None
 
 def ingest_bars_for_universe(days: int = 365) -> None:
-    # Universe symbols
     uni = pd.read_sql_query(text("SELECT symbol FROM universe WHERE included = TRUE"), engine)
     symbols = uni['symbol'].tolist()
-
     if not symbols:
         return
 
     end = pd.Timestamp('today').normalize().date()
-    start = (pd.Timestamp(end) - pd.Timedelta(days=int(days*1.2))).date()  # pad
+    start = (pd.Timestamp(end) - pd.Timedelta(days=int(days*1.2))).date()
     start_s, end_s = _date(start), _date(end)
 
+    # 1) Try fast batch through Alpaca
+    fetched_all = pd.DataFrame()
+    for i in range(0, len(symbols), 300):
+        subs = symbols[i:i+300]
+        df = _bars_from_alpaca_batch(subs, start, end)
+        if not df.empty:
+            upsert_dataframe(df, DailyBar, ['symbol','ts'])
+            fetched_all = pd.concat([fetched_all, df[['symbol']].drop_duplicates()], ignore_index=True)
+
+    remaining = set(symbols) - set(fetched_all['symbol'].unique()) if not fetched_all.empty else set(symbols)
+
+    # 2) Fallbacks for remaining
     all_rows = []
-    for sym in symbols:
+    for sym in sorted(remaining):
         df = _fetch_daily(sym, start_s, end_s)
-        if df is None or df.empty:
-            continue
-        all_rows.append(df[['symbol','ts','open','high','low','close','adj_close','volume']])
+        if df is not None and not df.empty:
+            all_rows.append(df[['symbol','ts','open','high','low','close','adj_close','volume']])
 
-    if not all_rows:
-        return
+    if all_rows:
+        out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=['symbol','ts'])
+        out['vwap'] = None
+        out['trade_count'] = None
+        upsert_dataframe(out, DailyBar, ['symbol','ts'])
 
-    out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=['symbol','ts'])
-    # vwap/trade_count optional from providers; just ensure columns exist
-    out['vwap'] = None
-    out['trade_count'] = None
-    upsert_dataframe(out, DailyBar, ['symbol','ts'])
+if __name__ == "__main__":
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--days", type=int, default=365)
+    args = p.parse_args()
+    ingest_bars_for_universe(args.days)
