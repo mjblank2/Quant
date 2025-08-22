@@ -3,25 +3,24 @@ import pandas as pd
 import plotly.express as px
 from sqlalchemy import text
 from db import create_tables, engine
-
 from data.universe import rebuild_universe
 from data.ingest import ingest_bars_for_universe
+from data.fundamentals import fetch_fundamentals_for_universe
 from models.features import build_features
-from models.ml import train_and_predict_latest, run_backtest
+from models.ml import train_and_predict_all_models, run_walkforward_backtest
 from trading.generate_trades import generate_today_trades
 from trading.broker import sync_trades_to_broker
 
 st.set_page_config(page_title="Small-Cap Quant System", layout="wide")
 st.title("📈 Small-Cap Quant System – Live")
 
-# Ensure tables
 try:
     create_tables()
 except Exception as e:
     st.error(f"DB init failed: {e}")
     st.stop()
 
-_ALLOWED_TABLES = {"daily_bars","features","predictions","backtest_equity","universe","trades","positions"}
+_ALLOWED_TABLES = {"daily_bars","features","predictions","backtest_equity","universe","trades","positions","fundamentals"}
 
 def _max_ts(table: str):
     if table not in _ALLOWED_TABLES:
@@ -48,7 +47,6 @@ def load_symbols():
         df = pd.read_sql_query(text("SELECT DISTINCT symbol FROM daily_bars ORDER BY symbol"), con)
     return df["symbol"].tolist()
 
-# --- Top metrics ---
 colA, colB, colC = st.columns(3)
 colA.metric("Last Price Date", str(_max_ts("daily_bars")))
 colB.metric("Last Features Date", str(_max_ts("features")))
@@ -56,7 +54,7 @@ colC.metric("Last Prediction Date", str(_max_ts("predictions")))
 
 with st.sidebar:
     st.header("Controls")
-    if st.button("🔁 Rebuild Universe (small caps)"):
+    if st.button("🔁 Rebuild Universe"):
         with st.spinner("Rebuilding universe (Alpaca + yfinance)..."):
             try:
                 uni = rebuild_universe()
@@ -73,6 +71,14 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Ingestion failed: {e}")
 
+    if st.button("📊 Ingest Fundamentals (yfinance)"):
+        with st.spinner("Fetching fundamentals..."):
+            try:
+                df = fetch_fundamentals_for_universe()
+                st.toast(f"Fundamentals rows upserted: {len(df)}", icon="✅")
+            except Exception as e:
+                st.error(f"Fundamentals ingest failed: {e}")
+
     if st.button("🧱 Build Features (incremental)"):
         with st.spinner("Building features incrementally (batched)..."):
             try:
@@ -81,19 +87,19 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Features failed: {e}")
 
-    if st.button("🤖 Train & Predict (latest)"):
-        with st.spinner("Training XGBoost & predicting..."):
+    if st.button("🤖 Train & Predict (all models + blend)"):
+        with st.spinner("Training models (XGB / RF / Ridge) & blending..."):
             try:
-                preds = train_and_predict_latest()
-                last_ts = str(preds['ts'].max().date()) if not preds.empty else "N/A"
-                st.toast(f"Predictions for {last_ts}: {len(preds)}", icon="✅")
+                outs = train_and_predict_all_models()
+                total = sum(len(v) for v in outs.values()) if outs else 0
+                st.toast(f"Wrote predictions for {len(outs)} model(s). Total rows: {total:,}", icon="✅")
             except Exception as e:
                 st.error(f"Training/predict failed: {e}")
 
-    if st.button("🧪 Run Backtest (light)"):
-        with st.spinner("Running monthly re-train backtest..."):
+    if st.button("🧪 Run Walk-Forward Backtest (full)"):
+        with st.spinner("Running walk-forward backtest with overlapping tranches..."):
             try:
-                bt = run_backtest()
+                bt = run_walkforward_backtest()
                 st.session_state["backtest"] = bt
                 st.toast(f"Backtest rows: {len(bt):,}", icon="✅")
             except Exception as e:
@@ -168,12 +174,9 @@ with col2:
 
 st.subheader("Trade Log (latest 200)")
 try:
-    trades = load_trades()
+    with engine.connect() as con:
+        trades = pd.read_sql_query(text("SELECT id, trade_date, symbol, side, quantity, price, status, broker_order_id, ts FROM trades ORDER BY id DESC LIMIT 200"), con, parse_dates=["ts","trade_date"])
     st.dataframe(trades)
-    st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv")
-except Exception:
-    st.info("No trades yet.")
-
     st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv")
 except Exception:
     st.info("No trades yet.")

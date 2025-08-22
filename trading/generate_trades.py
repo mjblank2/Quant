@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 import numpy as np
 import pandas as pd
 from datetime import date
@@ -9,7 +8,7 @@ from db import engine, upsert_dataframe, Trade, Position
 from config import (
     TOP_N, LONG_TOP_N, SHORT_TOP_N, ALLOW_SHORTS,
     GROSS_LEVERAGE, NET_EXPOSURE, RISK_BUDGET, MAX_POSITION_WEIGHT,
-    MIN_PRICE, MIN_ADV_USD
+    MIN_PRICE, MIN_ADV_USD, PREFERRED_MODEL
 )
 
 def _latest_prices(symbols: Iterable[str]) -> pd.Series:
@@ -55,12 +54,20 @@ def _load_latest_predictions() -> pd.DataFrame:
     with engine.connect() as con:
         preds = pd.read_sql_query(
             text("""
-                SELECT symbol, ts, y_pred
-                FROM predictions
-                WHERE ts = (SELECT MAX(ts) FROM predictions)
+                WITH target AS (
+                    SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv
+                )
+                SELECT symbol, ts, y_pred FROM predictions
+                WHERE model_version = :mv AND ts = (SELECT mx FROM target)
             """),
-            con
+            con,
+            params={"mv": PREFERRED_MODEL}
         )
+        if preds.empty:
+            preds = pd.read_sql_query(
+                text("SELECT symbol, ts, y_pred FROM predictions WHERE ts = (SELECT MAX(ts) FROM predictions)"),
+                con
+            )
     return preds
 
 def _compute_side_grosses(gross: float, net: float) -> tuple[float, float]:
@@ -127,7 +134,6 @@ def generate_today_trades() -> pd.DataFrame:
         side = "BUY" if delta_w > 0 else "SELL"
         trade_rows.append({"symbol": sym, "side": side, "quantity": qty, "price": price})
 
-    # Persist target positions via upsert helper
     if pos_rows:
         pos_df = pd.DataFrame(pos_rows)
         upsert_dataframe(pos_df, Position, ["ts","symbol"])
@@ -138,8 +144,6 @@ def generate_today_trades() -> pd.DataFrame:
     df = pd.DataFrame(trade_rows)
     df["status"] = "generated"
     df["trade_date"] = date.today()
-    # Insert trades (autoincrement id) without upsert
     with engine.begin() as conn:
         conn.execute(Trade.__table__.insert(), df.to_dict(orient="records"))
     return df
-

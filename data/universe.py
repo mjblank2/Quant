@@ -54,7 +54,6 @@ def rebuild_universe() -> pd.DataFrame:
     df['included'] = df['include_mc'] & df['include_adv']
     df['last_updated'] = datetime.utcnow()
     out = df.loc[df['included'], ['symbol','name','exchange','market_cap','adv_usd_20','included','last_updated']].drop_duplicates(subset=['symbol'])
-    # Safer refresh: mark existing rows excluded, then upsert new list
     with engine.begin() as con:
         con.execute(text("UPDATE universe SET included = FALSE"))
     upsert_dataframe(out, Universe, ['symbol'])
@@ -62,4 +61,3 @@ def rebuild_universe() -> pd.DataFrame:
 
 if __name__ == "__main__":
     rebuild_universe()
-

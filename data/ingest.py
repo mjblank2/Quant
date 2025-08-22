@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import date, timedelta
+from datetime import date
 import pandas as pd
 import requests
 from sqlalchemy import text
@@ -19,7 +19,7 @@ def _bars_from_alpaca_batch(symbols: list[str], start: date, end: date) -> pd.Da
             return pd.DataFrame()
         df = df.reset_index().rename(columns={"timestamp": "ts"})
         df["ts"] = pd.to_datetime(df["ts"]).dt.date
-        df["adj_close"] = df["close"]  # adjustment='all' => adjusted close
+        df["adj_close"] = df["close"]
         use = ["symbol","ts","open","high","low","close","adj_close","volume","vwap","trade_count"]
         return df[use]
     except Exception:
@@ -45,7 +45,7 @@ def _fetch_alpaca_daily(symbol: str, start: str, end: str) -> pd.DataFrame | Non
         else:
             df["ts"] = pd.to_datetime(df.index).date
         df.drop(columns=[c for c in ["index","timestamp"] if c in df.columns], inplace=True)
-        df["adj_close"] = df["close"]  # adjusted
+        df["adj_close"] = df["close"]
         return df
     except Exception:
         return None
@@ -108,23 +108,21 @@ def ingest_bars_for_universe(days: int = 365) -> None:
     start = (pd.Timestamp(end) - pd.Timedelta(days=int(days*1.2))).date()
     start_s, end_s = _date(start), _date(end)
 
-    # 1) Try fast batch through Alpaca
-    fetched_all = pd.DataFrame()
+    fetched = []
     for i in range(0, len(symbols), 300):
         subs = symbols[i:i+300]
         df = _bars_from_alpaca_batch(subs, start, end)
         if not df.empty:
             upsert_dataframe(df, DailyBar, ['symbol','ts'])
-            fetched_all = pd.concat([fetched_all, df[['symbol']].drop_duplicates()], ignore_index=True)
+            fetched.extend(df['symbol'].unique().tolist())
 
-    remaining = set(symbols) - set(fetched_all['symbol'].unique()) if not fetched_all.empty else set(symbols)
-
-    # 2) Fallbacks for remaining
+    remaining = sorted(set(symbols) - set(fetched))
     all_rows = []
-    for sym in sorted(remaining):
+    for sym in remaining:
         df = _fetch_daily(sym, start_s, end_s)
         if df is not None and not df.empty:
-            all_rows.append(df[['symbol','ts','open','high','low','close','adj_close','volume']])
+            df = df[['symbol','ts','open','high','low','close','adj_close','volume']]
+            all_rows.append(df)
 
     if all_rows:
         out = pd.concat(all_rows, ignore_index=True).drop_duplicates(subset=['symbol','ts'])
