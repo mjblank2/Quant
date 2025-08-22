@@ -1,0 +1,115 @@
+from __future__ import annotations
+from sqlalchemy import create_engine, String, Date, DateTime, Integer, Float, Boolean, BigInteger, Index
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.dialects.postgresql import insert
+from datetime import datetime, date
+import pandas as pd
+from config import DATABASE_URL
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is required.")
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+
+class Base(DeclarativeBase):
+    pass
+
+class DailyBar(Base):
+    __tablename__ = "daily_bars"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    open: Mapped[float] = mapped_column(Float)
+    high: Mapped[float] = mapped_column(Float)
+    low: Mapped[float] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)         # raw or provider-adjusted
+    adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)  # adjusted if available
+    volume: Mapped[int] = mapped_column(BigInteger)
+    vwap: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (Index("ix_daily_bars_symbol_ts", "symbol", "ts"),)
+
+class Universe(Base):
+    __tablename__ = "universe"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    exchange: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)
+    adv_usd_20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    included: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class Feature(Base):
+    __tablename__ = "features"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    ret_1d: Mapped[float | None] = mapped_column(Float)
+    ret_5d: Mapped[float | None] = mapped_column(Float)
+    ret_21d: Mapped[float | None] = mapped_column(Float)
+    mom_21: Mapped[float | None] = mapped_column(Float)
+    mom_63: Mapped[float | None] = mapped_column(Float)
+    vol_21: Mapped[float | None] = mapped_column(Float)
+    rsi_14: Mapped[float | None] = mapped_column(Float)
+    turnover_21: Mapped[float | None] = mapped_column(Float)
+    size_ln: Mapped[float | None] = mapped_column(Float)
+
+    __table_args__ = (Index("ix_features_symbol_ts", "symbol", "ts"),)
+
+class Prediction(Base):
+    __tablename__ = "predictions"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    horizon: Mapped[int] = mapped_column(Integer, default=5)
+    y_pred: Mapped[float] = mapped_column(Float)
+    model_version: Mapped[str] = mapped_column(String(32), default="xgb_v1")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_predictions_ts", "ts"),
+        Index("ix_predictions_symbol_ts", "symbol", "ts"),
+    )
+
+class Position(Base):
+    __tablename__ = "positions"
+    ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    weight: Mapped[float] = mapped_column(Float)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (Index("ix_positions_ts_symbol", "ts", "symbol"),)
+
+class Trade(Base):
+    __tablename__ = "trades"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    trade_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    quantity: Mapped[int] = mapped_column(Integer)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="generated")
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (Index("ix_trades_status_id", "status", "id"),)
+
+class BacktestEquity(Base):
+    __tablename__ = "backtest_equity"
+    ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    equity: Mapped[float] = mapped_column(Float)
+    daily_return: Mapped[float] = mapped_column(Float)
+    drawdown: Mapped[float] = mapped_column(Float)
+
+def create_tables():
+    Base.metadata.create_all(engine)
+
+def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str]):
+    if df is None or df.empty:
+        return
+    cols = list(df.columns)
+    stmt = insert(table).values(df.to_dict(orient="records"))
+    update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
+    stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+    with engine.begin() as conn:
+        conn.execute(stmt)
