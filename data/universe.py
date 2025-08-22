@@ -3,7 +3,7 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy import text
 from db import engine, upsert_dataframe, Universe
-from config import MARKET_CAP_MAX, ADV_USD_MIN, ADV_LOOKBACK, APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL
+from config import MARKET_CAP_MAX, ADV_USD_MIN, APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL
 
 def _list_alpaca_assets() -> pd.DataFrame:
     import alpaca_trade_api as tradeapi
@@ -24,26 +24,23 @@ def _list_alpaca_assets() -> pd.DataFrame:
 def _market_cap_and_adv_yf(symbols: list[str]) -> pd.DataFrame:
     import yfinance as yf
     out = []
-    for sym in symbols:
-        try:
-            t = yf.Ticker(sym)
-            mc = None
+    for i in range(0, len(symbols), 100):
+        subs = symbols[i:i+100]
+        tk = yf.Tickers(" ".join(subs))
+        for s in subs:
             try:
-                mc = getattr(t, 'fast_info', {}).get('market_cap', None)
+                t = tk.tickers[s]
+                fi = getattr(t, 'fast_info', {}) or {}
+                mc = fi.get('market_cap')
+                hist = t.history(period='40d', interval='1d', auto_adjust=True)
+                if hist is None or hist.empty or len(hist) < 20:
+                    adv_usd_20 = None
+                else:
+                    dv = (hist['Close'] * hist['Volume']).rolling(20).mean().iloc[-1]
+                    adv_usd_20 = float(dv) if pd.notnull(dv) else None
+                out.append({'symbol': s, 'market_cap': mc, 'adv_usd_20': adv_usd_20})
             except Exception:
-                pass
-            if mc is None:
-                info = t.info or {}
-                mc = info.get('marketCap')
-            hist = t.history(period='40d', interval='1d', auto_adjust=True)
-            if hist is None or hist.empty or len(hist) < 20:
-                adv_usd_20 = None
-            else:
-                dv = (hist['Close'] * hist['Volume']).rolling(20).mean().iloc[-1]
-                adv_usd_20 = float(dv) if pd.notnull(dv) else None
-            out.append({'symbol': sym, 'market_cap': mc, 'adv_usd_20': adv_usd_20})
-        except Exception:
-            out.append({'symbol': sym, 'market_cap': None, 'adv_usd_20': None})
+                out.append({'symbol': s, 'market_cap': None, 'adv_usd_20': None})
     return pd.DataFrame(out)
 
 def rebuild_universe() -> pd.DataFrame:
@@ -62,3 +59,7 @@ def rebuild_universe() -> pd.DataFrame:
         con.execute(text("UPDATE universe SET included = FALSE"))
     upsert_dataframe(out, Universe, ['symbol'])
     return out
+
+if __name__ == "__main__":
+    rebuild_universe()
+
