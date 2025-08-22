@@ -138,5 +138,8 @@ def generate_today_trades() -> pd.DataFrame:
     df = pd.DataFrame(trade_rows)
     df["status"] = "generated"
     df["trade_date"] = date.today()
-    upsert_dataframe(df, Trade, ["id"])  # insert-only behavior with autoincrement id
+    # Insert trades (autoincrement id) without upsert
+    with engine.begin() as conn:
+        conn.execute(Trade.__table__.insert(), df.to_dict(orient="records"))
     return df
+
