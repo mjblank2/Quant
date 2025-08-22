@@ -1,6 +1,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from os import cpu_count
 from sqlalchemy import text
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -29,6 +30,10 @@ def _load_prices_window(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.Data
         parse_dates=["ts"]
     ).sort_values(["symbol","ts"])
 
+def _xgb_threads() -> int:
+    c = cpu_count() or 2
+    return max(1, c - 1)
+
 def train_and_predict_latest(window_years: int = 4) -> pd.DataFrame:
     latest_ts = _latest_feature_date()
     if latest_ts is None or pd.isna(latest_ts):
@@ -44,13 +49,11 @@ def train_and_predict_latest(window_years: int = 4) -> pd.DataFrame:
     if px.empty:
         return pd.DataFrame(columns=["symbol","ts","y_pred"])
 
-    # forward returns
     px = px.sort_values(["symbol","ts"]).copy()
     px["px_fwd"] = px.groupby("symbol")["px"].shift(-TARGET_HORIZON_DAYS)
     px["fwd_ret"] = (px["px_fwd"] / px["px"]) - 1.0
     df = feats.merge(px[["symbol","ts","fwd_ret"]], on=["symbol","ts"], how="left")
 
-    # Train on rows with known future returns
     train_df = df.dropna(subset=FEATURE_COLS + ["fwd_ret"]).copy()
     if train_df.empty:
         return pd.DataFrame(columns=["symbol","ts","y_pred"])
@@ -62,7 +65,7 @@ def train_and_predict_latest(window_years: int = 4) -> pd.DataFrame:
         ("xgb", XGBRegressor(
             n_estimators=400, max_depth=4, learning_rate=0.05,
             subsample=0.8, colsample_bytree=0.8,
-            random_state=42, n_jobs=0, tree_method="hist"
+            random_state=42, n_jobs=_xgb_threads(), tree_method="hist"
         ))
     ])
     pipe.fit(X, y)
@@ -78,7 +81,6 @@ def train_and_predict_latest(window_years: int = 4) -> pd.DataFrame:
     return out
 
 def run_backtest(window_years: int = 6) -> pd.DataFrame:
-    # lightweight: rolling monthly retrain starting from BACKTEST_START (windowed to reduce memory)
     start_ts = pd.Timestamp(BACKTEST_START)
     end_ts = _latest_feature_date()
     if end_ts is None or pd.isna(end_ts):
@@ -92,7 +94,6 @@ def run_backtest(window_years: int = 6) -> pd.DataFrame:
     if px.empty:
         return pd.DataFrame(columns=["ts","equity","daily_return","drawdown"])
 
-    # forward returns
     px = px.sort_values(["symbol","ts"]).copy()
     px["px_fwd"] = px.groupby("symbol")["px"].shift(-TARGET_HORIZON_DAYS)
     px["fwd_ret"] = (px["px_fwd"] / px["px"]) - 1.0
@@ -109,14 +110,13 @@ def run_backtest(window_years: int = 6) -> pd.DataFrame:
     for d in dates[:-TARGET_HORIZON_DAYS]:
         d = pd.Timestamp(d)
         if cur_month != d.month:
-            # train using last `window_years` years of data strictly before d
             train_start = max(start_ts, d - pd.DateOffset(years=window_years))
             joined = feats.merge(px[["symbol","ts","fwd_ret"]], on=["symbol","ts"], how="left")
             train_df = joined[(joined["ts"] < d) & (joined["ts"] >= train_start) & (~joined["fwd_ret"].isna())]
             if not train_df.empty:
                 X = train_df[FEATURE_COLS].values
                 y = train_df["fwd_ret"].values
-                pipe = Pipeline([("scaler", StandardScaler()), ("xgb", XGBRegressor(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=0, tree_method="hist"))])
+                pipe = Pipeline([("scaler", StandardScaler()), ("xgb", XGBRegressor(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=_xgb_threads(), tree_method="hist"))])
                 pipe.fit(X, y)
             cur_month = d.month
 
@@ -140,6 +140,10 @@ def run_backtest(window_years: int = 6) -> pd.DataFrame:
     df = pd.DataFrame(rows).sort_values("ts")
     df["daily_return"] = df["equity"].pct_change().fillna(0.0)
     rolling_max = df["equity"].cummax()
+    df["drawdown"] = df["equity"] / rolling_max - 1.0
+    upsert_dataframe(df, BacktestEquity, ["ts"])
+    return df
+
     df["drawdown"] = df["equity"] / rolling_max - 1.0
     upsert_dataframe(df, BacktestEquity, ["ts"])
     return df
