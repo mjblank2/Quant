@@ -5,7 +5,7 @@ from sqlalchemy import text, bindparam
 from db import engine, upsert_dataframe, Feature
 from config import ADV_LOOKBACK
 
-FEATURE_COLS = ["ret_1d","ret_5d","ret_21","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln"]
+FEATURE_COLS = ["ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln"]
 
 def _compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
     delta = series.diff()
@@ -73,7 +73,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             p = g["price_feat"]
             g["ret_1d"] = p.pct_change(1)
             g["ret_5d"] = p.pct_change(5)
-            g["ret_21"] = p.pct_change(21)
+            g["ret_21d"] = p.pct_change(21)
             g["mom_21"] = (p / p.shift(21)) - 1.0
             g["mom_63"] = (p / p.shift(63)) - 1.0
             g["vol_21"] = g["ret_1d"].rolling(21).std()
@@ -90,7 +90,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             if last_ts is not None and not pd.isna(last_ts):
                 g = g[g["ts"] > pd.Timestamp(last_ts)]
             # Keep feature columns
-            fcols = ["symbol","ts","ret_1d","ret_5d","ret_21","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln"]
+            fcols = ["symbol","ts","ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln"]
             out_frames.append(g[fcols].dropna())
 
         if out_frames:
