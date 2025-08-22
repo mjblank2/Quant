@@ -12,8 +12,8 @@ DATABASE_URL = _fix_db_url(os.getenv("DATABASE_URL", ""))
 # Providers / creds
 APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY")
 APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_SECRET_KEY")
-APCA_API_BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex")  # 'iex' or 'sip'
+APCA_API_BASE_URL = os.getenv("APCA_API_BASE_URL", "https://api.alpaca.markets")
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip")  # 'iex' or 'sip'
 TIINGO_API_KEY = os.getenv("TIINGO_API_KEY")
 
 # Universe rules
