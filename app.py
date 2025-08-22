@@ -173,3 +173,7 @@ try:
     st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv")
 except Exception:
     st.info("No trades yet.")
+
+    st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv")
+except Exception:
+    st.info("No trades yet.")
