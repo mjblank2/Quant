@@ -7,6 +7,15 @@ def _fix_db_url(url: str) -> str:
         return url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
 
+def _as_float(env_name: str, default: float) -> float:
+    v = os.getenv(env_name, None)
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return default
+    try:
+        return float(v)
+    except Exception:
+        return default
+
 DATABASE_URL = _fix_db_url(os.getenv("DATABASE_URL", ""))
 
 # Providers / creds
@@ -17,8 +26,8 @@ ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip")  # 'iex' or 'sip'
 TIINGO_API_KEY = os.getenv("TIINGO_API_KEY")
 
 # Universe rules
-MARKET_CAP_MAX = float(os.getenv("MARKET_CAP_MAX", 3_000_000_000))
-ADV_USD_MIN = float(os.getenv("ADV_USD_MIN", 25_000))
+MARKET_CAP_MAX = _as_float("MARKET_CAP_MAX", 3_000_000_000.0)
+ADV_USD_MIN = _as_float("ADV_USD_MIN", 25_000.0)
 ADV_LOOKBACK = int(os.getenv("ADV_LOOKBACK", 20))
 
 # Modeling / backtest
@@ -26,17 +35,17 @@ BACKTEST_START = os.getenv("BACKTEST_START", "2019-01-01")
 TARGET_HORIZON_DAYS = int(os.getenv("TARGET_HORIZON_DAYS", 5))
 
 # Portfolio & trading
-TOP_N = int(os.getenv("TOP_N", 50))
+TOP_N = int(os.getenv("TOP_N", 25))
 ALLOW_SHORTS = os.getenv("ALLOW_SHORTS", "false").lower() == "true"
 LONG_TOP_N = int(os.getenv("LONG_TOP_N", TOP_N))
 SHORT_TOP_N = int(os.getenv("SHORT_TOP_N", TOP_N))
-GROSS_LEVERAGE = float(os.getenv("GROSS_LEVERAGE", 1.0))
+GROSS_LEVERAGE = _as_float("GROSS_LEVERAGE", 1.0)
 _default_net = 0.0 if ALLOW_SHORTS else 1.0
-NET_EXPOSURE = float(os.getenv("NET_EXPOSURE", _default_net))
+NET_EXPOSURE = _as_float("NET_EXPOSURE", _default_net)
 
-RISK_BUDGET = float(os.getenv("RISK_BUDGET", 100_000))
-MAX_POSITION_WEIGHT = float(os.getenv("MAX_POSITION_WEIGHT", 0.03))
-MIN_PRICE = float(os.getenv("MIN_PRICE", 1.00))
-MIN_ADV_USD = float(os.getenv("MIN_ADV_USD", ADV_USD_MIN))
+RISK_BUDGET = _as_float("RISK_BUDGET", 100_000_000.0)
+MAX_POSITION_WEIGHT = _as_float("MAX_POSITION_WEIGHT", 0.10)
+MIN_PRICE = _as_float("MIN_PRICE", 1.00)
+MIN_ADV_USD = _as_float("MIN_ADV_USD", ADV_USD_MIN)
 
-SLIPPAGE_BPS = float(os.getenv("SLIPPAGE_BPS", 5))
+SLIPPAGE_BPS = _as_float("SLIPPAGE_BPS", 5.0)
