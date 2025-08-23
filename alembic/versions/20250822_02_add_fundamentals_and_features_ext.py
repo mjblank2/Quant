@@ -1,4 +1,4 @@
-"""fundamentals + alt_signals + extend features
+"""fundamentals table + alt_signals + feature fundamental columns
 
 Revision ID: 20250822_02
 Revises: 20250822_01
@@ -61,4 +61,3 @@ def downgrade():
     op.drop_table('alt_signals')
     op.drop_index('ix_fundamentals_symbol_asof', table_name='fundamentals')
     op.drop_table('fundamentals')
-

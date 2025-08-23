@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 from sqlalchemy import create_engine, String, Date, DateTime, Integer, Float, Boolean, BigInteger, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.dialects.postgresql import insert
@@ -7,20 +6,11 @@ from datetime import datetime, date
 import pandas as pd
 from config import DATABASE_URL
 
-_engine = None
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is required.")
 
-def get_engine():
-    global _engine
-    if _engine is None:
-        url = DATABASE_URL or os.getenv("DATABASE_URL") or os.getenv("DB_URL")
-        if not url:
-            raise RuntimeError("DATABASE_URL is required")
-        _engine = create_engine(url, pool_pre_ping=True, future=True)
-    return _engine
-
-def SessionLocal():
-    # Returns a Session instance for use as: with SessionLocal() as s:
-    return sessionmaker(bind=get_engine(), autoflush=False, expire_on_commit=False, future=True)()
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 class Base(DeclarativeBase):
     pass
@@ -138,18 +128,19 @@ class BacktestEquity(Base):
     drawdown: Mapped[float] = mapped_column(Float)
 
 def create_tables():
-    Base.metadata.create_all(get_engine())
+    Base.metadata.create_all(engine)
 
-def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000):
+def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000, conn=None):
     if df is None or df.empty:
         return
-    from sqlalchemy.dialects.postgresql import insert
     for start in range(0, len(df), chunk_size):
         part = df.iloc[start:start+chunk_size]
         cols = list(part.columns)
         stmt = insert(table).values(part.to_dict(orient="records"))
         update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
         stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
-        with get_engine().begin() as conn:
+        if conn is None:
+            with engine.begin() as _conn:
+                _conn.execute(stmt)
+        else:
             conn.execute(stmt)
-

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from sqlalchemy import text
-from db import create_tables, get_engine
+from db import create_tables, engine
 from data.universe import rebuild_universe
 from data.ingest import ingest_bars_for_universe
 from data.fundamentals import fetch_fundamentals_for_universe
@@ -20,31 +20,30 @@ except Exception as e:
     st.error(f"DB init failed: {e}")
     st.stop()
 
-eng = get_engine()
 _ALLOWED_TABLES = {"daily_bars","features","predictions","backtest_equity","universe","trades","positions","fundamentals"}
 
 def _max_ts(table: str):
     if table not in _ALLOWED_TABLES:
         return None
     try:
-        with eng.connect() as con:
+        with engine.connect() as con:
             return con.execute(text(f"SELECT MAX(ts) FROM {table}")).scalar()
     except Exception:
         return None
 
 @st.cache_data(ttl=900)
 def load_universe():
-    with eng.connect() as con:
+    with engine.connect() as con:
         return pd.read_sql_query(text("SELECT * FROM universe ORDER BY symbol LIMIT 10000"), con)
 
 @st.cache_data(ttl=60)
 def load_trades():
-    with eng.connect() as con:
+    with engine.connect() as con:
         return pd.read_sql_query(text("SELECT id, trade_date, symbol, side, quantity, price, status, broker_order_id, ts FROM trades ORDER BY id DESC LIMIT 200"), con, parse_dates=["ts","trade_date"])
 
 @st.cache_data(ttl=60)
 def load_symbols():
-    with eng.connect() as con:
+    with engine.connect() as con:
         df = pd.read_sql_query(text("SELECT DISTINCT symbol FROM daily_bars ORDER BY symbol"), con)
     return df["symbol"].tolist()
 
@@ -65,14 +64,14 @@ with st.sidebar:
 
     days = st.number_input("Backfill Days", min_value=30, max_value=3650, value=730, step=30)
     if st.button("⬇️ Backfill Market Data"):
-        with st.spinner("Ingesting market data (Alpaca → Polygon)..."):
+        with st.spinner("Ingesting market data (Alpaca → Polygon fallback)..."):
             try:
                 ingest_bars_for_universe(int(days))
                 st.toast("Ingestion complete.", icon="✅")
             except Exception as e:
                 st.error(f"Ingestion failed: {e}")
 
-    if st.button("📊 Ingest Fundamentals (Polygon)"):
+    if st.button("📊 Ingest Fundamentals (Polygon P.I.T.)"):
         with st.spinner("Fetching fundamentals..."):
             try:
                 df = fetch_fundamentals_for_universe()
@@ -118,7 +117,7 @@ with st.sidebar:
     if st.button("🔗 Sync with Broker (Alpaca)"):
         with st.spinner("Submitting to broker..."):
             try:
-                with eng.connect() as con:
+                with engine.connect() as con:
                     recent = pd.read_sql_query(text("SELECT id FROM trades WHERE status='generated' ORDER BY id DESC LIMIT 2000"), con)
                 ids = recent["id"].tolist()
                 if not ids:
@@ -145,7 +144,7 @@ with col1:
         syms = load_symbols()
         if syms:
             sym = st.selectbox("Symbol", syms, index=0)
-            with eng.connect() as con:
+            with engine.connect() as con:
                 prices_df = pd.read_sql_query(
                     text("SELECT ts, COALESCE(adj_close, close) AS close FROM daily_bars WHERE symbol = :symbol ORDER BY ts DESC LIMIT 504"),
                     con,
@@ -165,7 +164,7 @@ with col2:
     bt = st.session_state.get("backtest")
     if bt is None:
         try:
-            with eng.connect() as con:
+            with engine.connect() as con:
                 bt = pd.read_sql_query(text("SELECT * FROM backtest_equity ORDER BY ts"), con, parse_dates=["ts"])
         except Exception:
             bt = None
@@ -180,4 +179,3 @@ try:
     st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv")
 except Exception:
     st.info("No trades yet.")
-
