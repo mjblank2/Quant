@@ -3,8 +3,7 @@ import time, random, requests, logging
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
-def get_json(url: str, params: dict | None = None, max_tries: int = 5, backoff_base: float = 0.5, timeout: float = 20.0) -> dict:
-    params = params or {}
+def get_json(url: str, params: dict | None = None, timeout: float = 20.0, max_tries: int = 4, backoff_base: float = 0.4) -> dict:
     last = None
     for attempt in range(1, max_tries + 1):
         try:
@@ -16,21 +15,13 @@ def get_json(url: str, params: dict | None = None, max_tries: int = 5, backoff_b
             last = (r.status_code, (r.text or '')[:200])
             logging.warning("get_json non-200 url=%s status=%s elapsed=%.3fs body=%s", url, r.status_code, elapsed, (r.text or '')[:180])
             if r.status_code in RETRY_STATUS:
-                # honor Retry-After
-                ra = r.headers.get("Retry-After")
-                if ra:
-                    try:
-                        sleep = float(ra)
-                    except Exception:
-                        sleep = backoff_base * (2 ** (attempt - 1)) * (1 + random.random() * 0.25)
-                else:
-                    sleep = backoff_base * (2 ** (attempt - 1)) * (1 + random.random() * 0.25)
-                time.sleep(min(60, sleep))
-                continue
-            return {}
+                sleep = backoff_base * (2 ** (attempt - 1)) * (1 + random.random() * 0.25)
+                time.sleep(min(30, sleep))
+            else:
+                return {}
         except Exception as e:
             last = repr(e)
             logging.warning("get_json exception url=%s attempt=%d: %s", url, attempt, e)
             sleep = backoff_base * (2 ** (attempt - 1)) * (1 + random.random() * 0.25)
-            time.sleep(min(60, sleep))
+            time.sleep(min(30, sleep))
     return {}

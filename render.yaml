@@ -21,11 +21,14 @@ services:
 
 cronJobs:
   - name: ingest-recent
-    schedule: "45 21 * * 1-5"  # 4:45 PM ET
+    # 21:45 UTC ≈ 4:45pm ET (after US close)
+    schedule: "45 21 * * 1-5"
     command: "python -m data.ingest --days 7"
   - name: refresh-universe
-    schedule: "0 14 * * 1"     # Mondays 14:00 UTC
+    # Mondays 14:00 UTC
+    schedule: "0 14 * * 1"
     command: "python -m data.universe"
   - name: eod-pipeline
-    schedule: "30 22 * * 1-5"  # 5:30 PM ET (post close)
-    command: "python run_pipeline.py"
+    # After ingestion: 22:30 UTC
+    schedule: "30 22 * * 1-5"
+    command: "python run_pipeline.py --days 7"

@@ -1,4 +1,4 @@
-"""fundamentals table + alt_signals + feature fundamental columns
+"""fundamentals + alt_signals + extend features
 
 Revision ID: 20250822_02
 Revises: 20250822_01

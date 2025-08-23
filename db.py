@@ -43,6 +43,7 @@ class Fundamentals(Base):
     __tablename__ = "fundamentals"
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
     as_of: Mapped[date] = mapped_column(Date, primary_key=True)
+    available_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
     pb: Mapped[float | None] = mapped_column(Float, nullable=True)
     ps_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -51,7 +52,10 @@ class Fundamentals(Base):
     gross_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     profit_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-    __table_args__ = (Index("ix_fundamentals_symbol_asof", "symbol", "as_of"),)
+    __table_args__ = (
+        Index("ix_fundamentals_symbol_asof", "symbol", "as_of"),
+        Index("ix_fundamentals_symbol_available_at", "symbol", "available_at"),
+    )
 
 class AltSignal(Base):
     __tablename__ = "alt_signals"
@@ -118,7 +122,8 @@ class Trade(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="generated")
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    __table_args__ = (Index("ix_trades_status_id", "status", "id"),)
+    client_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    __table_args__ = (Index("ix_trades_status_id", "status", "id"), Index("ix_trades_symbol_date", "symbol", "trade_date"))
 
 class BacktestEquity(Base):
     __tablename__ = "backtest_equity"

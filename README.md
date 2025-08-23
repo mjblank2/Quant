@@ -1,47 +1,30 @@
-# Small-Cap Quant System — Institutional Step-Up (Polygon P.I.T.)
+# Small-Cap Quant System — Polygon PIT v7
 
-This release integrates **Polygon point-in-time fundamentals** (async + retries), **Alpaca SIP** market data with a **Polygon aggregates fallback**, incremental feature engineering, a **multi-model ensemble** with robust imputation & cross-sectional normalization, an **exposure-corrected walk-forward backtest**, and safer **limit-order execution**. It also includes an **EOD pipeline** wired via Render cron.
-
-## Highlights
-- **Data**
-  - Prices: Alpaca (feed=SIP) batched; fallback to Polygon /aggs (adjusted).
-  - Fundamentals: Polygon vX reference financials, **as-of** the filing/period date (leak-free).
-  - Async ingestion with bounded concurrency and exponential backoff.
-- **Features**
-  - Incremental, batched; RSI uses **Wilder’s EWM**; turnover uses adjusted price.
-  - Allows sparse fundamentals (ML imputes missing via median).
-- **ML**
-  - XGB / RF / Ridge + **blend_v1** with configurable weights.
-  - Cross-sectional winsorize + z-score per date.
-  - Predictions stored **per model** (PK = symbol, ts, model_version).
-- **Backtest**
-  - Trains full ensemble each tranche; scales daily to target **gross/net**; fills missing returns; applies slippage on open/close.
-- **Trading**
-  - Generates target positions and trades; safer **limit orders** at arrival price ± 5 bps.
-- **Ops**
-  - Docker runs **alembic upgrade head** then Streamlit.
-  - Render cron jobs include **full EOD pipeline** (`run_pipeline.py`).
+**What’s new vs v6:** 
+- Fix **look-ahead leakage** in features: `size_ln` and `turnover_21` are now built from **PIT-safe liquidity proxies** (rolling dollar volume), no current market-cap snapshots.
+- **True PIT fundamentals** using `available_at` (SEC acceptance/filing + **T+1 UTC**) and `merge_asof` on availability.
+- **Daily rebalance costs** charged when scaling to target gross/net (config: `DAILY_REBALANCE_COST_BPS`, default 1.0 bps).
+- **Idempotent orders** to Alpaca via `client_order_id` + numeric limit prices.
+- **Nightly pipeline** actually syncs: re-queries DB for `status='generated'` after trade generation before submitting.
+- Alembic **base migration**, **driver normalization** to psycopg v3, **UTC discipline**, robust latest price query, **ADV participation cap** on trades, and better HTTP logging.
 
 ## Quickstart
 ```bash
-# Set env (Render: use dashboard)
-export DATABASE_URL=postgresql+psycopg://USER:PASS@HOST:PORT/DB
-export POLYGON_API_KEY=...
-
 pip install -r requirements.txt
+export DATABASE_URL="postgresql+psycopg://USER:PASS@HOST:5432/DB"
+export POLYGON_API_KEY="..."
+# optional: Alpaca data/broker
+export APCA_API_KEY_ID="..."
+export APCA_API_SECRET_KEY="..."
 alembic upgrade head
 streamlit run app.py
 ```
 
-## End-to-end (manual)
-1. Rebuild universe (sidebar).
-2. Backfill market data (7–365 days).
-3. Ingest fundamentals (Polygon).
-4. Build features (incremental).
-5. Train & predict (all models + blend).
-6. Generate today's trades; optionally **Sync with Broker**.
+## Nightly pipeline (Render)
+- 21:45 UTC: ingest prices (post-close)
+- 22:30 UTC: full pipeline (fundamentals → features → ML → trades → (optional) broker sync)
 
 ## Notes
-- Universe filters: `market_cap < 3B`, `ADV_USD_20 > 25k`; configurable via env.
-- Backtest and trading respect `GROSS_LEVERAGE`, `NET_EXPOSURE`, and `MAX_POSITION_WEIGHT`.
-- See `render.yaml` for scheduled jobs. EOD pipeline runs post-close.
+- Predictions PK = (symbol, ts, model_version) with index on (ts, model_version) for ensembles.
+- Fundamentals include `as_of` (report period) **and** `available_at` (market knowledge time). Features join on `available_at`.
+- Requirements use **psycopg v3** only; `libgomp1` installed in Docker.

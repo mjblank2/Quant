@@ -20,7 +20,7 @@ except Exception as e:
     st.error(f"DB init failed: {e}")
     st.stop()
 
-_ALLOWED_TABLES = {"daily_bars","features","predictions","backtest_equity","universe","trades","positions","fundamentals"}
+_ALLOWED_TABLES = {"daily_bars","features","predictions","backtest_equity","universe","trades","positions"}
 
 def _max_ts(table: str):
     if table not in _ALLOWED_TABLES:
@@ -39,7 +39,7 @@ def load_universe():
 @st.cache_data(ttl=60)
 def load_trades():
     with engine.connect() as con:
-        return pd.read_sql_query(text("SELECT id, trade_date, symbol, side, quantity, price, status, broker_order_id, ts FROM trades ORDER BY id DESC LIMIT 200"), con, parse_dates=["ts","trade_date"])
+        return pd.read_sql_query(text("SELECT id, trade_date, symbol, side, quantity, price, status, broker_order_id, client_order_id, ts FROM trades ORDER BY id DESC LIMIT 200"), con, parse_dates=["ts","trade_date"])
 
 @st.cache_data(ttl=60)
 def load_symbols():
@@ -64,15 +64,15 @@ with st.sidebar:
 
     days = st.number_input("Backfill Days", min_value=30, max_value=3650, value=730, step=30)
     if st.button("⬇️ Backfill Market Data"):
-        with st.spinner("Ingesting market data (Alpaca → Polygon fallback)..."):
+        with st.spinner("Ingesting market data (Alpaca SIP → Polygon → Tiingo)..."):
             try:
                 ingest_bars_for_universe(int(days))
                 st.toast("Ingestion complete.", icon="✅")
             except Exception as e:
                 st.error(f"Ingestion failed: {e}")
 
-    if st.button("📊 Ingest Fundamentals (Polygon P.I.T.)"):
-        with st.spinner("Fetching fundamentals..."):
+    if st.button("📊 Ingest Fundamentals (Polygon PIT)"):
+        with st.spinner("Fetching fundamentals (PIT)..."):
             try:
                 df = fetch_fundamentals_for_universe()
                 st.toast(f"Fundamentals rows upserted: {len(df)}", icon="✅")

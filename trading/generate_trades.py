@@ -1,7 +1,8 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from datetime import date
+from datetime import datetime, timezone
+import uuid
 from typing import Dict, Iterable
 from sqlalchemy import text, bindparam
 from db import engine, upsert_dataframe, Trade, Position
@@ -15,11 +16,12 @@ def _latest_prices(symbols: Iterable[str]) -> pd.Series:
     symbols = list(dict.fromkeys(symbols))
     if not symbols:
         return pd.Series(dtype=float)
-    stmt = text("""        WITH latest AS (
-            SELECT symbol, MAX(ts) AS ts
-            FROM daily_bars
-            WHERE symbol IN :syms
-            GROUP BY symbol
+    stmt = text("""
+        WITH latest AS (
+          SELECT symbol, MAX(ts) AS ts
+          FROM daily_bars
+          WHERE symbol IN :syms
+          GROUP BY symbol
         )
         SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
         FROM daily_bars b
@@ -33,7 +35,8 @@ def _adv20(symbols: Iterable[str]) -> pd.Series:
     symbols = list(dict.fromkeys(symbols))
     if not symbols:
         return pd.Series(dtype=float)
-    stmt = text("""        SELECT symbol, adv_usd_20
+    stmt = text("""
+        SELECT symbol, adv_usd_20
         FROM universe
         WHERE symbol IN :syms
     """).bindparams(bindparam("syms", expanding=True))
@@ -46,19 +49,14 @@ def _get_current_weights() -> pd.Series:
         cur_ts = con.execute(text("SELECT MAX(ts) FROM positions")).scalar()
         if not cur_ts:
             return pd.Series(dtype=float)
-        df = pd.read_sql_query(
-            text("SELECT symbol, weight FROM positions WHERE ts = :ts"),
-            con,
-            params={"ts": cur_ts}
-        )
+        df = pd.read_sql_query(text("SELECT symbol, weight FROM positions WHERE ts = :ts"), con, params={"ts": cur_ts})
     return df.set_index("symbol")["weight"] if not df.empty else pd.Series(dtype=float)
 
 def _load_latest_predictions() -> pd.DataFrame:
     with engine.connect() as con:
         preds = pd.read_sql_query(
-            text("""                WITH target AS (
-                    SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv
-                )
+            text("""
+                WITH target AS (SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv)
                 SELECT symbol, ts, y_pred FROM predictions
                 WHERE model_version = :mv AND ts = (SELECT mx FROM target)
             """),
@@ -66,10 +64,7 @@ def _load_latest_predictions() -> pd.DataFrame:
             params={"mv": PREFERRED_MODEL}
         )
         if preds.empty:
-            preds = pd.read_sql_query(
-                text("SELECT symbol, ts, y_pred FROM predictions WHERE ts = (SELECT MAX(ts) FROM predictions)"),
-                con
-            )
+            preds = pd.read_sql_query(text("SELECT symbol, ts, y_pred FROM predictions WHERE ts = (SELECT MAX(ts) FROM predictions)"), con)
     return preds
 
 def _compute_side_grosses(gross: float, net: float) -> tuple[float, float]:
@@ -122,19 +117,28 @@ def generate_today_trades() -> pd.DataFrame:
                 continue
 
         shares = int((abs(tgt) * RISK_BUDGET) / max(price, 0.01))
-        pos_rows.append({"ts": date.today(), "symbol": sym, "weight": tgt, "price": price, "shares": shares})
+        pos_rows.append({"ts": datetime.now(timezone.utc).date(), "symbol": sym, "weight": tgt, "price": price, "shares": shares})
 
         delta_w = tgt - cur
         if abs(delta_w) < 1e-9:
             continue
 
         notional = RISK_BUDGET * delta_w
+
+        # participation cap: clamp to <=5% of ADV20
+        adv_val = float(adv20.get(sym, np.nan))
+        if np.isfinite(adv_val) and adv_val > 0:
+            max_notional = 0.05 * adv_val
+            if abs(notional) > max_notional:
+                notional = np.sign(notional) * max_notional
+
         qty = int(abs(notional) / max(price, 0.01))
         if qty <= 0:
             continue
 
         side = "BUY" if delta_w > 0 else "SELL"
-        trade_rows.append({"symbol": sym, "side": side, "quantity": qty, "price": price})
+        coid = f"scq-{sym}-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:10]}"
+        trade_rows.append({"symbol": sym, "side": side, "quantity": qty, "price": price, "client_order_id": coid})
 
     if pos_rows:
         pos_df = pd.DataFrame(pos_rows)
@@ -145,7 +149,7 @@ def generate_today_trades() -> pd.DataFrame:
 
     df = pd.DataFrame(trade_rows)
     df["status"] = "generated"
-    df["trade_date"] = date.today()
+    df["trade_date"] = datetime.now(timezone.utc).date()
     with engine.begin() as conn:
         conn.execute(Trade.__table__.insert(), df.to_dict(orient="records"))
     return df
