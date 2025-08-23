@@ -16,13 +16,20 @@ def _compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
     return rsi
 
 def _last_feature_dates() -> dict[str, pd.Timestamp]:
-    df = pd.read_sql_query(text("SELECT symbol, MAX(ts) AS max_ts FROM features GROUP BY symbol"), get_engine(), parse_dates=["max_ts"])
+    df = pd.read_sql_query(
+        text("SELECT symbol, MAX(ts) AS max_ts FROM features GROUP BY symbol"),
+        get_engine(),
+        parse_dates=["max_ts"],
+    )
     if df is None or df.empty:
         return {}
     return dict(zip(df["symbol"], df["max_ts"]))
 
 def _symbols() -> list[str]:
-    df = pd.read_sql_query(text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"), get_engine())
+    df = pd.read_sql_query(
+        text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"),
+        get_engine(),
+    )
     return df["symbol"].tolist()
 
 def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
@@ -39,7 +46,12 @@ def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFra
             """
         ).bindparams(bindparam("syms", expanding=True))
     )
-    return pd.read_sql_query(stmt, get_engine(), params={"start": start_ts.date(), "syms": tuple(symbols)}, parse_dates=["ts"])
+    return pd.read_sql_query(
+        stmt,
+        get_engine(),
+        params={"start": start_ts.date(), "syms": tuple(symbols)},
+        parse_dates=["ts"],
+    )
 
 def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
     if not symbols:
@@ -55,7 +67,9 @@ def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
             """
         ).bindparams(bindparam("syms", expanding=True))
     )
-    return pd.read_sql_query(stmt, get_engine(), params={"syms": tuple(symbols)}, parse_dates=["as_of"])
+    return pd.read_sql_query(
+        stmt, get_engine(), params={"syms": tuple(symbols)}, parse_dates=["as_of"]
+    )
 
 def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame:
     syms = _symbols()
@@ -63,7 +77,10 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
         return pd.DataFrame()
 
     last_map = _last_feature_dates()
-    uni = pd.read_sql_query(text("SELECT symbol, market_cap FROM universe WHERE included = TRUE"), get_engine()).set_index("symbol")
+    uni = pd.read_sql_query(
+        text("SELECT symbol, market_cap FROM universe WHERE included = TRUE"),
+        get_engine(),
+    ).set_index("symbol")
 
     all_new_rows: list[pd.DataFrame] = []
 
@@ -100,12 +117,30 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g["rsi_14"] = _compute_rsi(p, 14)
 
             dv = (g["price_feat"] * g["volume"]).rolling(21).mean()
-            mc = float(uni.loc[sym, "market_cap"]) if sym in uni.index and pd.notnull(uni.loc[sym, "market_cap"]) else np.nan
+            mc = (
+                float(uni.loc[sym, "market_cap"])
+                if sym in uni.index and pd.notnull(uni.loc[sym, "market_cap"])
+                else np.nan
+            )
             g["turnover_21"] = (dv / mc) if mc and mc > 0 else np.nan
             g["size_ln"] = np.log(mc) if mc and mc > 0 else np.nan
 
-            # Fundamentals as-of join
-            f_sym = fnd[fnd["symbol"] == sym][["as_of","pe_ttm","pb","ps_ttm","debt_to_equity","return_on_assets","gross_margins","profit_margins","current_ratio"]].sort_values("as_of")
+            # Fundamentals as-of join (point-in-time)
+            f_sym = fnd[
+                fnd["symbol"] == sym
+            ][
+                [
+                    "as_of",
+                    "pe_ttm",
+                    "pb",
+                    "ps_ttm",
+                    "debt_to_equity",
+                    "return_on_assets",
+                    "gross_margins",
+                    "profit_margins",
+                    "current_ratio",
+                ]
+            ].sort_values("as_of")
             if not f_sym.empty:
                 g = pd.merge_asof(
                     g.sort_values("ts"),
@@ -140,18 +175,35 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 g = g[g["ts"] > pd.Timestamp(last_ts)]
 
             fcols = [
-                "symbol","ts","ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln",
-                "f_pe_ttm","f_pb","f_ps_ttm","f_debt_to_equity","f_roa","f_gm","f_profit_margin","f_current_ratio"
+                "symbol",
+                "ts",
+                "ret_1d",
+                "ret_5d",
+                "ret_21d",
+                "mom_21",
+                "mom_63",
+                "vol_21",
+                "rsi_14",
+                "turnover_21",
+                "size_ln",
+                "f_pe_ttm",
+                "f_pb",
+                "f_ps_ttm",
+                "f_debt_to_equity",
+                "f_roa",
+                "f_gm",
+                "f_profit_margin",
+                "f_current_ratio",
             ]
             # Keep rows if essential price features exist; allow NaNs in fundamentals/size/turnover
-            essential = ["ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14"]
+            essential = ["ret_1d", "ret_5d", "ret_21d", "mom_21", "mom_63", "vol_21", "rsi_14"]
             g_ok = g.dropna(subset=essential)
             if not g_ok.empty:
                 out_frames.append(g_ok[fcols])
 
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
-            upsert_dataframe(feats, Feature, ["symbol","ts"])
+            upsert_dataframe(feats, Feature, ["symbol", "ts"])
             all_new_rows.append(feats)
 
     return pd.concat(all_new_rows, ignore_index=True) if all_new_rows else pd.DataFrame()
