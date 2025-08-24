@@ -1,9 +1,9 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone
-import uuid
+from datetime import date, datetime, timezone
 from typing import Dict, Iterable
+import uuid
 from sqlalchemy import text, bindparam
 from db import engine, upsert_dataframe, Trade, Position
 from config import (
@@ -49,14 +49,20 @@ def _get_current_weights() -> pd.Series:
         cur_ts = con.execute(text("SELECT MAX(ts) FROM positions")).scalar()
         if not cur_ts:
             return pd.Series(dtype=float)
-        df = pd.read_sql_query(text("SELECT symbol, weight FROM positions WHERE ts = :ts"), con, params={"ts": cur_ts})
+        df = pd.read_sql_query(
+            text("SELECT symbol, weight FROM positions WHERE ts = :ts"),
+            con,
+            params={"ts": cur_ts}
+        )
     return df.set_index("symbol")["weight"] if not df.empty else pd.Series(dtype=float)
 
 def _load_latest_predictions() -> pd.DataFrame:
     with engine.connect() as con:
         preds = pd.read_sql_query(
             text("""
-                WITH target AS (SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv)
+                WITH target AS (
+                    SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv
+                )
                 SELECT symbol, ts, y_pred FROM predictions
                 WHERE model_version = :mv AND ts = (SELECT mx FROM target)
             """),
@@ -64,7 +70,10 @@ def _load_latest_predictions() -> pd.DataFrame:
             params={"mv": PREFERRED_MODEL}
         )
         if preds.empty:
-            preds = pd.read_sql_query(text("SELECT symbol, ts, y_pred FROM predictions WHERE ts = (SELECT MAX(ts) FROM predictions)"), con)
+            preds = pd.read_sql_query(
+                text("SELECT symbol, ts, y_pred FROM predictions WHERE ts = (SELECT MAX(ts) FROM predictions)"),
+                con
+            )
     return preds
 
 def _compute_side_grosses(gross: float, net: float) -> tuple[float, float]:
@@ -117,21 +126,13 @@ def generate_today_trades() -> pd.DataFrame:
                 continue
 
         shares = int((abs(tgt) * RISK_BUDGET) / max(price, 0.01))
-        pos_rows.append({"ts": datetime.now(timezone.utc).date(), "symbol": sym, "weight": tgt, "price": price, "shares": shares})
+        pos_rows.append({"ts": date.today(), "symbol": sym, "weight": tgt, "price": price, "shares": shares})
 
         delta_w = tgt - cur
         if abs(delta_w) < 1e-9:
             continue
 
         notional = RISK_BUDGET * delta_w
-
-        # participation cap: clamp to <=5% of ADV20
-        adv_val = float(adv20.get(sym, np.nan))
-        if np.isfinite(adv_val) and adv_val > 0:
-            max_notional = 0.05 * adv_val
-            if abs(notional) > max_notional:
-                notional = np.sign(notional) * max_notional
-
         qty = int(abs(notional) / max(price, 0.01))
         if qty <= 0:
             continue
@@ -149,7 +150,7 @@ def generate_today_trades() -> pd.DataFrame:
 
     df = pd.DataFrame(trade_rows)
     df["status"] = "generated"
-    df["trade_date"] = datetime.now(timezone.utc).date()
+    df["trade_date"] = date.today()
     with engine.begin() as conn:
         conn.execute(Trade.__table__.insert(), df.to_dict(orient="records"))
     return df

@@ -6,8 +6,6 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
-      - key: POLYGON_API_KEY
-        sync: false
       - key: APCA_API_KEY_ID
         sync: false
       - key: APCA_API_SECRET_KEY
@@ -16,19 +14,18 @@ services:
         value: https://paper-api.alpaca.markets
       - key: ALPACA_DATA_FEED
         value: sip
-      - key: PIPELINE_SYNC_BROKER
-        value: "false"
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: TIINGO_API_KEY
+        sync: false
 
 cronJobs:
   - name: ingest-recent
-    # 21:45 UTC ≈ 4:45pm ET (after US close)
-    schedule: "45 21 * * 1-5"
+    schedule: "45 21 * * 1-5"   # Run after US close
     command: "python -m data.ingest --days 7"
   - name: refresh-universe
-    # Mondays 14:00 UTC
     schedule: "0 14 * * 1"
     command: "python -m data.universe"
   - name: eod-pipeline
-    # After ingestion: 22:30 UTC
-    schedule: "30 22 * * 1-5"
-    command: "python run_pipeline.py --days 7"
+    schedule: "30 22 * * 1-5"   # After ingestion
+    command: "python run_pipeline.py"

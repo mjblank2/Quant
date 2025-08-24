@@ -1,11 +1,12 @@
 from __future__ import annotations
+from datetime import date, timedelta
+from typing import List, Dict, Any
 import asyncio
 import pandas as pd
 from sqlalchemy import text, bindparam
 from db import engine, upsert_dataframe, Universe
-from config import MARKET_CAP_MAX, ADV_USD_MIN, APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL, POLYGON_API_KEY, HTTP_TIMEOUT, HTTP_CONCURRENCY
-from utils_http_async import get_json_async
-import aiohttp
+from config import MARKET_CAP_MAX, ADV_USD_MIN, APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL, POLYGON_API_KEY
+from utils_http import get_json_async
 
 def _list_alpaca_assets() -> pd.DataFrame:
     import alpaca_trade_api as tradeapi
@@ -17,62 +18,69 @@ def _list_alpaca_assets() -> pd.DataFrame:
             if getattr(a, 'tradable', False) and getattr(a, 'status', 'active') == 'active':
                 exch = getattr(a, 'exchange', '') or getattr(a, 'primary_exchange', '')
                 if exch in {'NYSE','NASDAQ','ARCA','BATS','AMEX'}:
-                    cls = getattr(a, 'class', getattr(a, 'asset_class', ''))
-                    if cls in {'us_equity','US_EQUITY',''}:
+                    if getattr(a, 'class', 'us_equity') in {'us_equity','US_EQUITY'} or getattr(a, 'asset_class', 'us_equity') in {'us_equity','US_EQUITY'}:
                         rows.append({'symbol': a.symbol, 'name': getattr(a, 'name', None), 'exchange': exch})
         except Exception:
             continue
     return pd.DataFrame(rows).drop_duplicates(subset=['symbol'])
 
-async def _poly_adv_mcap_async(symbols: list[str]) -> pd.DataFrame:
-    if not POLYGON_API_KEY or not symbols:
-        return pd.DataFrame(columns=['symbol','market_cap','adv_usd_20'])
-    end = pd.Timestamp.utcnow().normalize().date()
-    start = (pd.Timestamp(end) - pd.Timedelta(days=60)).date()
-    start_s = pd.Timestamp(start).strftime('%Y-%m-%d')
-    end_s = pd.Timestamp(end).strftime('%Y-%m-%d')
+async def _poly_ticker_info(symbol: str) -> Dict[str, Any]:
+    if not POLYGON_API_KEY:
+        return {}
+    url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
+    return await get_json_async(url, params={"apiKey": POLYGON_API_KEY})
 
-    sem = asyncio.Semaphore(HTTP_CONCURRENCY)
+async def _poly_adv(symbol: str, start: date, end: date) -> float | None:
+    if not POLYGON_API_KEY:
+        return None
+    url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start.isoformat()}/{end.isoformat()}"
+    js = await get_json_async(url, params={"adjusted": "true", "sort": "asc", "apiKey": POLYGON_API_KEY})
+    try:
+        results = js.get("results") or []
+        if not results:
+            return None
+        import numpy as np
+        c = pd.Series([r.get("c") for r in results], dtype="float64")
+        v = pd.Series([r.get("v") for r in results], dtype="float64")
+        dv = (c * v).rolling(20).mean().iloc[-1]
+        return float(dv) if pd.notnull(dv) else None
+    except Exception:
+        return None
 
-    async def fetch_one(session: aiohttp.ClientSession, s: str):
-        async with sem:
-            aggs_url = f"https://api.polygon.io/v2/aggs/ticker/{s}/range/1/day/{start_s}/{end_s}"
-            aggs = await get_json_async(session, aggs_url, params={"adjusted":"true","sort":"desc","limit":120,"apiKey":POLYGON_API_KEY}, timeout=HTTP_TIMEOUT)
-            dv20 = None
-            last_close = None
-            if aggs and aggs.get("results"):
-                res = aggs["results"]
-                import pandas as _pd
-                df = _pd.DataFrame([{"c": r.get("c"), "v": r.get("v"), "t": r.get("t")} for r in res])
-                if not df.empty:
-                    df["dv"] = df["c"] * df["v"]
-                    df = df.sort_values("t")
-                    dv20 = float(df["dv"].rolling(20).mean().iloc[-1]) if len(df) >= 20 else None
-                    last_close = float(df["c"].iloc[-1])
-            ref_url = f"https://api.polygon.io/v3/reference/tickers/{s}"
-            ref = await get_json_async(session, ref_url, params={"date": end_s, "apiKey": POLYGON_API_KEY}, timeout=HTTP_TIMEOUT)
-            mcap = None
-            if ref and ref.get("results"):
-                rr = ref["results"]
-                mcap = rr.get("market_cap")
-                if not mcap and last_close is not None:
-                    shares = rr.get("share_class_shares_outstanding") or rr.get("weighted_shares_outstanding")
-                    if shares:
-                        try:
-                            mcap = float(last_close) * float(shares)
-                        except Exception:
-                            pass
-            return {"symbol": s, "market_cap": mcap, "adv_usd_20": dv20}
-
-    async with aiohttp.ClientSession() as session:
-        rows = await asyncio.gather(*(fetch_one(session, s) for s in symbols))
+async def _enrich_polygon(symbols: List[str]) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame(columns=["symbol","market_cap","adv_usd_20"])
+    today = pd.Timestamp("today").normalize().date()
+    start = today - timedelta(days=45)
+    tasks_info = [_poly_ticker_info(s) for s in symbols]
+    tasks_adv  = [_poly_adv(s, start, today) for s in symbols]
+    infos = await asyncio.gather(*tasks_info)
+    advs  = await asyncio.gather(*tasks_adv)
+    rows = []
+    for s, info, adv in zip(symbols, infos, advs):
+        mc = None
+        try:
+            res = (info or {}).get("results") or {}
+            mc = res.get("market_cap")
+        except Exception:
+            mc = None
+        rows.append({"symbol": s, "market_cap": mc, "adv_usd_20": adv})
     return pd.DataFrame(rows)
+
+def _enrich_universe(symbols: List[str]) -> pd.DataFrame:
+    if POLYGON_API_KEY:
+        try:
+            return asyncio.run(_enrich_polygon(symbols))
+        except Exception:
+            pass
+    # Fallback: set None (you can add yfinance fallback if desired)
+    return pd.DataFrame([{"symbol": s, "market_cap": None, "adv_usd_20": None} for s in symbols])
 
 def rebuild_universe() -> pd.DataFrame:
     base = _list_alpaca_assets()
     if base.empty:
-        raise RuntimeError("No assets from Alpaca; check credentials/entitlements.")
-    enrich = asyncio.run(_poly_adv_mcap_async(base['symbol'].tolist()))
+        raise RuntimeError("No assets returned from Alpaca; check credentials/entitlements.")
+    enrich = _enrich_universe(base['symbol'].tolist())
     df = base.merge(enrich, on='symbol', how='left')
     df['include_mc'] = df['market_cap'].fillna(0) < MARKET_CAP_MAX
     df['include_adv'] = df['adv_usd_20'].fillna(0) > ADV_USD_MIN
@@ -81,10 +89,9 @@ def rebuild_universe() -> pd.DataFrame:
     out = df.loc[df['included'], ['symbol','name','exchange','market_cap','adv_usd_20','included','last_updated']].drop_duplicates(subset=['symbol'])
 
     if out.empty:
-        raise RuntimeError("Universe rebuild produced empty set; refusing to overwrite existing universe.")
+        raise RuntimeError("Universe rebuild produced empty set; keeping prior universe.")
 
-    new_syms = tuple(out["symbol"].unique().tolist())
-
+    new_syms = tuple(out['symbol'].unique().tolist())
     with engine.begin() as con:
         upsert_dataframe(out, Universe, ['symbol'], conn=con)
         if new_syms:

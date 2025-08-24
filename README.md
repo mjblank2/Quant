@@ -1,30 +1,36 @@
-# Small-Cap Quant System — Polygon PIT v7
+# Small-Cap Quant System — Polygon PTI + Ensemble (v8)
 
-**What’s new vs v6:** 
-- Fix **look-ahead leakage** in features: `size_ln` and `turnover_21` are now built from **PIT-safe liquidity proxies** (rolling dollar volume), no current market-cap snapshots.
-- **True PIT fundamentals** using `available_at` (SEC acceptance/filing + **T+1 UTC**) and `merge_asof` on availability.
-- **Daily rebalance costs** charged when scaling to target gross/net (config: `DAILY_REBALANCE_COST_BPS`, default 1.0 bps).
-- **Idempotent orders** to Alpaca via `client_order_id` + numeric limit prices.
-- **Nightly pipeline** actually syncs: re-queries DB for `status='generated'` after trade generation before submitting.
-- Alembic **base migration**, **driver normalization** to psycopg v3, **UTC discipline**, robust latest price query, **ADV participation cap** on trades, and better HTTP logging.
+**Highlights**
+
+- **Polygon-first**: prices & *point-in-time* fundamentals (no leakage) with retries/backoff.
+- **Incremental features**: momentum/vol/RSI (Wilder), turnover (using adjusted prices), size, + fundamentals.
+- **Multi-model**: XGB / RF / Ridge pipelines with `SimpleImputer` + `StandardScaler`, plus blended `blend_v1`.
+- **Backtest**: walk-forward, tranche rebalances, *daily exposure scaling* to target gross/net; robust to missing prints.
+- **Trade gen**: uses preferred model, ADV/price gates, writes positions & trades; broker sync via **limit** orders.
+- **DB & Migrations**: SQLAlchemy 2.0, Alembic. `predictions` PK is now `(symbol, ts, model_version)`.
+- **Ops**: Dockerized; Render cron runs ingestion, weekly universe refresh, and full EOD pipeline.
 
 ## Quickstart
+
 ```bash
+# 1) Configure environment (DATABASE_URL, POLYGON_API_KEY, Alpaca keys...)
+cp .env.example .env  # edit values
+
+# 2) Build & run locally
 pip install -r requirements.txt
-export DATABASE_URL="postgresql+psycopg://USER:PASS@HOST:5432/DB"
-export POLYGON_API_KEY="..."
-# optional: Alpaca data/broker
-export APCA_API_KEY_ID="..."
-export APCA_API_SECRET_KEY="..."
 alembic upgrade head
 streamlit run app.py
+
+# 3) Production (Docker)
+docker build -t smallcap-quant:latest .
+docker run -e DATABASE_URL=... -e POLYGON_API_KEY=... -p 8501:8501 smallcap-quant:latest
 ```
 
-## Nightly pipeline (Render)
-- 21:45 UTC: ingest prices (post-close)
-- 22:30 UTC: full pipeline (fundamentals → features → ML → trades → (optional) broker sync)
-
 ## Notes
-- Predictions PK = (symbol, ts, model_version) with index on (ts, model_version) for ensembles.
-- Fundamentals include `as_of` (report period) **and** `available_at` (market knowledge time). Features join on `available_at`.
-- Requirements use **psycopg v3** only; `libgomp1` installed in Docker.
+
+- Fundamentals are fetched from Polygon's `vX/reference/financials`; we store **as_of** using the filing/period date and join with `merge_asof(direction='backward')` to avoid look-ahead.
+- Prices use Alpaca batch bars (adjusted, **SIP** feed if entitled), then Polygon aggs, then Tiingo.
+- Universe build is **atomic**: upsert the new set first, then flip any prior names to `included = FALSE` in the same transaction.
+- `run_pipeline.py` executes the full EOD flow for cron.
+
+> ⚠️ Trading is risky; paper trade first. Ensure entitlements for SIP data and API quotas are appropriate for your universe.

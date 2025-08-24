@@ -1,37 +1,31 @@
 from __future__ import annotations
 from typing import List, Dict
-import logging, uuid
+import logging
 from db import SessionLocal, Trade
 from config import APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL
 
 log = logging.getLogger(__name__)
 
-# Use LIMIT orders with ±5 bps around arrival price for safer execution
 def _submit_order_alpaca(symbol: str, qty: int, side: str, arrival_price: float | None = None, client_order_id: str | None = None) -> str | None:
     try:
         import alpaca_trade_api as tradeapi
         api = tradeapi.REST(key_id=APCA_API_KEY_ID, secret_key=APCA_API_SECRET_KEY, base_url=APCA_API_BASE_URL)
 
-        order_type = 'market'
-        limit_price_val = None
-        if arrival_price and arrival_price > 0:
-            BUFFER_BPS = 5.0
-            tolerance = BUFFER_BPS / 10000.0
-            order_type = 'limit'
-            tick = 0.01  # TODO: per-symbol tick if available
-            raw = arrival_price * (1 + tolerance) if side.lower() == 'buy' else arrival_price * (1 - tolerance)
-            limit_price_val = round(round(raw / tick) * tick, 2)
-        else:
-            log.warning("Submitting MARKET order for %s as no valid price was provided.", symbol)
-
-        client_order_id = f"scq-{symbol}-{uuid.uuid4().hex[:12]}"
-                # Idempotency: if a client_order_id exists, try to fetch it first
+        # Idempotency: if client_order_id exists, return existing order
         if client_order_id:
             try:
                 existing = api.get_order_by_client_order_id(client_order_id)
-                return getattr(existing, "id", None)
+                return getattr(existing, 'id', None)
             except Exception:
                 pass
+
+        order_type = 'market'
+        limit_price = None
+        if arrival_price and arrival_price > 0:
+            BUFFER_BPS = 5.0
+            tol = BUFFER_BPS / 10000.0
+            order_type = 'limit'
+            limit_price = round(arrival_price * (1 + tol), 2) if side.lower() == 'buy' else round(arrival_price * (1 - tol), 2)
 
         order = api.submit_order(
             symbol=symbol,
@@ -39,13 +33,12 @@ def _submit_order_alpaca(symbol: str, qty: int, side: str, arrival_price: float 
             side=side.lower(),
             type=order_type,
             time_in_force='day',
-            limit_price=limit_price_val,
             client_order_id=client_order_id,
-            client_order_id=client_order_id
+            limit_price=limit_price
         )
         return getattr(order, "id", None)
     except Exception as e:
-        log.error("Error submitting order for %s (Qty: %d, Side: %s): %s", symbol, qty, side, e)
+        log.error("Error submitting order for %s: %s", symbol, e)
         return None
 
 def sync_trades_to_broker(trade_ids: List[int]) -> Dict[int, str]:
@@ -61,7 +54,7 @@ def sync_trades_to_broker(trade_ids: List[int]) -> Dict[int, str]:
             return results
 
         for t in trades:
-            oid = _submit_order_alpaca(t.symbol, t.quantity, t.side, t.price, getattr(t, "client_order_id", None))
+            oid = _submit_order_alpaca(t.symbol, t.quantity, t.side, t.price, getattr(t, 'client_order_id', None))
             if oid:
                 t.status = "submitted"
                 t.broker_order_id = oid

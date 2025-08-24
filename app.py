@@ -1,3 +1,4 @@
+from __future__ import annotations
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -12,7 +13,7 @@ from trading.generate_trades import generate_today_trades
 from trading.broker import sync_trades_to_broker
 
 st.set_page_config(page_title="Small-Cap Quant System", layout="wide")
-st.title("📈 Small-Cap Quant System – Live")
+st.title("📈 Small-Cap Quant System – Live (Polygon PTI + Ensemble)")
 
 try:
     create_tables()
@@ -20,7 +21,7 @@ except Exception as e:
     st.error(f"DB init failed: {e}")
     st.stop()
 
-_ALLOWED_TABLES = {"daily_bars","features","predictions","backtest_equity","universe","trades","positions"}
+_ALLOWED_TABLES = {"daily_bars","features","predictions","backtest_equity","universe","trades","positions","fundamentals"}
 
 def _max_ts(table: str):
     if table not in _ALLOWED_TABLES:
@@ -64,15 +65,15 @@ with st.sidebar:
 
     days = st.number_input("Backfill Days", min_value=30, max_value=3650, value=730, step=30)
     if st.button("⬇️ Backfill Market Data"):
-        with st.spinner("Ingesting market data (Alpaca SIP → Polygon → Tiingo)..."):
+        with st.spinner("Ingesting market data (Alpaca → Polygon → Tiingo)..."):
             try:
                 ingest_bars_for_universe(int(days))
                 st.toast("Ingestion complete.", icon="✅")
             except Exception as e:
                 st.error(f"Ingestion failed: {e}")
 
-    if st.button("📊 Ingest Fundamentals (Polygon PIT)"):
-        with st.spinner("Fetching fundamentals (PIT)..."):
+    if st.button("📊 Ingest Fundamentals (Polygon PTI)"):
+        with st.spinner("Fetching fundamentals (point-in-time from Polygon)..."):
             try:
                 df = fetch_fundamentals_for_universe()
                 st.toast(f"Fundamentals rows upserted: {len(df)}", icon="✅")
@@ -87,8 +88,8 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Features failed: {e}")
 
-    if st.button("🤖 Train & Predict (all models + blend)"):
-        with st.spinner("Training models (XGB / RF / Ridge) & blending..."):
+    if st.button("🤖 Train & Predict (XGB / RF / Ridge + blend)"):
+        with st.spinner("Training models & blending..."):
             try:
                 outs = train_and_predict_all_models()
                 total = sum(len(v) for v in outs.values()) if outs else 0
@@ -96,8 +97,8 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Training/predict failed: {e}")
 
-    if st.button("🧪 Run Walk-Forward Backtest (full)"):
-        with st.spinner("Running walk-forward backtest with overlapping tranches..."):
+    if st.button("🧪 Walk-Forward Backtest"):
+        with st.spinner("Running walk-forward backtest with exposure scaling..."):
             try:
                 bt = run_walkforward_backtest()
                 st.session_state["backtest"] = bt

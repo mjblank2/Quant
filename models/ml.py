@@ -11,12 +11,14 @@ from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from db import engine, upsert_dataframe, Prediction, BacktestEquity
-from config import BACKTEST_START, TARGET_HORIZON_DAYS, TOP_N, SLIPPAGE_BPS, BLEND_WEIGHTS, GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT, DAILY_REBALANCE_COST_BPS
+from config import (
+    BACKTEST_START, TARGET_HORIZON_DAYS, TOP_N, SLIPPAGE_BPS, BLEND_WEIGHTS,
+    GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT
+)
 
 PRICE_SQL = "SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts >= :start AND ts <= :end"
 FEATURE_COLS = ["ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14","turnover_21","size_ln",
                 "f_pe_ttm","f_pb","f_ps_ttm","f_debt_to_equity","f_roa","f_gm","f_profit_margin","f_current_ratio"]
-ESSENTIAL_COLS = ["ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14"]
 
 def _latest_feature_date() -> pd.Timestamp | None:
     df = pd.read_sql_query(text("SELECT MAX(ts) AS max_ts FROM features"), engine, parse_dates=["max_ts"])
@@ -85,7 +87,8 @@ def train_and_predict_all_models(window_years: int = 4):
     px["fwd_ret"] = (px["px_fwd"] / px["px"]) - 1.0
     df = feats.merge(px[["symbol","ts","fwd_ret"]], on=["symbol","ts"], how="left")
 
-    train_df = df.dropna(subset=ESSENTIAL_COLS + ["fwd_ret"]).copy()
+    # Train on rows with target; features imputed in pipeline
+    train_df = df.dropna(subset=["fwd_ret"]).copy()
     latest_df = feats[feats["ts"] == latest_ts].copy()
     if train_df.empty or latest_df.empty:
         return {}
@@ -109,11 +112,12 @@ def train_and_predict_all_models(window_years: int = 4):
         outputs[name] = out.copy()
         upsert_dataframe(out[["symbol","ts","y_pred","model_version"]], Prediction, ["symbol","ts","model_version"])
 
+    # Blend
     from config import BLEND_WEIGHTS
     w = _parse_blend_weights(BLEND_WEIGHTS)
     if w:
         sym = latest_df["symbol"].tolist()
-        blend = np.zeros(len(sym), dtype=float)
+        blend = np.zeros(len(sym))
         for name, weight in w.items():
             if name in preds_dict:
                 series = preds_dict[name].reindex(sym).fillna(0.0).values
@@ -144,7 +148,6 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
     rows = []
     active_weights = {}
     scheduled_exits = {}
-    prev_scaled_w = None  # for daily turnover costs
 
     def tranche_weights(pred_df: pd.DataFrame):
         pred_df = pred_df.sort_values("y_pred", ascending=False)
@@ -155,7 +158,7 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
             return {s: per_w for s in longs}
         return {}
 
-    def model_for_window():
+    def model_for_window(train_df: pd.DataFrame):
         return Pipeline([("imputer", SimpleImputer(strategy="median")),
                          ("scaler", StandardScaler()),
                          ("xgb", XGBRegressor(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=max(1,(cpu_count() or 2)-1), tree_method="hist"))])
@@ -170,12 +173,11 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
             px_fwd["fwd_ret"] = (px_fwd["px_fwd"] / px_fwd["px"]) - 1.0
             joined = feats_all.merge(px_fwd[["symbol","ts","fwd_ret"]], on=["symbol","ts"], how="left")
             train_df = joined[(joined["ts"] < d) & (joined["ts"] >= train_start) & (~joined["fwd_ret"].isna())]
-            train_df = train_df.dropna(subset=ESSENTIAL_COLS)
             today_feats = feats_all[feats_all["ts"] == d]
             if not train_df.empty and not today_feats.empty:
                 X = train_df[FEATURE_COLS].values
                 y = train_df["fwd_ret"].values
-                pipe = model_for_window()
+                pipe = model_for_window(train_df)
                 pipe.fit(X, y)
                 preds = pipe.predict(today_feats[FEATURE_COLS].values)
                 pred_df = today_feats[["symbol"]].copy()
@@ -197,28 +199,23 @@ def run_walkforward_backtest(rebalance_every: int = 5, window_years: int = 6, al
         if day_px.shape[1] == 2 and active_weights:
             ret = (day_px.iloc[:,1] / day_px.iloc[:,0]) - 1.0
             ret = ret.fillna(0.0)
-            w = pd.Series(active_weights, dtype=float).reindex(ret.index).fillna(0.0)
-
-            # Scale to target gross & net exposure each day
+            w_prev = pd.Series(active_weights, dtype=float)
+            ret_aligned = ret.reindex(w_prev.index).fillna(0.0)
+            w_work = w_prev.copy()
+            traded = w_prev.index.intersection(ret.index)
             tgtL = max(0.0, (GROSS_LEVERAGE + NET_EXPOSURE) / 2.0)
             tgtS = max(0.0, (GROSS_LEVERAGE - NET_EXPOSURE) / 2.0)
-            curL = float(w[w > 0].sum()); curS = float(-w[w < 0].sum())
-            w_scaled = w.copy()
-            if curL > 0: w_scaled[w_scaled > 0] *= (tgtL / curL)
-            if curS > 0: w_scaled[w_scaled < 0] *= (tgtS / curS)
-
-            # Charge daily rebalance costs based on turnover vs prior scaled weights
-            if prev_scaled_w is not None:
-                joint = w_scaled.reindex(prev_scaled_w.index).fillna(0.0)
-                prev = prev_scaled_w.reindex(w_scaled.index).fillna(0.0)
-                turnover = float((joint - prev).abs().sum())
-                cost = (DAILY_REBALANCE_COST_BPS / 10000.0) * turnover
-                equity *= (1.0 - cost)
-
-            port_ret = float((w_scaled * ret).sum())
+            pos_mask = (w_work.index.isin(traded)) & (w_work > 0)
+            neg_mask = (w_work.index.isin(traded)) & (w_work < 0)
+            curL = float(w_work[pos_mask].sum()); curS = float(-w_work[neg_mask].sum())
+            if curL > 0: w_work[pos_mask] *= (tgtL / curL)
+            if curS > 0: w_work[neg_mask] *= (tgtS / curS)
+            turnover = float((w_work[traded] - w_prev[traded]).abs().sum())
+            cost = (DAILY_REBALANCE_COST_BPS / 10000.0) * turnover
+            equity *= (1.0 - cost)
+            port_ret = float((w_work.reindex(ret_aligned.index) * ret_aligned).sum())
             equity *= (1.0 + port_ret)
-            prev_scaled_w = w_scaled
-
+            active_weights = {k: float(v) for k, v in w_work.items() if abs(v) > 1e-12}
         rows.append({"ts": d.date(), "equity": equity})
 
         if pd.Timestamp(d) in scheduled_exits:
