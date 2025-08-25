@@ -1,5 +1,6 @@
 from __future__ import annotations
-import os, pandas as pd
+import os
+import pandas as pd
 from sqlalchemy import text
 from db import engine
 
@@ -65,4 +66,3 @@ def build_sector_dummies(symbols: list[str], as_of) -> pd.DataFrame:
     d = d - d.mean(axis=0)  # sum-to-zero encoding
     d.index = symbols
     return d
-===== END FILE =====

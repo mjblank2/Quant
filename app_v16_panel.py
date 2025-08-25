@@ -1,5 +1,6 @@
 from __future__ import annotations
-import streamlit as st, pandas as pd
+import streamlit as st
+import pandas as pd
 from sqlalchemy import text
 from db import engine
 from risk.risk_model import portfolio_beta
@@ -21,7 +22,8 @@ def app_panel_v16():
     ts = latest_ts['ts'].iloc[0]
     tp = _df("SELECT symbol, weight FROM target_positions WHERE ts=:t ORDER BY weight DESC", {'t': ts})
     if tp.empty:
-        st.info("No targets for latest date."); return
+        st.info("No targets for latest date.")
+        return
 
     st.subheader("Current Target Book")
     st.dataframe(tp)
@@ -47,4 +49,3 @@ def app_panel_v16():
 
 if __name__ == "__main__":
     app_panel_v16()
-===== END FILE =====

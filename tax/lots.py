@@ -1,6 +1,4 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from datetime import date, timedelta
 import pandas as pd
 from sqlalchemy import text
 from db import engine
@@ -110,4 +108,3 @@ def tax_sell_penalty_bps(symbol: str, as_of) -> float:
         if holding_days <= TAX_WASH_DAYS:
             penalty += 10.0
     return penalty
-===== END FILE =====
