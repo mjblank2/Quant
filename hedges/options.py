@@ -39,4 +39,3 @@ def choose_put_strike(S: float, r_annual: float, spec: PutHedgeSpec) -> float:
 
 def hedge_budget_notional(equity: float, spec: PutHedgeSpec) -> float:
     return equity * spec.notional_pct
-===== END FILE =====
