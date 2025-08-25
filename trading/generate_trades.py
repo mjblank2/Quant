@@ -1,156 +1,138 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Dict, Iterable
-import uuid
 from sqlalchemy import text, bindparam
-from db import engine, upsert_dataframe, Trade, Position
+from db import engine, upsert_dataframe, Trade, TargetPosition, CurrentPosition
 from config import (
-    TOP_N, LONG_TOP_N, SHORT_TOP_N, ALLOW_SHORTS,
-    GROSS_LEVERAGE, NET_EXPOSURE, RISK_BUDGET, MAX_POSITION_WEIGHT,
-    MIN_PRICE, MIN_ADV_USD, PREFERRED_MODEL
+    LONG_TOP_N, SHORT_TOP_N, ALLOW_SHORTS,
+    GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT,
+    MIN_PRICE, MIN_ADV_USD, PREFERRED_MODEL, STARTING_CAPITAL
 )
+import logging
+from portfolio.optimizer import build_portfolio
+from tax.lots import rebuild_tax_lots_from_trades
 
-def _latest_prices(symbols: Iterable[str]) -> pd.Series:
-    symbols = list(dict.fromkeys(symbols))
-    if not symbols:
-        return pd.Series(dtype=float)
-    stmt = text("""
-        WITH latest AS (
-          SELECT symbol, MAX(ts) AS ts
-          FROM daily_bars
-          WHERE symbol IN :syms
-          GROUP BY symbol
-        )
-        SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
-        FROM daily_bars b
-        JOIN latest l ON b.symbol = l.symbol AND b.ts = l.ts
-    """).bindparams(bindparam("syms", expanding=True))
-    with engine.connect() as con:
-        df = pd.read_sql_query(stmt, con, params={"syms": tuple(symbols)})
-    return df.set_index("symbol")["px"] if not df.empty else pd.Series(dtype=float)
+log = logging.getLogger(__name__)
 
-def _adv20(symbols: Iterable[str]) -> pd.Series:
-    symbols = list(dict.fromkeys(symbols))
-    if not symbols:
-        return pd.Series(dtype=float)
-    stmt = text("""
-        SELECT symbol, adv_usd_20
-        FROM universe
-        WHERE symbol IN :syms
-    """).bindparams(bindparam("syms", expanding=True))
-    with engine.connect() as con:
-        df = pd.read_sql_query(stmt, con, params={"syms": tuple(symbols)})
-    return df.set_index("symbol")["adv_usd_20"] if not df.empty else pd.Series(dtype=float)
+def _get_current_shares() -> pd.Series:
+    try:
+        with engine.connect() as con:
+            df = pd.read_sql_query(text("SELECT symbol, shares FROM current_positions"), con)
+    except Exception as e:
+        log.warning(f"Could not load current positions: {e}")
+        return pd.Series(dtype=int)
+    return df.set_index("symbol")["shares"] if not df.empty else pd.Series(dtype=int)
 
-def _get_current_weights() -> pd.Series:
-    with engine.connect() as con:
-        cur_ts = con.execute(text("SELECT MAX(ts) FROM positions")).scalar()
-        if not cur_ts:
-            return pd.Series(dtype=float)
-        df = pd.read_sql_query(
-            text("SELECT symbol, weight FROM positions WHERE ts = :ts"),
-            con,
-            params={"ts": cur_ts}
-        )
-    return df.set_index("symbol")["weight"] if not df.empty else pd.Series(dtype=float)
+def _get_system_nav() -> float:
+    try:
+        with engine.connect() as con:
+            nav = con.execute(text("SELECT nav FROM system_state WHERE id = 1")).scalar()
+    except Exception:
+        nav = None
+    return float(nav) if (nav is not None and nav > 0) else STARTING_CAPITAL
 
 def _load_latest_predictions() -> pd.DataFrame:
     with engine.connect() as con:
-        preds = pd.read_sql_query(
-            text("""
-                WITH target AS (
-                    SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv
-                )
-                SELECT symbol, ts, y_pred FROM predictions
-                WHERE model_version = :mv AND ts = (SELECT mx FROM target)
-            """),
-            con,
-            params={"mv": PREFERRED_MODEL}
-        )
+        preds = pd.read_sql_query(text("""
+            WITH target AS (SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv)
+            SELECT symbol, ts, y_pred FROM predictions WHERE model_version=:mv AND ts=(SELECT mx FROM target)
+        """), con, params={"mv": PREFERRED_MODEL})
         if preds.empty:
-            preds = pd.read_sql_query(
-                text("SELECT symbol, ts, y_pred FROM predictions WHERE ts = (SELECT MAX(ts) FROM predictions)"),
-                con
-            )
+            log.warning(f"No predictions for preferred model {PREFERRED_MODEL}. Falling back to latest ts.")
+            preds = pd.read_sql_query(text("""
+                SELECT symbol, ts, y_pred FROM predictions WHERE ts=(SELECT MAX(ts) FROM predictions)
+            """), con)
     return preds
 
-def _compute_side_grosses(gross: float, net: float) -> tuple[float, float]:
-    L = max(0.0, (gross + net) / 2.0)
-    S = max(0.0, (gross - net) / 2.0)
-    return L, S
+def _load_tca_cols(symbols: Iterable[str]) -> pd.DataFrame:
+    symbols = list(dict.fromkeys(symbols))
+    if not symbols: return pd.DataFrame(columns=['symbol','vol_21','adv_usd_21','size_ln','mom_21','turnover_21','beta_63'])
+    stmt = text("""
+        SELECT symbol, ts, vol_21, adv_usd_21, size_ln, mom_21, turnover_21, beta_63
+        FROM features WHERE symbol IN :syms AND ts = (SELECT MAX(ts) FROM features)
+    """).bindparams(bindparam("syms", expanding=True))
+    with engine.connect() as con:
+        df = pd.read_sql_query(stmt, con, params={'syms': tuple(symbols)})
+    return df
 
 def generate_today_trades() -> pd.DataFrame:
-    preds = _load_latest_predictions()
+    log.info("Starting trade generation (v16 optimizer).")
+    # Optional: reconstruct tax lots from trades for penalties
+    try:
+        rebuild_tax_lots_from_trades()
+    except Exception as e:
+        log.info(f"Tax lots rebuild skipped/failed: {e}")
+
+    preds = _load_latest_predictions().sort_values("y_pred", ascending=False)
     if preds.empty:
-        raise RuntimeError("No predictions available. Train the model first.")
+        log.error("No predictions available. Cannot generate trades.")
+        return pd.DataFrame(columns=["id", "symbol","side","quantity","price","status","trade_date"])
 
-    preds = preds.sort_values("y_pred", ascending=False)
-    long_syms = preds.head(LONG_TOP_N)["symbol"].tolist()
-    short_syms: list[str] = []
-    if ALLOW_SHORTS:
-        short_syms = preds.tail(SHORT_TOP_N)["symbol"].tolist()
-        short_syms = [s for s in short_syms if s not in long_syms]
+    # Merge supplementary columns needed by optimizer
+    sup = _load_tca_cols(preds["symbol"].tolist())
+    pred_df = preds.merge(sup, on=["symbol"], how="left")
 
-    L_gross, S_gross = _compute_side_grosses(GROSS_LEVERAGE, NET_EXPOSURE if ALLOW_SHORTS else GROSS_LEVERAGE)
+    today = date.today()
+    current_shares = _get_current_shares()
+    current_nav = _get_system_nav()
 
-    nL, nS = len(long_syms), len(short_syms)
-    per_w_L = min(L_gross / nL, MAX_POSITION_WEIGHT) if nL else 0.0
-    per_w_S = min(S_gross / nS, MAX_POSITION_WEIGHT) if nS else 0.0
+    weights = build_portfolio(pred_df, today, current_symbols=current_shares.index.tolist())
 
-    target_weights: Dict[str, float] = {}
-    for s in long_syms:
-        target_weights[s] = per_w_L
-    for s in short_syms:
-        target_weights[s] = -per_w_S
+    all_syms = sorted(set(weights.index.tolist()).union(current_shares.index.tolist()))
+    # arrival prices
+    stmt_px = text("""
+        WITH latest AS (SELECT symbol, MAX(ts) ts FROM daily_bars WHERE symbol IN :syms GROUP BY symbol)
+        SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
+        FROM daily_bars b JOIN latest l ON b.symbol = l.symbol AND b.ts=l.ts
+    """).bindparams(bindparam("syms", expanding=True))
+    with engine.connect() as con:
+        px_df = pd.read_sql_query(stmt_px, con, params={"syms": tuple(all_syms)})
+    prices = px_df.set_index("symbol")["px"] if not px_df.empty else pd.Series(dtype=float)
 
-    current = _get_current_weights()
-    all_syms = sorted(set(target_weights).union(current.index.tolist()))
-    prices = _latest_prices(all_syms)
-    adv20 = _adv20(all_syms)
-
-    trade_rows: list[dict] = []
-    pos_rows: list[dict] = []
-    for sym in all_syms:
-        tgt = float(target_weights.get(sym, 0.0))
-        cur = float(current.get(sym, 0.0))
-        price = float(prices.get(sym, np.nan))
+    # Build target positions and trades
+    target_rows = []; trade_rows = []
+    for s in all_syms:
+        tgt_w = float(weights.get(s, 0.0))
+        cur_shs = int(current_shares.get(s, 0))
+        price = float(prices.get(s, np.nan))
         if not (np.isfinite(price) and price > 0):
             continue
+        tgt_notional = tgt_w * current_nav
+        tgt_shs = int(np.floor(abs(tgt_notional) / price)) * (1 if tgt_notional >= 0 else -1)
 
-        opening_new = (cur == 0.0) or (np.sign(tgt) != np.sign(cur))
-        if opening_new:
-            adv_val = float(adv20.get(sym, np.nan))
-            if price < MIN_PRICE or (np.isfinite(adv_val) and adv_val < MIN_ADV_USD):
-                continue
+        # record target (even zero -> intent to close)
+        if (tgt_shs != 0) or (cur_shs != 0):
+            target_rows.append({"ts": today, "symbol": s, "weight": tgt_w, "price": price, "target_shares": tgt_shs})
 
-        shares = int((abs(tgt) * RISK_BUDGET) / max(price, 0.01))
-        pos_rows.append({"ts": date.today(), "symbol": sym, "weight": tgt, "price": price, "shares": shares})
-
-        delta_w = tgt - cur
-        if abs(delta_w) < 1e-9:
+        delta = tgt_shs - cur_shs
+        if delta == 0: 
             continue
+        side = "BUY" if delta > 0 else "SELL"
+        trade_rows.append({"symbol": s, "side": side, "quantity": abs(delta), "price": price, "trade_date": today, "status": "generated"})
 
-        notional = RISK_BUDGET * delta_w
-        qty = int(abs(notional) / max(price, 0.01))
-        if qty <= 0:
-            continue
-
-        side = "BUY" if delta_w > 0 else "SELL"
-        coid = f"scq-{sym}-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:10]}"
-        trade_rows.append({"symbol": sym, "side": side, "quantity": qty, "price": price, "client_order_id": coid})
-
-    if pos_rows:
-        pos_df = pd.DataFrame(pos_rows)
-        upsert_dataframe(pos_df, Position, ["ts","symbol"])
+    # Persist
+    if target_rows:
+        upsert_dataframe(pd.DataFrame(target_rows), TargetPosition, ["ts","symbol"])
 
     if not trade_rows:
-        return pd.DataFrame(columns=["symbol","side","quantity","price","status","trade_date"])
+        log.info("No trades generated (portfolio aligned with targets).")
+        return pd.DataFrame(columns=["id","symbol","side","quantity","price","status","trade_date"])
 
-    df = pd.DataFrame(trade_rows)
-    df["status"] = "generated"
-    df["trade_date"] = date.today()
+    trades_df = pd.DataFrame(trade_rows)
     with engine.begin() as conn:
-        conn.execute(Trade.__table__.insert(), df.to_dict(orient="records"))
-    return df
+        try:
+            result = conn.execute(Trade.__table__.insert().returning(Trade.id), trades_df.to_dict(orient="records"))
+            ids = [row[0] for row in result]
+            trades_df['id'] = ids
+        except Exception as e:
+            log.error(f"Failed to insert trades: {e}")
+            trades_df['id'] = None
+
+    log.info(f"Generated {len(trades_df)} trades.")
+    return trades_df
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    generate_today_trades()
