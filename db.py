@@ -1,10 +1,15 @@
 from __future__ import annotations
-from sqlalchemy import create_engine, String, Date, DateTime, Integer, Float, Boolean, BigInteger, Index
+from sqlalchemy import create_engine, String, Date, DateTime, Integer, Float, Boolean, BigInteger, Index, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.types import JSON
 from datetime import datetime, date
 import pandas as pd
+import numpy as np
 from config import DATABASE_URL
+import logging
+
+log = logging.getLogger(__name__)
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is required.")
@@ -15,6 +20,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 class Base(DeclarativeBase):
     pass
 
+# --- Core Market Data ---
 class DailyBar(Base):
     __tablename__ = "daily_bars"
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
@@ -34,16 +40,30 @@ class Universe(Base):
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
     name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     exchange: Mapped[str | None] = mapped_column(String(12), nullable=True)
-    market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)
     adv_usd_20: Mapped[float | None] = mapped_column(Float, nullable=True)
     included: Mapped[bool] = mapped_column(Boolean, default=True)
     last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+# v17: universe snapshots for survivorship-safe training
+class UniverseHistory(Base):
+    __tablename__ = "universe_history"
+    as_of: Mapped[date] = mapped_column(Date, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    __table_args__ = (Index("ix_universe_hist_asof", "as_of"), Index("ix_universe_hist_symbol", "symbol"),)
+
+# PIT fundamentals + shares
+class SharesOutstanding(Base):
+    __tablename__ = "shares_outstanding"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    as_of: Mapped[date] = mapped_column(Date, primary_key=True)
+    shares: Mapped[int] = mapped_column(BigInteger)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    __table_args__ = (Index("ix_shares_symbol_asof", "symbol", "as_of"),)
 
 class Fundamentals(Base):
     __tablename__ = "fundamentals"
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
     as_of: Mapped[date] = mapped_column(Date, primary_key=True)
-    available_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
     pb: Mapped[float | None] = mapped_column(Float, nullable=True)
     ps_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -62,6 +82,15 @@ class AltSignal(Base):
     value: Mapped[float | None] = mapped_column(Float, nullable=True)
     __table_args__ = (Index("ix_alt_symbol_ts", "symbol", "ts"),)
 
+# v17: Russell membership events
+class RussellMembership(Base):
+    __tablename__ = "russell_membership"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    action: Mapped[str] = mapped_column(String(8))  # add|drop|keep
+    __table_args__ = (Index("ix_russell_ts", "ts"),)
+
+# --- Modeling Artifacts ---
 class Feature(Base):
     __tablename__ = "features"
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
@@ -75,6 +104,7 @@ class Feature(Base):
     rsi_14: Mapped[float | None] = mapped_column(Float)
     turnover_21: Mapped[float | None] = mapped_column(Float)
     size_ln: Mapped[float | None] = mapped_column(Float)
+    adv_usd_21: Mapped[float | None] = mapped_column(Float)
     f_pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_pb: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_ps_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -83,6 +113,9 @@ class Feature(Base):
     f_gm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_profit_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    beta_63: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension (if present)
+    overnight_gap: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension (if present)
+    illiq_21: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension (if present)
     __table_args__ = (Index("ix_features_symbol_ts", "symbol", "ts"),)
 
 class Prediction(Base):
@@ -99,14 +132,30 @@ class Prediction(Base):
         Index("ix_predictions_ts_model", "ts", "model_version"),
     )
 
-class Position(Base):
-    __tablename__ = "positions"
+# --- OMS and State ---
+class TargetPosition(Base):
+    __tablename__ = "target_positions"
     ts: Mapped[date] = mapped_column(Date, primary_key=True)
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
     weight: Mapped[float] = mapped_column(Float)
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    __table_args__ = (Index("ix_positions_ts_symbol", "ts", "symbol"),)
+    target_shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    __table_args__ = (Index("ix_target_positions_ts_symbol", "ts", "symbol"),)
+
+class CurrentPosition(Base):
+    __tablename__ = "current_positions"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    shares: Mapped[int] = mapped_column(Integer)
+    market_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_basis: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class SystemState(Base):
+    __tablename__ = "system_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    nav: Mapped[float] = mapped_column(Float)
+    cash: Mapped[float] = mapped_column(Float)
+    last_reconciled: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 class Trade(Base):
     __tablename__ = "trades"
@@ -118,9 +167,33 @@ class Trade(Base):
     quantity: Mapped[int] = mapped_column(Integer)
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="generated")
-    broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    client_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    __table_args__ = (Index("ix_trades_status_id", "status", "id"),)
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    filled_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    order_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # v17: lot hints, overlay notes
+
+# v17: borrow & options overlay tables
+class ShortBorrow(Base):
+    __tablename__ = "short_borrow"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[date] = mapped_column(Date, primary_key=True)
+    available: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fee_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    __table_args__ = (Index("ix_borrow_symbol_ts", "symbol", "ts"),)
+
+class OptionOverlay(Base):
+    __tablename__ = "option_overlays"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    strategy: Mapped[str] = mapped_column(String(16))  # protective_put | put_spread | collar
+    tenor_days: Mapped[int] = mapped_column(Integer)
+    put_strike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_strike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    est_premium_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # of notional
+    notes: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 class BacktestEquity(Base):
     __tablename__ = "backtest_equity"
@@ -128,21 +201,37 @@ class BacktestEquity(Base):
     equity: Mapped[float] = mapped_column(Float)
     daily_return: Mapped[float] = mapped_column(Float)
     drawdown: Mapped[float] = mapped_column(Float)
+    tcost_impact: Mapped[float] = mapped_column(Float, default=0.0)
 
 def create_tables():
     Base.metadata.create_all(engine)
+    from config import STARTING_CAPITAL
+    try:
+        with engine.begin() as conn:
+            # init system_state if missing
+            exists = conn.execute(text("SELECT 1 FROM system_state WHERE id=1")).scalar()
+            if not exists:
+                conn.execute(text("INSERT INTO system_state (id, nav, cash) VALUES (1, :nav, :cash)"),
+                             {"nav": STARTING_CAPITAL, "cash": STARTING_CAPITAL})
+    except Exception as e:
+        log.warning(f"Could not initialize SystemState: {e}")
 
+# Efficient UPSERT helper
+from contextlib import nullcontext
 def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000, conn=None):
     if df is None or df.empty:
         return
-    for start in range(0, len(df), chunk_size):
-        part = df.iloc[start:start+chunk_size]
-        cols = list(part.columns)
-        stmt = insert(table).values(part.to_dict(orient="records"))
-        update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
-        stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
-        if conn is None:
-            with engine.begin() as _conn:
-                _conn.execute(stmt)
-        else:
-            conn.execute(stmt)
+    df = df.replace({pd.NA: None, np.nan: None})
+    ctx = engine.begin() if conn is None else nullcontext(conn)
+    with ctx as connection:
+        for start in range(0, len(df), chunk_size):
+            part = df.iloc[start:start+chunk_size]
+            cols = list(part.columns)
+            records = part.to_dict(orient="records")
+            stmt = insert(table).values(records)
+            update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
+            if update_cols:
+                stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+            else:
+                stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
+            connection.execute(stmt)

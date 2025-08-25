@@ -1,30 +1,29 @@
-# Small-Cap Quant System — v17
-**Fast-follows integrated:** survivorship replay (training), PEAD & Russell AltSignals, regime gating, CPCV utilities, upgraded short-borrow, QP optimizer (optional), and expanded options overlays.
+# Small-Cap Quant System — v17 (PR Bundle)
+Differentiated small-cap alpha with **survivorship-safe** training, **PEAD & Russell** event features,
+**regime-gated** blending, **tax/lot scaffolding**, optional **QP de-crowding optimizer**, **borrow-aware** hooks,
+and **wider options overlays** (collars/put-spreads). Includes a cron **back-compat shim**.
 
-### Highlights
-- **Universe survivorship replay**: weekly snapshots (`universe_history`) and training-time gating.
-- **PEAD & Russell reconstitution**: CSV loaders populate `alt_signals` and `russell_membership`; models consume sparse features automatically.
-- **Regime gating**: vol/liquidity classifier modulates ensemble blend weights.
-- **CPCV**: utilities for robust out-of-sample validation on time-blocks with embargo.
-- **Short-borrow**: PIT borrow table + carry cost helpers.
-- **QP optimizer** *(optional)*: convex optimizer with crowding penalty; falls back to greedy if `cvxpy` unavailable.
-- **Options overlays**: protective put, put-spread, and collar suggestions stored in `option_overlays`.
+### What changed since v16
+- Universe **snapshots** (`universe_history`) + training-time gating
+- **PEAD** (`pead_event`, `pead_surprise_*`) and **Russell in/out** events (sparse AltSignals)
+- **Regime classifier** (calm/normal/stressed) gates ensemble weights at prediction time
+- Optional **cvxpy QP** optimizer with factor-similarity crowding penalty
+- **Short borrow** ingestion + helpers
+- **Options overlays** (collars) persisted to `option_overlays` + Streamlit `app_v17_panel.py`
+- Cron shim: `python -m data_ingestion.run_daily` forwards to `run_pipeline.py`
 
-### New ENV
-```
-USE_UNIVERSE_HISTORY=true
-REGIME_GATING=true
-USE_QP_OPTIMIZER=false
-QP_CORR_PENALTY=0.05
-UNIVERSE_FILTER_RUSSELL=false
-RUSSELL_INDEX=R2000
-```
-Run new migration:
-```
+### Migrations
+```bash
 alembic upgrade head
 ```
-Then refresh features/events:
+
+### Daily pipeline (unchanged)
+```bash
+python run_pipeline.py
 ```
-python -m models.features
-python -m data.events --help  # see loaders
+
+### Addons
+```bash
+python run_v17_addons.py --snapshot   # write universe snapshot for survivorship-safe training
+python run_v17_addons.py --overlays   # propose collars for the latest book
 ```

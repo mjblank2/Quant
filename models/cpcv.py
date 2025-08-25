@@ -1,29 +1,21 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from typing import List, Tuple
 
-def time_groups(dates: pd.Series, n_groups: int) -> pd.Series:
-    """Label each date with a group id in order of time (roughly equal-sized)."""
-    uniq = sorted(pd.to_datetime(pd.Series(dates).unique()))
-    k = max(1, n_groups)
-    bins = np.array_split(uniq, k)
-    mapping = {}
-    for gid, arr in enumerate(bins):
-        for d in arr:
-            mapping[pd.Timestamp(d)] = gid
-    return pd.Series(pd.to_datetime(dates)).map(mapping)
-
-def cpcv_splits(df: pd.DataFrame, date_col: str, n_groups: int = 5, embargo: int = 5):
-    """Yield (train_idx, test_idx) with purging/embargo between group folds."""
-    g = time_groups(df[date_col], n_groups=n_groups)
-    df = df.copy()
-    df['__g__'] = g.values
-    for test_gid in sorted(df['__g__'].unique()):
-        test_mask = (df['__g__'] == test_gid)
-        test_dates = sorted(pd.to_datetime(df.loc[test_mask, date_col]).unique())
-        if not test_dates:
-            continue
-        lo = test_dates[0] - pd.Timedelta(days=embargo)
-        hi = test_dates[-1] + pd.Timedelta(days=embargo)
-        train_mask = ~((df[date_col] >= lo) & (df[date_col] <= hi))
-        yield df.index[train_mask].tolist(), df.index[test_mask].tolist()
+def combinatorial_purged_cv_dates(dates: List[pd.Timestamp], n_groups: int = 6, embargo: int = 5) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Return index pairs (train_idx, test_idx) for CPCV over ordered unique dates."""
+    u = sorted(pd.to_datetime(pd.Series(dates).unique()))
+    m = len(u)
+    g = np.array_split(np.arange(m), n_groups)
+    folds = []
+    for i in range(n_groups):
+        test_idx = g[i]
+        # embargo around test dates
+        lo = max(test_idx[0]-embargo, 0)
+        hi = min(test_idx[-1]+embargo+1, m)
+        train_mask = np.ones(m, dtype=bool)
+        train_mask[lo:hi] = False
+        train_idx = np.where(train_mask)[0]
+        folds.append((train_idx, test_idx))
+    return folds

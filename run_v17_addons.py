@@ -1,16 +1,23 @@
 from __future__ import annotations
+import argparse, logging
 from datetime import date
-from data.universe_history import snapshot_universe
-from hedges.overlays import propose_overlays, OverlaySpec
-from db import create_tables
+from data.universe_history import take_snapshot
+from hedges.overlays import propose_collars
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - ADDONS - %(levelname)s - %(message)s')
+log = logging.getLogger(__name__)
 
 def main():
-    create_tables()
-    n = snapshot_universe()
-    print(f"Universe snapshot rows: {n}")
-    # propose overlays for today on IWM
-    today = date.today()
-    propose_overlays(today, equity=1_000_000.0, spec=OverlaySpec())
+    p = argparse.ArgumentParser()
+    p.add_argument('--snapshot', action='store_true', help='Take universe snapshot (today).')
+    p.add_argument('--overlays', action='store_true', help='Propose book-level option overlays.')
+    args = p.parse_args()
+    if args.snapshot:
+        n = take_snapshot(date.today())
+        log.info(f'Took universe snapshot (rows written: {n}).')
+    if args.overlays:
+        m = propose_collars(date.today())
+        log.info(f'Proposed {m} overlays.')
 
 if __name__ == "__main__":
     main()

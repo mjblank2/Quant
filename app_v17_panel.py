@@ -2,7 +2,7 @@ from __future__ import annotations
 import streamlit as st, pandas as pd
 from sqlalchemy import text
 from db import engine
-from models.regime import realized_vol, liquidity_breadth, classify_regime
+from models.regime import classify_regime
 
 def _df(sql: str, params=None, parse_dates=None):
     with engine.connect() as con:
@@ -12,25 +12,19 @@ def _df(sql: str, params=None, parse_dates=None):
             return pd.DataFrame()
 
 def app_panel_v17():
-    st.header("🧭 v17: Survivorship + Events + Regime + QP")
-    # Regime snapshot
-    rv = realized_vol("IWM", 21)
-    liq = liquidity_breadth(21)
-    regime = classify_regime(rv, liq)
-    st.metric("Regime", regime)
-    st.caption(f"Realized vol (21d): {rv:.3%} | Median ADV: ${liq:,.0f}" if rv and liq else "Regime metrics unavailable.")
+    st.header("🧭 v17: Survivorship-safe + PEAD/Russell + Regime-gated + Overlays")
+    ts = _df("SELECT MAX(ts) AS ts FROM target_positions")
+    ts = ts['ts'].iloc[0] if not ts.empty else None
+    if ts:
+        st.caption(f"Latest target date: {ts}")
+        st.write("Regime:", classify_regime(ts))
+    st.subheader("Recent AltSignals")
+    alt = _df("SELECT ts, symbol, name, value FROM alt_signals ORDER BY ts DESC LIMIT 200", parse_dates=['ts'])
+    st.dataframe(alt)
 
     st.subheader("Option Overlays (latest)")
-    ov = _df("SELECT * FROM option_overlays ORDER BY ts DESC, strategy LIMIT 50", parse_dates=['ts','expiry'])
+    ov = _df("SELECT as_of, symbol, strategy, tenor_days, put_strike, call_strike, est_premium_pct, notes FROM option_overlays ORDER BY as_of DESC LIMIT 200")
     st.dataframe(ov)
-
-    st.subheader("Recent AltSignals")
-    alt = _df("""
-        SELECT symbol, ts, name, value FROM alt_signals
-        WHERE ts >= (SELECT COALESCE(MAX(ts), '1900-01-01') - INTERVAL '30 days' FROM alt_signals)
-        ORDER BY ts DESC
-    """, parse_dates=['ts'])
-    st.dataframe(alt.head(200))
 
 if __name__ == "__main__":
     app_panel_v17()

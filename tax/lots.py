@@ -110,3 +110,4 @@ def tax_sell_penalty_bps(symbol: str, as_of) -> float:
         if holding_days <= TAX_WASH_DAYS:
             penalty += 10.0
     return penalty
+===== END FILE =====

@@ -60,3 +60,4 @@ See `config.py` for defaults.
 - **NEW**: `portfolio/optimizer.py`, `tax/lots.py`, `app_v16_panel.py`
 - **NEW migration**: `alembic/versions/20250825_06_tax_lots_and_extras.py`
 - **UPDATED**: `config.py`, `models/features.py`, `models/ml.py`, `risk/risk_model.py`, `risk/sector.py`, `trading/generate_trades.py`
+===== END FILE =====

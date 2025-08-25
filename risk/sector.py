@@ -65,3 +65,4 @@ def build_sector_dummies(symbols: list[str], as_of) -> pd.DataFrame:
     d = d - d.mean(axis=0)  # sum-to-zero encoding
     d.index = symbols
     return d
+===== END FILE =====

@@ -67,3 +67,4 @@ def est_beta_asof(symbols: list[str], as_of, market_symbol: str = "IWM", lookbac
 def portfolio_beta(weights: pd.Series, as_of, market_symbol: str = "IWM", lookback: int = 63) -> float:
     betas = est_beta_asof(weights.index.tolist(), as_of, market_symbol, lookback).fillna(0.0)
     return float((weights.reindex(betas.index).fillna(0.0) * betas).sum())
+===== END FILE =====
