@@ -6,10 +6,10 @@ import streamlit as st
 st.set_page_config(page_title="Blank Capital Quant - Dashboard", layout="wide")
 
 st.title("Blank Capital Quant")
-st.caption("Minimal dashboard placeholder (DB connection fixed for psycopg v3).")
+st.caption("Minimal dashboard with working PostgreSQL connection (psycopg v3).")
 
 def _normalize_dsn(url: str) -> str:
-    # Render might provide either postgres:// or postgresql://
+    # Accept postgres:// or postgresql:// and upgrade to SQLAlchemy 2 driver string
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg://", 1)
     elif url.startswith("postgresql://") and "+psycopg" not in url:
@@ -25,7 +25,6 @@ def get_engine():
     db_url = _normalize_dsn(db_url)
     try:
         engine = sqlalchemy.create_engine(db_url, pool_pre_ping=True)
-        # Probe once
         with engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
         return engine
