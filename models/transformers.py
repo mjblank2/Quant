@@ -34,4 +34,3 @@ class CrossSectionalNormalizer(BaseEstimator, TransformerMixin):
         std = np.where(std == 0, 1.0, std)
         X = (X - mean) / std
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-===== END FILE =====

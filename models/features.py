@@ -170,9 +170,14 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
             essential = ['ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14','turnover_21','size_ln','adv_usd_21','overnight_gap','illiq_21','beta_63']
             fcols = ['symbol','ts'] + essential + ['f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio']
-            g['f_pe_ttm'] = g.get('pe_ttm'); g['f_pb'] = g.get('pb'); g['f_ps_ttm'] = g.get('ps_ttm')
-            g['f_debt_to_equity'] = g.get('debt_to_equity'); g['f_roa']=g.get('return_on_assets')
-            g['f_gm']=g.get('gross_margins'); g['f_profit_margin']=g.get('profit_margins'); g['f_current_ratio']=g.get('current_ratio')
+            g['f_pe_ttm'] = g.get('pe_ttm')
+            g['f_pb'] = g.get('pb')
+            g['f_ps_ttm'] = g.get('ps_ttm')
+            g['f_debt_to_equity'] = g.get('debt_to_equity')
+            g['f_roa'] = g.get('return_on_assets')
+            g['f_gm'] = g.get('gross_margins')
+            g['f_profit_margin'] = g.get('profit_margins')
+            g['f_current_ratio'] = g.get('current_ratio')
 
             keep_idx = g[essential].dropna().index
             g2 = g.loc[keep_idx, fcols].copy()
@@ -190,4 +195,3 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     build_features()
-===== END FILE =====

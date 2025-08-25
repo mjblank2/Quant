@@ -1,5 +1,6 @@
 from __future__ import annotations
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 from sqlalchemy import text
 from db import engine
 
@@ -57,7 +58,8 @@ def est_beta_asof(symbols: list[str], as_of, market_symbol: str = "IWM", lookbac
     for s, g in df[df['symbol']!=market_symbol].groupby('symbol'):
         gg = g[['ts','ret']].merge(mkt, on='ts', how='inner').dropna()
         if len(gg) < max(20, lookback//2):
-            out.append((s, np.nan)); continue
+            out.append((s, np.nan))
+            continue
         cov = gg['ret'].rolling(lookback).cov(gg['mret'])
         var = gg['mret'].rolling(lookback).var()
         beta = (cov/var).iloc[-1] if var.iloc[-1] and np.isfinite(var.iloc[-1]) else np.nan
@@ -67,4 +69,3 @@ def est_beta_asof(symbols: list[str], as_of, market_symbol: str = "IWM", lookbac
 def portfolio_beta(weights: pd.Series, as_of, market_symbol: str = "IWM", lookback: int = 63) -> float:
     betas = est_beta_asof(weights.index.tolist(), as_of, market_symbol, lookback).fillna(0.0)
     return float((weights.reindex(betas.index).fillna(0.0) * betas).sum())
-===== END FILE =====

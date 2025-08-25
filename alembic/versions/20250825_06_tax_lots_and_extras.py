@@ -30,4 +30,3 @@ def upgrade():
 def downgrade():
     op.drop_index('ix_taxlots_symbol', table_name='tax_lots')
     op.drop_table('tax_lots')
-===== END FILE =====

@@ -2,14 +2,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from datetime import date
-from typing import Dict, Iterable
+from typing import Iterable
 from sqlalchemy import text, bindparam
-from db import engine, upsert_dataframe, Trade, TargetPosition, CurrentPosition
-from config import (
-    LONG_TOP_N, SHORT_TOP_N, ALLOW_SHORTS,
-    GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT,
-    MIN_PRICE, MIN_ADV_USD, PREFERRED_MODEL, STARTING_CAPITAL
-)
+from db import engine, upsert_dataframe, Trade, TargetPosition
+from config import PREFERRED_MODEL, STARTING_CAPITAL
+
 import logging
 from portfolio.optimizer import build_portfolio
 from tax.lots import rebuild_tax_lots_from_trades
@@ -48,7 +45,8 @@ def _load_latest_predictions() -> pd.DataFrame:
 
 def _load_tca_cols(symbols: Iterable[str]) -> pd.DataFrame:
     symbols = list(dict.fromkeys(symbols))
-    if not symbols: return pd.DataFrame(columns=['symbol','vol_21','adv_usd_21','size_ln','mom_21','turnover_21','beta_63'])
+    if not symbols:
+        return pd.DataFrame(columns=['symbol','vol_21','adv_usd_21','size_ln','mom_21','turnover_21','beta_63'])
     stmt = text("""
         SELECT symbol, ts, vol_21, adv_usd_21, size_ln, mom_21, turnover_21, beta_63
         FROM features WHERE symbol IN :syms AND ts = (SELECT MAX(ts) FROM features)
@@ -92,7 +90,8 @@ def generate_today_trades() -> pd.DataFrame:
     prices = px_df.set_index("symbol")["px"] if not px_df.empty else pd.Series(dtype=float)
 
     # Build target positions and trades
-    target_rows = []; trade_rows = []
+    target_rows = []
+    trade_rows = []
     for s in all_syms:
         tgt_w = float(weights.get(s, 0.0))
         cur_shs = int(current_shares.get(s, 0))
@@ -136,4 +135,3 @@ def generate_today_trades() -> pd.DataFrame:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     generate_today_trades()
-===== END FILE =====

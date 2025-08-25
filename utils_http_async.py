@@ -1,10 +1,12 @@
 from __future__ import annotations
-import asyncio, random, logging, aiohttp
+import asyncio
+import logging
+import random
+import aiohttp
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
 async def get_json_async(session: aiohttp.ClientSession, url: str, params: dict | None = None, timeout: float = 20.0, max_tries: int = 4, backoff_base: float = 0.4) -> dict:
-    last = None
     for attempt in range(1, max_tries + 1):
         try:
             async with session.get(url, params=params, timeout=timeout) as resp:
@@ -15,7 +17,6 @@ async def get_json_async(session: aiohttp.ClientSession, url: str, params: dict 
                     except Exception:
                         import json
                         return json.loads(txt)
-                last = (resp.status, txt[:200])
                 logging.warning("get_json_async non-200 url=%s status=%s body=%s", url, resp.status, txt[:180])
                 if resp.status in RETRY_STATUS:
                     sleep = backoff_base * (2 ** (attempt - 1)) * (1 + random.random() * 0.25)
