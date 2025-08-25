@@ -10,3 +10,4 @@ requests
 httpx
 alpaca-trade-api
 cvxpy
+alembic>=1.13<2
