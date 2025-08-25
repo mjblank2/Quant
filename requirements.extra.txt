@@ -1,0 +1,2 @@
+# Ensure SQLAlchemy can use the modern psycopg v3 driver (binary wheels; no build tools needed)
+psycopg[binary]>=3.1,<4

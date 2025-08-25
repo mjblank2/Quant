@@ -6,7 +6,15 @@ import streamlit as st
 st.set_page_config(page_title="Blank Capital Quant - Dashboard", layout="wide")
 
 st.title("Blank Capital Quant")
-st.caption("Minimal dashboard placeholder (you can enhance this anytime).")
+st.caption("Minimal dashboard placeholder (DB connection fixed for psycopg v3).")
+
+def _normalize_dsn(url: str) -> str:
+    # Render might provide either postgres:// or postgresql://
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif url.startswith("postgresql://") and "+psycopg" not in url:
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return url
 
 @st.cache_resource
 def get_engine():
@@ -14,13 +22,16 @@ def get_engine():
     if not db_url:
         st.warning("DATABASE_URL not set; showing demo content.")
         return None
-    # Render often provides postgres://; SQLAlchemy 2 prefers postgresql+psycopg://
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+    db_url = _normalize_dsn(db_url)
     try:
-        return sqlalchemy.create_engine(db_url, pool_pre_ping=True)
+        engine = sqlalchemy.create_engine(db_url, pool_pre_ping=True)
+        # Probe once
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SELECT 1")
+        return engine
     except Exception as e:
         st.error(f"Failed to create engine: {e}")
+        st.code(db_url, language="text")
         return None
 
 engine = get_engine()
@@ -40,13 +51,7 @@ with col2:
     if engine is None:
         st.info("No database connected.")
     else:
-        try:
-            with engine.connect() as conn:
-                # Try trivial query
-                result = conn.exec_driver_sql("SELECT 1 AS ok").fetchone()
-                st.success(f"DB OK = {result[0]}")
-        except Exception as e:
-            st.error(f"DB ping failed: {e}")
+        st.success("Connected to database.")
 
 st.markdown("---")
 st.subheader("Demo Table")
