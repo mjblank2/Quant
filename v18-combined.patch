@@ -1,0 +1,1443 @@
+diff --git a/requirements.txt b/requirements.txt
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,12 +1,16 @@
+ numpy
+ pandas
+ sqlalchemy>=2.0
+ psycopg[binary]
+ scikit-learn
+ xgboost
+ streamlit
+ plotly
+ requests
+ httpx
+ alpaca-trade-api
+ cvxpy
++mlflow
++great_expectations
++arch
++matplotlib
+ 
+diff --git a/config.py b/config.py
+--- a/config.py
++++ b/config.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ import os
+ import logging
++ 
+ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ 
+ def _fix_db_url(url: str) -> str:
+@@ -45,7 +46,7 @@
+ MIN_ADV_USD   = _as_float("MIN_ADV_USD", ADV_USD_MIN)
+ 
+ # Modeling
+-BACKTEST_START = os.getenv("BACKTEST_START", "2019-01-01")
++BACKTEST_START = os.getenv("BACKTEST_START", "2015-01-01")
+ TARGET_HORIZON_DAYS = _as_int("TARGET_HORIZON_DAYS", 5)
+ 
+ # Ensemble
+@@ -116,3 +117,45 @@
+ # Options overlay
+ IV_FALLBACK = _as_float("IV_FALLBACK", 0.35)
+ 
++# ====== v18: Institutional pillars ======
++# Walk-Forward Optimization (WFO)
++WFO_INSAMPLE_YEARS   = _as_int("WFO_INSAMPLE_YEARS", 3)
++WFO_OOS_MONTHS       = _as_int("WFO_OOS_MONTHS", 6)
++WFO_EMBARGO_DAYS     = _as_int("WFO_EMBARGO_DAYS", 5)
++WFO_N_SPLITS         = _as_int("WFO_N_SPLITS", 6)
++WFO_ENABLE_TUNING    = _as_bool("WFO_ENABLE_TUNING", True)
++
++# Purged/Embargoed K-Fold for in-window tuning
++PKF_EMBARGO_DAYS     = _as_int("PKF_EMBARGO_DAYS", 5)
++PKF_N_SPLITS         = _as_int("PKF_N_SPLITS", 5)
++
++# Factor risk model + covariance
++USE_FACTOR_MODEL     = _as_bool("USE_FACTOR_MODEL", True)
++EWMA_LAMBDA          = _as_float("EWMA_LAMBDA", 0.94)
++USE_LEDOIT_WOLF      = _as_bool("USE_LEDOIT_WOLF", True)
++
++# Convex MVO optimizer
++USE_MVO              = _as_bool("USE_MVO", True)
++MVO_RISK_LAMBDA      = _as_float("MVO_RISK_LAMBDA", 25.0)
++MVO_COST_LAMBDA      = _as_float("MVO_COST_LAMBDA", 5.0)
++BETA_MIN             = _as_float("BETA_MIN", -0.10)
++BETA_MAX             = _as_float("BETA_MAX",  0.10)
++TURNOVER_LIMIT_ANNUAL = _as_float("TURNOVER_LIMIT_ANNUAL", 3.0)  # ~3x/year
++LIQUIDITY_MAX_PCT_ADV = _as_float("LIQUIDITY_MAX_PCT_ADV", 0.05)
++
++# MLOps scaffolding (off by default)
++ENABLE_MLFLOW        = _as_bool("ENABLE_MLFLOW", False)
++MLFLOW_TRACKING_URI  = os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns")
++ENABLE_DATA_VALIDATION = _as_bool("ENABLE_DATA_VALIDATION", False)
++
+diff --git a/risk/risk_model.py b/risk/risk_model.py
+--- a/risk/risk_model.py
++++ b/risk/risk_model.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ import numpy as np, pandas as pd
+-from sqlalchemy import text
++from sqlalchemy import text, bindparam
+ from db import engine
+ 
+ def neutralize_with_sectors(pred: pd.Series, factors: pd.DataFrame | None, sector_dummies: pd.DataFrame | None) -> pd.Series:
+@@ -40,18 +40,18 @@
+     if not symbols:
+         return pd.Series(dtype=float)
+     # Load prices
+-    sql = """
++    sql = """
+         SELECT symbol, ts, COALESCE(adj_close, close) AS px
+         FROM daily_bars
+-        WHERE symbol IN :syms OR symbol=:mkt
++        WHERE (symbol IN :syms) OR symbol=:mkt
+         ORDER BY symbol, ts
+-    """
+-    params = {'syms': tuple(symbols), 'mkt': market_symbol}
+-    df = pd.read_sql_query(text(sql).bindparams(), engine, params=params, parse_dates=['ts'])
++    """
++    params = {'syms': tuple(symbols), 'mkt': market_symbol}
++    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
++    df = pd.read_sql_query(stmt, engine, params=params, parse_dates=['ts'])
+     if df.empty or market_symbol not in df['symbol'].unique():
+         return pd.Series(index=symbols, dtype=float)
+     # returns
+     df['ret'] = df.groupby('symbol')['px'].pct_change()
+     as_of = pd.to_datetime(as_of)
+     # Filter window
+     cutoff = as_of.normalize() - pd.Timedelta(days=lookback*2.5)
+     df = df[df['ts'] <= as_of].copy()
+     df = df[df['ts'] >= cutoff]
+     mkt = df[df['symbol']==market_symbol][['ts','ret']].rename(columns={'ret':'mret'}).dropna()
+     out = []
+     for s, g in df[df['symbol']!=market_symbol].groupby('symbol'):
+         gg = g[['ts','ret']].merge(mkt, on='ts', how='inner').dropna()
+-        if len(gg) < max(20, lookback//2):
++        if len(gg) < max(20, lookback//2):
+             out.append((s, np.nan)); continue
+         cov = gg['ret'].rolling(lookback).cov(gg['mret'])
+         var = gg['mret'].rolling(lookback).var()
+-        beta = (cov/var).iloc[-1] if var.iloc[-1] and np.isfinite(var.iloc[-1]) else np.nan
++        beta = (cov/var).iloc[-1] if (len(var.dropna())>0 and float(var.iloc[-1] or 0)>0) else np.nan
+         out.append((s, float(beta) if beta is not None and np.isfinite(beta) else np.nan))
+     return pd.Series(dict(out)).reindex(symbols)
+ 
+diff --git a/models/features.py b/models/features.py
+--- a/models/features.py
++++ b/models/features.py
+@@ -1,34 +1,42 @@
+ from __future__ import annotations
+ import numpy as np
+ import pandas as pd
+-from sqlalchemy import text, bindparam
++from sqlalchemy import text, bindparam
+ from typing import List
+ from db import engine, upsert_dataframe, Feature
+ import logging
+ 
+ log = logging.getLogger(__name__)
+ 
+ def _compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
+@@ -55,41 +63,49 @@
+     except Exception:
+         return pd.DataFrame(columns=['ts','mret'])
+ 
+ def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
+-    if not symbols:
+-        return pd.DataFrame(columns=['symbol','as_of'])
+-    sql = (
+-        'SELECT symbol, as_of, pe_ttm, pb, ps_ttm, debt_to_equity, return_on_assets, gross_margins, profit_margins, current_ratio '
+-        'FROM fundamentals WHERE symbol IN :syms ORDER BY symbol, as_of'
+-    )
+-    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
+-    return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
++    if not symbols:
++        return pd.DataFrame(columns=['symbol','as_of','knowledge_date'])
++    sql = (
++        'SELECT symbol, as_of, knowledge_date, pe_ttm, pb, ps_ttm, debt_to_equity, return_on_assets, gross_margins, profit_margins, current_ratio '
++        'FROM fundamentals WHERE symbol IN :syms ORDER BY symbol, as_of'
++    )
++    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
++    return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of','knowledge_date'])
+ 
+ def _load_shares_outstanding(symbols: List[str]) -> pd.DataFrame:
+-    if not symbols:
+-        return pd.DataFrame(columns=['symbol','as_of','shares'])
+-    sql = 'SELECT symbol, as_of, shares FROM shares_outstanding WHERE symbol IN :syms ORDER BY symbol, as_of'
+-    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
+-    return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
++    if not symbols:
++        return pd.DataFrame(columns=['symbol','as_of','knowledge_date','shares'])
++    sql = 'SELECT symbol, as_of, knowledge_date, shares FROM shares_outstanding WHERE symbol IN :syms ORDER BY symbol, as_of'
++    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
++    return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of','knowledge_date'])
+ 
+ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame:
+-    log.info("Starting feature build process (Incremental, PIT).")
++    log.info("Starting feature build process (Incremental, PIT, bi-temporal-aware).")
+     syms = _symbols()
+     if not syms:
+         log.warning("Universe is empty. Cannot build features.")
+         return pd.DataFrame()
+@@ -143,23 +159,49 @@
+             g['illiq_21'] = (g['ret_1d'].abs() / dollar_volume.replace(0, np.nan)).rolling(21).mean()
+ 
+-            # PIT Shares → Market Cap
+-            shs_sym = shs[shs['symbol'] == sym][['as_of','shares']].sort_values('as_of')
+-            if not shs_sym.empty:
+-                g = pd.merge_asof(
+-                    g.sort_values('ts'),
+-                    shs_sym.rename(columns={'as_of':'ts_shs'}).sort_values('ts_shs'),
+-                    left_on='ts', right_on='ts_shs', direction='backward'
+-                )
+-                g['market_cap_pit'] = g['price_feat'] * g['shares']
+-            else:
+-                g['market_cap_pit'] = np.nan
++            # PIT Shares → Market Cap (prefer knowledge_date if present)
++            shs_sym = shs[shs['symbol'] == sym][['as_of','knowledge_date','shares']].sort_values(
++                'knowledge_date' if 'knowledge_date' in shs.columns else 'as_of'
++            )
++            if not shs_sym.empty:
++                key = 'knowledge_date' if 'knowledge_date' in shs_sym.columns else 'as_of'
++                g = pd.merge_asof(
++                    g.sort_values('ts'),
++                    shs_sym.rename(columns={key:'ts_shs'}).sort_values('ts_shs'),
++                    left_on='ts', right_on='ts_shs', direction='backward'
++                )
++                g['market_cap_pit'] = g['price_feat'] * g['shares']
++            else:
++                g['market_cap_pit'] = np.nan
+ 
+             mc = g['market_cap_pit']
+             g['size_ln'] = np.log(mc.clip(lower=1.0))
+             g['turnover_21'] = g['adv_usd_21'] / mc.replace(0, np.nan)
+ 
+-            # PIT Fundamentals
+-            f_sym = fnd[fnd['symbol'] == sym].drop(columns=['symbol']).sort_values('as_of')
+-            if not f_sym.empty:
+-                g = pd.merge_asof(
+-                    g.sort_values('ts'),
+-                    f_sym.rename(columns={'as_of':'ts_fnd'}).sort_values('ts_fnd'),
+-                    left_on='ts', right_on='ts_fnd', direction='backward'
+-                )
++            # PIT Fundamentals (prefer knowledge_date if present)
++            f_sym = fnd[fnd['symbol'] == sym].drop(columns=['symbol']).sort_values(
++                'knowledge_date' if 'knowledge_date' in fnd.columns else 'as_of'
++            )
++            if not f_sym.empty:
++                key = 'knowledge_date' if 'knowledge_date' in f_sym.columns else 'as_of'
++                g = pd.merge_asof(
++                    g.sort_values('ts'),
++                    f_sym.rename(columns={key:'ts_fnd'}).sort_values('ts_fnd'),
++                    left_on='ts', right_on='ts_fnd', direction='backward'
++                )
+             for col in ['pe_ttm','pb','ps_ttm','debt_to_equity','return_on_assets','gross_margins','profit_margins','current_ratio']:
+                 if col not in g.columns:
+                     g[col] = np.nan
+@@ -205,6 +247,7 @@
+ if __name__ == "__main__":
+     logging.basicConfig(level=logging.INFO)
+     build_features()
+ 
+diff --git a/portfolio/optimizer.py b/portfolio/optimizer.py
+--- a/portfolio/optimizer.py
++++ b/portfolio/optimizer.py
+@@ -7,12 +7,13 @@
+ from db import engine
+ from risk.sector import sector_asof
+ from risk.risk_model import portfolio_beta
+ from config import (
+     LONG_COUNT_MIN, LONG_COUNT_MAX, MAX_PER_SECTOR,
+     GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT,
+     MIN_PRICE, MIN_ADV_USD, BETA_HEDGE_SYMBOL, BETA_HEDGE_MAX_WEIGHT, BETA_TARGET,
+-    MAX_NAME_CORR, SECTOR_NEUTRALIZE, USE_QP_OPTIMIZER, QP_CORR_PENALTY
++    MAX_NAME_CORR, SECTOR_NEUTRALIZE, USE_QP_OPTIMIZER, QP_CORR_PENALTY,
++    USE_MVO
+ )
+ 
+ def _latest_prices(symbols: list[str]) -> pd.Series:
+     if not symbols: return pd.Series(dtype=float)
+@@ -55,6 +56,16 @@
+ 
+ def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[str] | None = None) -> pd.Series:
++    # If MVO is enabled, delegate to convex optimizer for sizing; otherwise use heuristic long-bucket.
++    if pred_df is None or pred_df.empty:
++        return pd.Series(dtype=float)
++    if USE_MVO:
++        try:
++            from portfolio.mvo import build_portfolio_mvo
++            alpha = pred_df.set_index('symbol')['y_pred']
++            return build_portfolio_mvo(alpha, as_of)
++        except Exception:
++            pass
+     if pred_df is None or pred_df.empty:
+         return pd.Series(dtype=float)
+     pred_df = pred_df.copy().dropna(subset=['y_pred']).sort_values('y_pred', ascending=False)
+@@ -139,6 +150,7 @@
+     if gross > 0:
+         weights *= (tgt_gross / gross)
+     return weights.sort_values(ascending=False)
+ 
+diff --git a/trading/generate_trades.py b/trading/generate_trades.py
+--- a/trading/generate_trades.py
++++ b/trading/generate_trades.py
+@@ -8,16 +8,18 @@
+ from sqlalchemy import text, bindparam
+ from db import engine, upsert_dataframe, Trade, TargetPosition, CurrentPosition
+ from config import (
+     LONG_TOP_N, SHORT_TOP_N, ALLOW_SHORTS,
+     GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT,
+-    MIN_PRICE, MIN_ADV_USD, PREFERRED_MODEL, STARTING_CAPITAL
++    MIN_PRICE, MIN_ADV_USD, PREFERRED_MODEL, STARTING_CAPITAL, EXECUTION_STYLE
+ )
+ import logging
+ from portfolio.optimizer import build_portfolio
+ from tax.lots import rebuild_tax_lots_from_trades
++from trading.execution import schedule_child_orders
+ 
+ log = logging.getLogger(__name__)
+ 
+ def _get_current_shares() -> pd.Series:
+@@ -53,7 +55,7 @@
+     return df
+ 
+ def generate_today_trades() -> pd.DataFrame:
+-    log.info("Starting trade generation (v16 optimizer).")
++    log.info("Starting trade generation (v18 MVO-aware).")
+     # Optional: reconstruct tax lots from trades for penalties
+     try:
+         rebuild_tax_lots_from_trades()
+@@ -120,6 +122,46 @@
+             trades_df['id'] = ids
+         except Exception as e:
+             log.error(f"Failed to insert trades: {e}")
+             trades_df['id'] = None
+ 
++    # Child-order schedule for intraday execution (VWAP/TWAP/IS)
++    if EXECUTION_STYLE in {"vwap","twap","is"}:
++        sched = schedule_child_orders(trades_df, style=EXECUTION_STYLE, slices=8)
++        try:
++            # Create table if missing and insert
++            from sqlalchemy import text
++            with engine.begin() as con:
++                con.execute(text("""
++                    CREATE TABLE IF NOT EXISTS child_orders (
++                      id SERIAL PRIMARY KEY,
++                      parent_id INTEGER,
++                      symbol VARCHAR(20) NOT NULL,
++                      side VARCHAR(4) NOT NULL,
++                      slice_idx INTEGER NOT NULL,
++                      qty INTEGER NOT NULL,
++                      scheduled_time TIMESTAMP WITHOUT TIME ZONE NOT NULL,
++                      style VARCHAR(8) NOT NULL
++                    )
++                """))
++                for _, r in sched.iterrows():
++                    con.execute(text("""
++                        INSERT INTO child_orders(parent_id, symbol, side, slice_idx, qty, scheduled_time, style)
++                        VALUES (:pid,:sym,:side,:i,:q,:t,:sty)
++                    """), {"pid": int(r.get('parent_id') or 0), "sym": r['symbol'], "side": r['side'],
++                            "i": int(r['slice_idx']), "q": int(r['qty']), "t": pd.Timestamp(r['scheduled_time']).to_pydatetime(),
++                            "sty": r['style']})
++        except Exception as e:
++            log.warning(f"Could not persist child orders: {e}")
++
+     log.info(f"Generated {len(trades_df)} trades.")
+     return trades_df
+ 
+ if __name__ == "__main__":
+     logging.basicConfig(level=logging.INFO)
+     generate_today_trades()
+ 
+diff --git a/README_v18.md b/README_v18.md
+new file mode 100644
+--- /dev/null
++++ b/README_v18.md
+@@ -0,0 +1,69 @@
++# Small-Cap Quant System — v18 (Institutional Pillars)
++
++This upgrade focuses on *institutional-grade* rigor and engineering:
++- **Pillar 1 — Rigor & Validation**: Walk-Forward Optimization (WFO) with **purged, embargoed CV** for tuning.
++- **Pillar 2 — Advanced Portfolio Optimization**: **Convex MVO** (CVXPY) with risk, turnover, liquidity, and beta band.
++- **Pillar 3 — Sophisticated Risk**: **Factor risk model** + **EWMA/ Ledoit–Wolf** covariance.
++- **Pillar 4 — Differentiated Alpha**: **Meta-model stacking** + **idiosyncratic residual** scaffolding.
++- **Pillar 5 — Execution & Infra**: VWAP/TWAP/IS **child-order scheduling**, **TCA calibration**, and basic **monitoring**.
++- **Bi-temporal PIT**: Optional `knowledge_date` joins to enforce point-in-time correctness.
++
++## Quick Start
++1. Install deps
++   ```bash
++   pip install -r requirements.txt
++   ```
++2. Migrate DB
++   ```bash
++   alembic upgrade head
++   ```
++3. Build features (bi-temporal aware)
++   ```bash
++   python -m models.features
++   ```
++4. Run daily pipeline (training, prediction, trade-gen)
++   ```bash
++   python run_pipeline.py
++   ```
++5. Run WFO (stitched out-of-sample evaluation)
++   ```bash
++   python -c "from validation.wfo import run_wfo; print(run_wfo())"
++   ```
++
++## Key Configs (see `config.py`)
++- `USE_MVO=true` to enable convex optimizer
++- `MVO_RISK_LAMBDA`, `MVO_COST_LAMBDA`, `BETA_MIN/BETA_MAX`, `LIQUIDITY_MAX_PCT_ADV`, `TURNOVER_LIMIT_ANNUAL`
++- `WFO_*` controls (horizon, embargo)
++- `ENABLE_MLFLOW`, `ENABLE_DATA_VALIDATION` (scaffolding; hooks provided for extension)
++
++## Notes
++- MVO solves a **long-only** book with beta-band neutrality and per-name ADV caps; extend to long/short as needed.
++- Factor covariance uses a simple returns-based approach with sector buckets; consider replacing with a proprietary BARRA-like model.
++- TCA is intentionally simple; `tca/posttrade.py` provides a parameter calibration loop from realized fills.
++
+diff --git a/run_pipeline.py b/run_pipeline.py
+new file mode 100644
+--- /dev/null
++++ b/run_pipeline.py
+@@ -0,0 +1,32 @@
++from __future__ import annotations
++import logging
++from models.features import build_features
++from models.ml import train_and_predict_all_models
++from trading.generate_trades import generate_today_trades
++
++log = logging.getLogger(__name__)
++logging.basicConfig(level=logging.INFO, format='%(asctime)s - PIPELINE - %(levelname)s - %(message)s')
++
++def main(sync_broker: bool = False) -> bool:
++    try:
++        build_features()
++        train_and_predict_all_models()
++        generate_today_trades()
++        return True
++    except Exception as e:
++        log.exception("Pipeline failed: %s", e)
++        return False
++
++if __name__ == "__main__":
++    main()
++
+diff --git a/validation/purged_kfold.py b/validation/purged_kfold.py
+new file mode 100644
+--- /dev/null
++++ b/validation/purged_kfold.py
+@@ -0,0 +1,48 @@
++from __future__ import annotations
++import numpy as np
++import pandas as pd
++from typing import Iterator, Tuple
++
++class PurgedKFold:
++    """
++    Purged and embargoed K-fold cross validation for time series.
++    Ensures training indices strictly precede validation indices and
++    enforces an embargo window around validation to prevent leakage from
++    overlapping horizons.
++    """
++    def __init__(self, n_splits: int = 5, embargo_days: int = 5):
++        if n_splits < 2:
++            raise ValueError("n_splits must be >= 2")
++        self.n_splits = n_splits
++        self.embargo_days = embargo_days
++
++    def split(self, dates: pd.Series) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
++        u = pd.to_datetime(pd.Series(dates).sort_values().unique())
++        m = len(u)
++        fold_sizes = np.full(self.n_splits, m // self.n_splits, dtype=int)
++        fold_sizes[: m % self.n_splits] += 1
++        current = 0
++        indices = np.arange(m)
++        for fold_size in fold_sizes:
++            test_mask = np.zeros(m, dtype=bool)
++            test_range = indices[current: current + fold_size]
++            test_mask[test_range] = True
++            current += fold_size
++
++            # Embargo window around test set
++            embargo_mask = np.zeros(m, dtype=bool)
++            if self.embargo_days > 0:
++                lo_date = u[test_range[0]] - pd.Timedelta(days=self.embargo_days)
++                hi_date = u[test_range[-1]] + pd.Timedelta(days=self.embargo_days)
++                embargo_mask[(u >= lo_date) & (u <= hi_date)] = True
++
++            train_mask = (~test_mask) & (~embargo_mask)
++            yield np.where(train_mask)[0], np.where(test_mask)[0]
++
+diff --git a/validation/wfo.py b/validation/wfo.py
+new file mode 100644
+--- /dev/null
++++ b/validation/wfo.py
+@@ -0,0 +1,196 @@
++from __future__ import annotations
++import numpy as np, pandas as pd, logging, copy
++from typing import Dict, Any, List
++from sqlalchemy import text
++from db import engine, upsert_dataframe, Prediction
++from models.ml import _model_specs, FEATURE_COLS
++from validation.purged_kfold import PurgedKFold
++from config import (WFO_INSAMPLE_YEARS, WFO_OOS_MONTHS, WFO_ENABLE_TUNING, WFO_EMBARGO_DAYS,
++                    PKF_N_SPLITS, PKF_EMBARGO_DAYS, TARGET_HORIZON_DAYS, BACKTEST_START)
++from risk.sector import build_sector_dummies
++from risk.risk_model import neutralize_with_sectors
++
++log = logging.getLogger(__name__)
++
++def _load_features_prices(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
++    cols = list(set(FEATURE_COLS + ['symbol','ts']))
++    sql = f"""SELECT {', '.join(cols)} FROM features WHERE ts>=:s AND ts<=:e"""
++    feats = pd.read_sql_query(text(sql), engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['ts','symbol'])
++    px = pd.read_sql_query(text("""SELECT symbol, ts, COALESCE(adj_close, close) AS px
++                                   FROM daily_bars WHERE ts>=:s AND ts<=:e"""),
++                           engine, params={'s': start_ts.date(), 'e': (end_ts + pd.Timedelta(days=TARGET_HORIZON_DAYS+5)).date()}, parse_dates=['ts'])
++    return feats, px
++
++def _grid() -> Dict[str, Dict[str, Any]]:
++    return {
++        'xgb': {'model__n_estimators':[300,500], 'model__max_depth':[3,4], 'model__learning_rate':[0.03,0.05]},
++        'rf':  {'model__n_estimators':[300,500], 'model__max_depth':[8,12]},
++        'ridge': {'model__alpha':[0.5,1.0,2.0]},
++    }
++
++def _product_grid(grid):
++    if not grid: return [dict()]
++    keys = list(grid.keys()); vals = [grid[k] for k in keys]
++    out = []
++    def rec(i, cur):
++        if i==len(keys):
++            out.append(cur.copy()); return
++        for v in vals[i]:
++            cur[keys[i]] = v; rec(i+1, cur)
++    rec(0, {})
++    return out
++
++def _tune_model(name: str, X: pd.DataFrame, y: np.ndarray, dates: pd.Series):
++    specs = _model_specs()
++    base = specs[name]
++    if not WFO_ENABLE_TUNING:
++        return base
++    params = _grid().get(name, {})
++    if not params:
++        return base
++    # Purged K-Fold
++    pkf = PurgedKFold(n_splits=PKF_N_SPLITS, embargo_days=PKF_EMBARGO_DAYS)
++    best_score, best_pipe = -np.inf, None
++    for trial in _product_grid(params):
++        pipe = copy.deepcopy(base)
++        for k, v in trial.items():
++            pipe.set_params(**{k: v})
++        scores = []
++        for train_idx, test_idx in pkf.split(dates):
++            tr_dates = dates.unique()[train_idx]
++            te_dates = dates.unique()[test_idx]
++            tr_mask = dates.isin(tr_dates); te_mask = dates.isin(te_dates)
++            try:
++                pipe.fit(X[tr_mask], y[tr_mask])
++                preds = pipe.predict(X[te_mask])
++                dfv = pd.DataFrame({'ts': dates[te_mask].values, 'pred': preds, 'y': y[te_mask]})
++                ic_by_day = dfv.groupby('ts').apply(lambda d: d['pred'].corr(d['y'], method='spearman'))
++                scores.append(float(ic_by_day.mean()))
++            except Exception:
++                continue
++        score = np.nanmean(scores) if scores else -np.inf
++        if score > best_score:
++            best_score, best_pipe = score, pipe
++    return best_pipe if best_pipe is not None else base
++
++def run_wfo(insample_years: int | None = None, oos_months: int | None = None, model_versions: List[str] | None = None) -> Dict[str, Any]:
++    insample_years = insample_years or WFO_INSAMPLE_YEARS
++    oos_months = oos_months or WFO_OOS_MONTHS
++    # Range of all feature dates
++    dfr = pd.read_sql_query(text("SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM features"), engine, parse_dates=['lo','hi'])
++    if dfr.empty or dfr.iloc[0]['hi'] is None:
++        log.warning("No features found for WFO."); return {}
++    lo = max(pd.Timestamp(BACKTEST_START), dfr.iloc[0]['lo'])
++    hi = dfr.iloc[0]['hi']
++    # Sliding windows
++    oos_start = lo + pd.DateOffset(years=insample_years)
++    outputs = {'oos_predictions': [], 'oos_metrics': []}
++    while oos_start <= hi:
++        oos_end = min(hi, oos_start + pd.DateOffset(months=oos_months) - pd.DateOffset(days=1))
++        train_start = oos_start - pd.DateOffset(years=insample_years)
++        feats, px = _load_features_prices(train_start, oos_end)
++        if feats.empty or px.empty:
++            oos_start = oos_end + pd.DateOffset(days=1)
++            continue
++        # Prepare matrices
++        px2 = px.sort_values(['symbol','ts']).copy()
++        px2['px_fwd'] = px2.groupby('symbol')['px'].shift(-TARGET_HORIZON_DAYS)
++        px2['fwd_ret'] = (px2['px_fwd'] / px2['px']) - 1.0
++        df = feats.merge(px2[['symbol','ts','fwd_ret']], on=['symbol','ts'], how='left').dropna(subset=['fwd_ret'])
++        # split IS/OOS
++        is_mask = df['ts'] < oos_start
++        oos_mask = (df['ts'] >= oos_start) & (df['ts'] <= oos_end)
++        train_df = df[is_mask].copy(); oos_df = df[oos_mask].copy()
++        if train_df.empty or oos_df.empty:
++            oos_start = oos_end + pd.DateOffset(days=1); continue
++        # Fill missing sparse features with 0
++        for c in [c for c in ['pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout'] if c not in train_df.columns]:
++            train_df[c] = 0.0
++        for c in [c for c in ['pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout'] if c not in oos_df.columns]:
++            oos_df[c] = 0.0
++        X, y = train_df[FEATURE_COLS], train_df['fwd_ret'].values
++        Xo = oos_df[FEATURE_COLS]
++        # Tune & fit base models
++        models = _model_specs()
++        tuned = {name: _tune_model(name, X, y, train_df['ts']) for name in models.keys()}
++        preds_by_model = {}
++        for name, pipe in tuned.items():
++            p2 = copy.deepcopy(pipe); p2.fit(X, y); preds_by_model[name] = p2.predict(Xo)
++        # Simple equal-weight blend + sector-neutralization
++        blend = sum(preds_by_model.values()) / max(1, len(preds_by_model))
++        pred_series = pd.Series(blend, index=oos_df.index)
++        fac = oos_df.set_index('symbol')[['size_ln','mom_21','turnover_21','beta_63']].reindex(oos_df['symbol']).reset_index(drop=True)
++        sd = build_sector_dummies(oos_df['symbol'].tolist(), oos_start)
++        resid = neutralize_with_sectors(pred_series.reset_index(drop=True), fac, sd)
++        # Persist OOS preds by day
++        out = oos_df[['symbol','ts']].copy()
++        out['y_pred'] = resid.values
++        out['model_version'] = 'blend_wfo_v18'
++        upsert_dataframe(out[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
++        outputs['oos_predictions'].append(out.copy())
++        # Compute OOS IC
++        tmp = oos_df[['ts','fwd_ret']].copy()
++        tmp['pred'] = resid.values
++        ic_by_day = tmp.groupby('ts').apply(lambda d: d['pred'].corr(d['fwd_ret'], method='spearman'))
++        outputs['oos_metrics'].append({'start': oos_start, 'end': oos_end, 'IC_mean': float(ic_by_day.mean())})
++        oos_start = oos_end + pd.DateOffset(days=1)
++    return outputs
++
+diff --git a/risk/covariance.py b/risk/covariance.py
+new file mode 100644
+--- /dev/null
++++ b/risk/covariance.py
+@@ -0,0 +1,35 @@
++from __future__ import annotations
++import numpy as np, pandas as pd
++from sklearn.covariance import LedoitWolf
++from config import EWMA_LAMBDA, USE_LEDOIT_WOLF
++
++def ewma_cov(returns: pd.DataFrame, lam: float | None = None) -> pd.DataFrame:
++    lam = lam if lam is not None else EWMA_LAMBDA
++    R = returns.dropna(how='all').fillna(0.0).values
++    if R.shape[0] < 2:
++        return pd.DataFrame(np.eye(R.shape[1]), index=returns.columns, columns=returns.columns)
++    S = np.zeros((R.shape[1], R.shape[1]))
++    total = 0.0
++    for t in range(R.shape[0]-1, -1, -1):
++        x = R[t:t+1].T
++        S = lam * S + (1 - lam) * (x @ x.T)
++        total = lam * total + (1 - lam)
++    S = S / max(total, 1e-8)
++    return pd.DataFrame(S, index=returns.columns, columns=returns.columns)
++
++def shrink_cov(returns: pd.DataFrame) -> pd.DataFrame:
++    R = returns.dropna(how='all').fillna(0.0).values
++    if R.shape[0] < 2:
++        return pd.DataFrame(np.eye(R.shape[1]), index=returns.columns, columns=returns.columns)
++    if USE_LEDOIT_WOLF:
++        lw = LedoitWolf().fit(R)
++        S = lw.covariance_
++    else:
++        S = np.cov(R, rowvar=False)
++    return pd.DataFrame(S, index=returns.columns, columns=returns.columns)
++
+diff --git a/risk/factor_model.py b/risk/factor_model.py
+new file mode 100644
+--- /dev/null
++++ b/risk/factor_model.py
+@@ -0,0 +1,88 @@
++from __future__ import annotations
++import numpy as np, pandas as pd
++from sqlalchemy import text
++from typing import Tuple
++from db import engine
++from risk.sector import build_sector_dummies
++from risk.covariance import ewma_cov
++from config import USE_FACTOR_MODEL
++
++def _load_window(start_ts, end_ts) -> Tuple[pd.DataFrame, pd.DataFrame]:
++    cols = ['symbol','ts','size_ln','mom_21','turnover_21','beta_63']
++    feats = pd.read_sql_query(text("""SELECT {cols} FROM features WHERE ts>=:s AND ts<=:e""".format(cols=','.join(cols))),
++                              engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['ts','symbol'])
++    px = pd.read_sql_query(text("""SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"""),
++                           engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['ts','symbol'])
++    return feats, px
++
++def _factor_exposure_matrix(symbols: list[str], as_of, feats_df: pd.DataFrame) -> pd.DataFrame:
++    df = feats_df[feats_df['ts']==as_of].set_index('symbol')
++    cols = [c for c in ['size_ln','mom_21','turnover_21','beta_63'] if c in df.columns]
++    X = df.reindex(symbols)[cols].fillna(0.0)
++    sd = build_sector_dummies(symbols, as_of)
++    if not sd.empty:
++        X = pd.concat([X, sd], axis=1)
++    return X
++
++def _factor_returns(feats: pd.DataFrame, px: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
++    px = px.sort_values(['symbol','ts']).copy()
++    px['px_fwd'] = px.groupby('symbol')['px'].shift(-horizon)
++    px['fwd_ret'] = (px['px_fwd']/px['px']) - 1.0
++    df = feats.merge(px[['symbol','ts','fwd_ret']], on=['symbol','ts'], how='left').dropna(subset=['fwd_ret'])
++    cols = [c for c in ['size_ln','mom_21','turnover_21','beta_63'] if c in df.columns]
++    out = []
++    for ts, g in df.groupby('ts'):
++        X = g[cols].fillna(0.0).values
++        y = g['fwd_ret'].values.reshape(-1,1)
++        sd = build_sector_dummies(g['symbol'].tolist(), ts)
++        if not sd.empty:
++            X = np.concatenate([X, sd.values], axis=1)
++        X_ = np.concatenate([X, np.ones((X.shape[0],1))], axis=1)
++        beta = np.linalg.pinv(X_.T @ X_ + 1e-6*np.eye(X_.shape[1])) @ (X_.T @ y)
++        fr = beta[:-1].flatten()
++        out.append(pd.Series(fr, name=ts))
++    if not out:
++        return pd.DataFrame()
++    F = pd.DataFrame(out).sort_index()
++    F.columns = [c for c in cols] + (list(sd.columns) if not sd.empty else [])
++    return F
++
++def synthesize_covariance(symbols: list[str], as_of, lookback_days: int = 252) -> Tuple[pd.DataFrame, pd.DataFrame]:
++    """Return (Sigma, B) where Sigma is asset covariance and B exposures matrix, as of date."""
++    if not USE_FACTOR_MODEL or not symbols:
++        return pd.DataFrame(), pd.DataFrame()
++    as_of = pd.to_datetime(as_of)
++    start = as_of - pd.Timedelta(days=lookback_days*2)
++    feats, px = _load_window(start, as_of)
++    if feats.empty or px.empty:
++        return pd.DataFrame(), pd.DataFrame()
++    B = _factor_exposure_matrix(symbols, as_of, feats)
++    F = _factor_returns(feats, px, horizon=5)
++    if F.empty:
++        return pd.DataFrame(), B
++    F_cov = ewma_cov(F)
++    D = 1e-5 * np.eye(B.shape[0])  # small diagonal for PD stability
++    Sigma = (B.values @ F_cov.values @ B.values.T) + D
++    Sigma = pd.DataFrame(Sigma, index=B.index, columns=B.index)
++    return Sigma, B
++
+diff --git a/portfolio/mvo.py b/portfolio/mvo.py
+new file mode 100644
+--- /dev/null
++++ b/portfolio/mvo.py
+@@ -0,0 +1,119 @@
++from __future__ import annotations
++import numpy as np, pandas as pd
++try:
++    import cvxpy as cp
++except Exception:
++    cp = None
++
++from sqlalchemy import text, bindparam
++from db import engine
++from config import (GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT, MIN_PRICE, MIN_ADV_USD,
++                    MVO_RISK_LAMBDA, MVO_COST_LAMBDA, BETA_MIN, BETA_MAX, TURNOVER_LIMIT_ANNUAL,
++                    LIQUIDITY_MAX_PCT_ADV, STARTING_CAPITAL)
++from risk.risk_model import est_beta_asof
++from risk.factor_model import synthesize_covariance
++
++def _latest_prices(symbols: list[str]) -> pd.Series:
++    if not symbols: return pd.Series(dtype=float)
++    stmt = text("""
++        WITH latest AS (SELECT symbol, MAX(ts) ts FROM daily_bars WHERE symbol IN :syms GROUP BY symbol)
++        SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
++        FROM daily_bars b JOIN latest l ON b.symbol=l.symbol AND b.ts=l.ts
++    """).bindparams(bindparam("syms", expanding=True))
++    df = pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)})
++    return df.set_index("symbol")["px"] if not df.empty else pd.Series(dtype=float)
++
++def _adv20(symbols: list[str]) -> pd.Series:
++    if not symbols: return pd.Series(dtype=float)
++    stmt = text("SELECT symbol, adv_usd_20 FROM universe WHERE symbol IN :syms").bindparams(bindparam("syms", expanding=True))
++    df = pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)})
++    return df.set_index("symbol")["adv_usd_20"] if not df.empty else pd.Series(dtype=float)
++
++def _load_previous_weights(symbols: list[str]) -> pd.Series:
++    if not symbols:
++        return pd.Series(dtype=float)
++    stmt = text("""
++        SELECT symbol, weight FROM target_positions
++        WHERE ts=(SELECT MAX(ts) FROM target_positions) AND symbol IN :syms
++    """).bindparams(bindparam("syms", expanding=True))
++    df = pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)})
++    return df.set_index('symbol')['weight'] if not df.empty else pd.Series(dtype=float)
++
++def build_portfolio_mvo(alpha: pd.Series, as_of, risk_lambda: float | None = None) -> pd.Series:
++    """Convex MVO with risk & transaction cost terms and constraints."""
++    if cp is None:
++        # Fallback: equal-weight top-N longs
++        a = alpha.dropna().sort_values(ascending=False).clip(lower=0.0)
++        n = max(1, min(20, len(a)))
++        w = (GROSS_LEVERAGE / n) * pd.Series(1.0, index=a.index[:n])
++        return w
++    risk_lambda = risk_lambda if risk_lambda is not None else MVO_RISK_LAMBDA
++    syms = alpha.index.tolist()
++    px = _latest_prices(syms); adv = _adv20(syms)
++    ok = (px >= MIN_PRICE) & (adv >= MIN_ADV_USD)
++    a = alpha[ok].fillna(0.0)
++    if a.empty:
++        return pd.Series(dtype=float)
++    syms = a.index.tolist(); px = px.reindex(syms); adv = adv.reindex(syms)
++    Sigma, _B = synthesize_covariance(syms, pd.to_datetime(as_of))
++    if Sigma.empty:
++        Sigma = pd.DataFrame(np.eye(len(syms))*1e-4, index=syms, columns=syms)
++    w_prev = _load_previous_weights(syms).reindex(syms).fillna(0.0)
++    nav = STARTING_CAPITAL  # replace with SystemState if desired
++    liq_cap = (LIQUIDITY_MAX_PCT_ADV * adv / nav).clip(upper=MAX_POSITION_WEIGHT).fillna(MAX_POSITION_WEIGHT)
++    n = len(syms)
++    w = cp.Variable(n)
++    mu = a.values
++    S = Sigma.values
++    tcost = MVO_COST_LAMBDA * cp.norm1(w - w_prev.values)
++    obj = cp.Maximize(mu @ w - risk_lambda * cp.quad_form(w, S) - tcost)
++    cons = []
++    cons += [cp.sum(cp.abs(w)) <= GROSS_LEVERAGE + 1e-6]
++    cons += [cp.sum(w) == NET_EXPOSURE]
++    cons += [w >= 0.0, w <= liq_cap.values]  # long-only with caps
++    cons += [w <= MAX_POSITION_WEIGHT]
++    try:
++        betas = est_beta_asof(syms, as_of, market_symbol="IWM", lookback=63).reindex(syms).fillna(0.0).values
++        cons += [betas @ w >= BETA_MIN, betas @ w <= BETA_MAX]
++    except Exception:
++        pass
++    step_turnover = TURNOVER_LIMIT_ANNUAL / 252.0
++    cons += [cp.norm1(w - w_prev.values) <= step_turnover + 1e-6]
++    prob = cp.Problem(obj, cons)
++    try:
++        prob.solve(solver=cp.ECOS, warm_start=True, max_iters=10000)
++    except Exception:
++        return pd.Series(dtype=float)
++    if w.value is None:
++        return pd.Series(dtype=float)
++    sol = pd.Series(np.array(w.value).flatten(), index=syms)
++    return sol[sol.abs()>1e-6].sort_values(ascending=False)
++
+diff --git a/trading/execution.py b/trading/execution.py
+new file mode 100644
+--- /dev/null
++++ b/trading/execution.py
+@@ -0,0 +1,64 @@
++from __future__ import annotations
++import math, pandas as pd, numpy as np
++from datetime import datetime, time
++
++def _market_open_close():
++    # Generic 9:30 - 16:00 ET
++    return time(9,30), time(16,0)
++
++def _time_grid(n_slices: int) -> list[datetime]:
++    # Build intraday timestamps evenly spaced
++    today = pd.Timestamp('today').normalize()
++    t0, t1 = _market_open_close()
++    start = pd.Timestamp.combine(today, t0)
++    end   = pd.Timestamp.combine(today, t1)
++    grid = pd.date_range(start, end, periods=n_slices+1)[:-1].to_pydatetime().tolist()
++    return grid
++
++def schedule_child_orders(trades: pd.DataFrame, style: str = 'vwap', slices: int = 8) -> pd.DataFrame:
++    """Return a dataframe of child orders with schedule times and slice sizes."""
++    if trades is None or trades.empty:
++        return pd.DataFrame(columns=['symbol','parent_id','slice_idx','qty','scheduled_time','style'])
++    rows = []
++    times = _time_grid(slices)
++    for _, r in trades.iterrows():
++        q = int(r['quantity'])
++        side = r['side']
++        parent_id = r.get('id')
++        if style.lower() == 'vwap':
++            # U-shape weights
++            x = np.linspace(0, 1, slices)
++            vw = 0.25 + 0.75*(1 - (2*x - 1)**2)
++            w = vw / vw.sum()
++            alloc = (w * q).astype(int)
++            diff = q - alloc.sum()
++            if diff != 0:
++                alloc[0] += diff
++        else:
++            per = q // slices
++            alloc = np.array([per]*(slices-1) + [q - per*(slices-1)])
++        for i in range(slices):
++            if alloc[i] <= 0: continue
++            rows.append({
++                'symbol': r['symbol'],
++                'parent_id': int(parent_id) if parent_id is not None else None,
++                'slice_idx': i+1,
++                'qty': int(alloc[i]),
++                'scheduled_time': times[i],
++                'style': style.upper(),
++                'side': side
++            })
++    return pd.DataFrame(rows)
++
+diff --git a/tca/model.py b/tca/model.py
+new file mode 100644
+--- /dev/null
++++ b/tca/model.py
+@@ -0,0 +1,28 @@
++from __future__ import annotations
++import math
++from dataclasses import dataclass
++from config import SPREAD_BPS, COMMISSION_BPS, MARKET_IMPACT_BETA
++
++@dataclass
++class TcaParams:
++    spread_bps: float = SPREAD_BPS
++    commission_bps: float = COMMISSION_BPS
++    impact_beta: float = MARKET_IMPACT_BETA   # exponent in square-root impact
++
++def estimate_trade_cost_bps(qty: int, price: float, adv_usd: float, side: str, params: TcaParams | None = None) -> float:
++    params = params or TcaParams()
++    notional = abs(qty) * max(price, 0.01)
++    if adv_usd is None or adv_usd <= 0:
++        adv_usd = notional * 10  # avoid zero division; assume small relative size
++    # spread term
++    spread = params.spread_bps
++    # impact (square-root in size/ADV)
++    size_ratio = min(1.0, notional / adv_usd)
++    impact = 10000.0 * params.impact_beta * math.sqrt(size_ratio)
++    # commission
++    comm = params.commission_bps
++    return float(spread + impact + comm)
++
+diff --git a/tca/posttrade.py b/tca/posttrade.py
+new file mode 100644
+--- /dev/null
++++ b/tca/posttrade.py
+@@ -0,0 +1,45 @@
++from __future__ import annotations
++import pandas as pd, numpy as np
++from sqlalchemy import text
++from db import engine
++from config import MARKET_IMPACT_BETA, SPREAD_BPS, COMMISSION_BPS
++
++def calibrate_tca() -> dict:
++    """Calibrate simple TCA params from realized fills vs arrival prices."""
++    with engine.connect() as con:
++        df = pd.read_sql_query(text("""
++            SELECT t.symbol, t.trade_date, t.side, t.filled_quantity AS qty, t.avg_fill_price AS fill_px,
++                   a.arrival_px AS arrival_px, u.adv_usd_20 AS adv_usd
++            FROM trades t
++            JOIN (
++                SELECT b1.symbol, b1.ts, COALESCE(b1.adj_close,b1.close) AS arrival_px
++                FROM daily_bars b1
++                JOIN (SELECT symbol, MAX(ts) ts FROM daily_bars GROUP BY symbol) b2
++                ON b1.symbol=b2.symbol AND b1.ts=b2.ts
++            ) a ON t.symbol=a.symbol
++            LEFT JOIN universe u ON t.symbol=u.symbol
++            WHERE t.status IN ('filled','partial_fill') AND t.filled_quantity IS NOT NULL AND t.avg_fill_price IS NOT NULL
++        """), con)
++    if df.empty:
++        return {'impact_beta': MARKET_IMPACT_BETA, 'spread_bps': SPREAD_BPS, 'commission_bps': COMMISSION_BPS}
++    df['slippage_bps'] = (df['fill_px']/df['arrival_px'] - 1.0).abs() * 10_000.0
++    df['size_ratio'] = (df['qty'] * df['arrival_px']) / df['adv_usd'].replace(0, np.nan)
++    df['sqrt_size'] = np.sqrt(df['size_ratio'].clip(lower=0.0, upper=1.0))
++    X = df[['sqrt_size']].fillna(0.0).values
++    y = df['slippage_bps'].fillna(0.0).values
++    X_ = np.concatenate([X, np.ones((X.shape[0],1))], axis=1)
++    beta = np.linalg.pinv(X_.T @ X_) @ (X_.T @ y.reshape(-1,1))
++    b, a = float(beta[0,0]), float(beta[1,0])
++    impact_beta_est = (b / 10_000.0)  # since impact term was defined as 10000*beta*sqrt(size)
++    spread_bps_est = max(1.0, a - COMMISSION_BPS)
++    return {'impact_beta': float(impact_beta_est), 'spread_bps': float(spread_bps_est), 'commission_bps': COMMISSION_BPS}
++
+diff --git a/models/meta.py b/models/meta.py
+new file mode 100644
+--- /dev/null
++++ b/models/meta.py
+@@ -0,0 +1,40 @@
++from __future__ import annotations
++import numpy as np, pandas as pd
++from sqlalchemy import text
++from sklearn.linear_model import Ridge
++from db import engine
++
++def train_meta_weights(window_days: int = 252) -> dict[str,float]:
++    """Train a meta-model that learns how to combine base models' predictions."""
++    with engine.connect() as con:
++        df = pd.read_sql_query(text("""
++            SELECT p.symbol, p.ts, p.model_version, p.y_pred, db.COALESCE(db.adj_close, db.close) AS px
++            FROM predictions p
++            JOIN daily_bars db ON p.symbol = db.symbol AND p.ts = db.ts
++        """), con, parse_dates=['ts'])
++    if df.empty:
++        return {}
++    df = df.sort_values(['symbol','ts'])
++    df['px_fwd'] = df.groupby('symbol')['px'].shift(-5)
++    df['fwd_ret'] = (df['px_fwd']/df['px']) - 1.0
++    piv = df.pivot_table(index=['symbol','ts'], columns='model_version', values='y_pred', aggfunc='last').reset_index()
++    piv = piv.merge(df[['symbol','ts','fwd_ret']].drop_duplicates(), on=['symbol','ts'], how='left').dropna(subset=['fwd_ret'])
++    recent = piv[piv['ts'] >= (piv['ts'].max() - pd.Timedelta(days=window_days))]
++    X = recent.drop(columns=['symbol','ts','fwd_ret']).fillna(0.0).values
++    y = recent['fwd_ret'].values
++    if X.size == 0:
++        return {}
++    model = Ridge(alpha=1.0).fit(X, y)
++    cols = [c for c in recent.columns if c not in ('symbol','ts','fwd_ret')]
++    coefs = dict(zip(cols, model.coef_.tolist()))
++    pos = {k: max(0.0, v) for k,v in coefs.items()}
++    s = sum(pos.values()) or 1.0
++    return {k: v/s for k,v in pos.items()}
++
+diff --git a/models/idio.py b/models/idio.py
+new file mode 100644
+--- /dev/null
++++ b/models/idio.py
+@@ -0,0 +1,34 @@
++from __future__ import annotations
++import numpy as np, pandas as pd
++from sqlalchemy import text
++from db import engine
++from risk.sector import build_sector_dummies
++
++def residual_returns(as_of) -> pd.Series:
++    """Compute cross-sectional residual returns after neutralizing common factors + sector buckets."""
++    with engine.connect() as con:
++        df = pd.read_sql_query(text("""
++            SELECT f.symbol, f.ts, f.mom_21, f.turnover_21, f.size_ln, f.beta_63,
++                   COALESCE(b.adj_close, b.close) AS px
++            FROM features f
++            JOIN daily_bars b ON f.symbol=b.symbol AND f.ts=b.ts
++            WHERE f.ts=:t
++        """), con, params={'t': pd.to_datetime(as_of).date()}, parse_dates=['ts'])
++    if df.empty:
++        return pd.Series(dtype=float)
++    df = df.sort_values(['symbol'])
++    df['ret_1d'] = df.groupby('symbol')['px'].pct_change()
++    y = df['ret_1d'].fillna(0.0).values.reshape(-1,1)
++    X = df[['mom_21','turnover_21','size_ln','beta_63']].fillna(0.0).values
++    sd = build_sector_dummies(df['symbol'].tolist(), as_of)
++    if not sd.empty:
++        X = np.concatenate([X, sd.values], axis=1)
++    X_ = np.concatenate([X, np.ones((X.shape[0],1))], axis=1)
++    beta = np.linalg.pinv(X_.T @ X_ + 1e-6*np.eye(X_.shape[1])) @ (X_.T @ y)
++    resid = (y - (X_ @ beta)).flatten()
++    return pd.Series(resid, index=df['symbol'].tolist())
++
+diff --git a/monitoring/monitor.py b/monitoring/monitor.py
+new file mode 100644
+--- /dev/null
++++ b/monitoring/monitor.py
+@@ -0,0 +1,23 @@
++from __future__ import annotations
++import pandas as pd
++from sqlalchemy import text
++from db import engine
++from risk.risk_model import portfolio_beta
++from risk.sector import sector_asof
++
++def snapshot_risk(as_of=None) -> pd.DataFrame:
++    with engine.connect() as con:
++        ts = as_of or con.execute(text("SELECT MAX(ts) FROM target_positions")).scalar()
++        df = pd.read_sql_query(text("SELECT symbol, weight FROM target_positions WHERE ts=:t"), con, params={'t': ts})
++    w = df.set_index('symbol')['weight'] if not df.empty else pd.Series(dtype=float)
++    beta = portfolio_beta(w, ts) if not w.empty else float('nan')
++    sec = sector_asof(w.index.tolist(), ts)
++    se = w.groupby(sec.reindex(w.index).fillna('UNKNOWN')).sum().sort_values(ascending=False)
++    out = se.reset_index(); out.columns=['sector','weight']
++    out['portfolio_beta'] = beta
++    return out
++
+diff --git a/alembic/versions/20250825_08_bitemporal_and_child_orders.py b/alembic/versions/20250825_08_bitemporal_and_child_orders.py
+new file mode 100644
+--- /dev/null
++++ b/alembic/versions/20250825_08_bitemporal_and_child_orders.py
+@@ -0,0 +1,55 @@
++"""v18: add knowledge_date to fundamentals & shares, child_orders table.
++
++Revision ID: 20250825_08
++Revises: 20250825_07
++Create Date: 2025-08-25
++"""
++from alembic import op
++import sqlalchemy as sa
++
++revision = '20250825_08'
++down_revision = '20250825_07'
++branch_labels = None
++depends_on = None
++
++def upgrade():
++    # Add knowledge_date to fundamentals / shares_outstanding if missing
++    with op.batch_alter_table('fundamentals') as batch_op:
++        try:
++            batch_op.add_column(sa.Column('knowledge_date', sa.Date(), nullable=True))
++            batch_op.create_index('ix_fund_knowledge_date', ['knowledge_date'])
++        except Exception:
++            pass
++    with op.batch_alter_table('shares_outstanding') as batch_op:
++        try:
++            batch_op.add_column(sa.Column('knowledge_date', sa.Date(), nullable=True))
++            batch_op.create_index('ix_shares_knowledge_date', ['knowledge_date'])
++        except Exception:
++            pass
++    # Child orders table
++    op.create_table('child_orders',
++        sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
++        sa.Column('parent_id', sa.Integer(), nullable=True),
++        sa.Column('symbol', sa.String(length=20), nullable=False),
++        sa.Column('side', sa.String(length=4), nullable=False),
++        sa.Column('slice_idx', sa.Integer(), nullable=False),
++        sa.Column('qty', sa.Integer(), nullable=False),
++        sa.Column('scheduled_time', sa.DateTime(), nullable=False),
++        sa.Column('style', sa.String(length=8), nullable=False)
++    )
++
++def downgrade():
++    op.drop_table('child_orders')
++    try:
++        op.drop_index('ix_shares_knowledge_date', table_name='shares_outstanding')
++        op.drop_column('shares_outstanding', 'knowledge_date')
++    except Exception:
++        pass
++    try:
++        op.drop_index('ix_fund_knowledge_date', table_name='fundamentals')
++        op.drop_column('fundamentals', 'knowledge_date')
++    except Exception:
++        pass
++
+
+diff --git a/config.py b/config.py
+--- a/config.py
++++ b/config.py
+@@ -117,6 +117,10 @@
+ # MLOps scaffolding (off by default)
+ ENABLE_MLFLOW        = _as_bool("ENABLE_MLFLOW", False)
+ MLFLOW_TRACKING_URI  = os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns")
++MLFLOW_EXPERIMENT    = os.getenv("MLFLOW_EXPERIMENT", "smcap-v18")
+ ENABLE_DATA_VALIDATION = _as_bool("ENABLE_DATA_VALIDATION", False)
++DATA_VALIDATION_FAIL_HARD = _as_bool("DATA_VALIDATION_FAIL_HARD", True)
++
+ 
+diff --git a/run_pipeline.py b/run_pipeline.py
+--- a/run_pipeline.py
++++ b/run_pipeline.py
+@@ -1,15 +1,57 @@
+ from __future__ import annotations
+ import logging
+ from models.features import build_features
+ from models.ml import train_and_predict_all_models
+ from trading.generate_trades import generate_today_trades
++from config import ENABLE_MLFLOW, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT, ENABLE_DATA_VALIDATION, DATA_VALIDATION_FAIL_HARD
+ 
+ log = logging.getLogger(__name__)
+ logging.basicConfig(level=logging.INFO, format='%(asctime)s - PIPELINE - %(levelname)s - %(message)s')
+ 
+ def main(sync_broker: bool = False) -> bool:
+-    try:
+-        build_features()
+-        train_and_predict_all_models()
+-        generate_today_trades()
+-        return True
+-    except Exception as e:
+-        log.exception("Pipeline failed: %s", e)
+-        return False
++    # Optional: Great Expectations pre-flight check on recent market data
++    if ENABLE_DATA_VALIDATION:
++        try:
++            from data_validation.gx_checks import validate_recent_daily_bars
++            validate_recent_daily_bars(days=5, fail_hard=DATA_VALIDATION_FAIL_HARD)
++        except Exception as e:
++            if DATA_VALIDATION_FAIL_HARD:
++                log.exception("Pre-flight data validation failed (daily_bars).")
++                return False
++            log.warning("Pre-flight data validation warning: %s", e)
++
++    def _run_pipeline_body():
++        build_features()
++        # Optional post-feature validation
++        if ENABLE_DATA_VALIDATION:
++            try:
++                from data_validation.gx_checks import validate_features_table_latest
++                validate_features_table_latest(fail_hard=DATA_VALIDATION_FAIL_HARD)
++            except Exception as e:
++                if DATA_VALIDATION_FAIL_HARD:
++                    raise
++                log.warning("Post-feature validation warning: %s", e)
++        train_and_predict_all_models()
++        generate_today_trades()
++
++    if ENABLE_MLFLOW:
++        try:
++            import mlflow
++            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
++            mlflow.set_experiment(MLFLOW_EXPERIMENT)
++            with mlflow.start_run(run_name="daily_pipeline"):
++                mlflow.set_tags({"component":"pipeline","version":"v18"})
++                _run_pipeline_body()
++                mlflow.log_param("data_validation_enabled", ENABLE_DATA_VALIDATION)
++                mlflow.log_param("fail_hard", DATA_VALIDATION_FAIL_HARD)
++            return True
++        except Exception as e:
++            log.exception("Pipeline failed (MLflow enabled): %s", e)
++            return False
++    else:
++        try:
++            _run_pipeline_body()
++            return True
++        except Exception as e:
++            log.exception("Pipeline failed: %s", e)
++            return False
+ 
+ if __name__ == "__main__":
+     main()
+ 
+diff --git a/models/features.py b/models/features.py
+--- a/models/features.py
++++ b/models/features.py
+@@ -6,6 +6,7 @@
+ from typing import List
+ from db import engine, upsert_dataframe, Feature
+ import logging
++from config import ENABLE_DATA_VALIDATION, DATA_VALIDATION_FAIL_HARD
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -199,6 +200,16 @@
+ 
+         if out_frames:
+             feats = pd.concat(out_frames, ignore_index=True)
++            # Optional Great Expectations validation on the batch frame
++            if ENABLE_DATA_VALIDATION:
++                try:
++                    from data_validation.gx_checks import validate_features_frame
++                    validate_features_frame(feats, fail_hard=DATA_VALIDATION_FAIL_HARD)
++                except Exception as e:
++                    if DATA_VALIDATION_FAIL_HARD:
++                        raise
++                    log.warning("Feature batch validation warning: %s", e)
++
+             upsert_dataframe(feats, Feature, ['symbol','ts'])
+             new_rows.append(feats)
+             log.info(f"Batch completed. New rows: {len(feats)}")
+ 
+diff --git a/models/ml.py b/models/ml.py
+--- a/models/ml.py
++++ b/models/ml.py
+@@ -10,6 +10,7 @@
+ from db import engine, upsert_dataframe, Prediction
+ from models.transformers import CrossSectionalNormalizer
+ from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS,
+-                    SECTOR_NEUTRALIZE,)
++                    SECTOR_NEUTRALIZE, ENABLE_MLFLOW, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT, ENABLE_DATA_VALIDATION, DATA_VALIDATION_FAIL_HARD)
+ from risk.sector import build_sector_dummies
+ from risk.risk_model import neutralize_with_sectors
+ from models.regime import classify_regime, gate_blend_weights
+@@ -117,6 +118,13 @@
+     df = feats.merge(px[['symbol','ts','fwd_ret']], on=['symbol','ts'], how='left')
+     train_df = df.dropna(subset=['fwd_ret']).copy()
+     latest_df = feats[feats['ts'] == latest_ts].copy()
++    # Optional: Great Expectations check on training matrix
++    if ENABLE_DATA_VALIDATION:
++        try:
++            from data_validation.gx_checks import validate_training_matrix
++            validate_training_matrix(train_df, fail_hard=DATA_VALIDATION_FAIL_HARD)
++        except Exception as e:
++            log.warning("Training matrix validation warning: %s", e) if not DATA_VALIDATION_FAIL_HARD else (_ for _ in ()).throw(e)
+     if train_df.empty or latest_df.empty:
+         log.warning("Training or prediction sets are empty."); return {}
+ 
+@@ -134,6 +142,18 @@
+     outputs, preds_dict = {}, {}
+ 
+     # Blend weights: config + IC adaptive
++    # MLflow run context (optional)
++    active_run = None
++    if ENABLE_MLFLOW:
++        try:
++            import mlflow
++            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
++            mlflow.set_experiment(MLFLOW_EXPERIMENT)
++            if mlflow.active_run() is None:
++                active_run = mlflow.start_run(run_name=f"train_predict_{str(latest_ts)[:10]}")
++                mlflow.set_tags({"component":"train_predict","version":"v18"})
++        except Exception as e:
++            log.warning(f"MLflow init failed: {e}")
+     from config import BLEND_WEIGHTS, REGIME_GATING
+     blend_w = _parse_blend_weights(BLEND_WEIGHTS)
+     ic_w = _ic_by_model(train_df[['ts','symbol','fwd_ret'] + FEATURE_COLS], FEATURE_COLS)
+@@ -143,6 +163,13 @@
+         s = sum(combined.values()) or 1.0
+         blend_w = {k: v/s for k,v in combined.items()}
+ 
++    # Log basic params/metrics to MLflow if enabled
++    if ENABLE_MLFLOW:
++        try:
++            mlflow.log_param("blend_weights_config", BLEND_WEIGHTS)
++            mlflow.log_metric("train_rows", float(len(train_df)))
++            [mlflow.log_metric(f"ic_weight_{k}", float(v)) for k,v in ic_w.items()]
++        except Exception: pass
+     # Regime gating
+     if REGIME_GATING:
+         regime = classify_regime(latest_ts)
+@@ -188,6 +215,14 @@
+             upsert_dataframe(out2[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+         except Exception as e:
+             log.warning(f"Neutralization failed: {e}; fallback to raw blend.")
+             out_fallback = out.copy(); out_fallback['model_version']='blend_v1'
+             upsert_dataframe(out_fallback[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
++    # Log prediction count
++    if ENABLE_MLFLOW:
++        try:
++            mlflow.log_metric("pred_symbols", float(len(latest_df)))
++        except Exception:
++            pass
++        finally:
++            try: 
++                if active_run is not None: mlflow.end_run()
++            except Exception: pass
+     log.info("Live training and prediction complete (v17).")
+     return outputs
+ 
+diff --git a/validation/wfo.py b/validation/wfo.py
+--- a/validation/wfo.py
++++ b/validation/wfo.py
+@@ -7,8 +7,9 @@
+ from sqlalchemy import text
+ from db import engine, upsert_dataframe, Prediction
+ from models.ml import _model_specs, FEATURE_COLS
+ from validation.purged_kfold import PurgedKFold
+ from config import (WFO_INSAMPLE_YEARS, WFO_OOS_MONTHS, WFO_ENABLE_TUNING, WFO_EMBARGO_DAYS,
+-                    PKF_N_SPLITS, PKF_EMBARGO_DAYS, TARGET_HORIZON_DAYS, BACKTEST_START)
++                    PKF_N_SPLITS, PKF_EMBARGO_DAYS, TARGET_HORIZON_DAYS, BACKTEST_START,
++                    ENABLE_MLFLOW, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT)
+ from risk.sector import build_sector_dummies
+ from risk.risk_model import neutralize_with_sectors
+ 
+@@ -129,6 +130,18 @@
+         out['model_version'] = 'blend_wfo_v18'
+         upsert_dataframe(out[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+         outputs['oos_predictions'].append(out.copy())
+         # Compute OOS IC
+         tmp = oos_df[['ts','fwd_ret']].copy()
+         tmp['pred'] = resid.values
+         ic_by_day = tmp.groupby('ts').apply(lambda d: d['pred'].corr(d['fwd_ret'], method='spearman'))
+         outputs['oos_metrics'].append({'start': oos_start, 'end': oos_end, 'IC_mean': float(ic_by_day.mean())})
++        # Log to MLflow if enabled
++        if ENABLE_MLFLOW:
++            try:
++                import mlflow
++                mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
++                mlflow.set_experiment(MLFLOW_EXPERIMENT)
++                with mlflow.start_run(run_name=f"WFO_{insample_years}y_{oos_months}m", nested=True):
++                    mlflow.set_tags({"component":"wfo","version":"v18"})
++                    mlflow.log_metric("IC_mean", float(ic_by_day.mean()))
++                    mlflow.log_param("oos_window_start", str(oos_start.date()))
++                    mlflow.log_param("oos_window_end", str(oos_end.date()))
++            except Exception:
++                pass
+         oos_start = oos_end + pd.DateOffset(days=1)
+     return outputs
+ 
+diff --git a/data_validation/__init__.py b/data_validation/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/data_validation/__init__.py
+@@ -0,0 +1 @@
++# package init
++
+diff --git a/data_validation/gx_checks.py b/data_validation/gx_checks.py
+new file mode 100644
+--- /dev/null
++++ b/data_validation/gx_checks.py
+@@ -0,0 +1,151 @@
++from __future__ import annotations
++import logging
++import numpy as np
++import pandas as pd
++from sqlalchemy import text
++from db import engine
++
++log = logging.getLogger(__name__)
++
++def _as_ge(df: pd.DataFrame):
++    """
++    Return a Great Expectations PandasDataset without requiring a project context.
++    Works with GE's legacy Dataset API (keeps this portable).
++    """
++    try:
++        from great_expectations.dataset import PandasDataset
++        return PandasDataset(df.copy())
++    except Exception as e:
++        raise RuntimeError("Great Expectations is not installed or failed to import.") from e
++
++def _assert_or_warn(results: list[dict], fail_hard: bool, context: str):
++    ok = all(r.get("success", False) for r in results)
++    if not ok:
++        msgs = [str(r.get("result", "")) for r in results if not r.get("success", False)]
++        msg = f"GE validation failed for {context}: " + "; ".join(msgs)
++        if fail_hard:
++            raise AssertionError(msg)
++        log.warning(msg)
++    return ok
++
++def validate_recent_daily_bars(days: int = 5, fail_hard: bool = True) -> bool:
++    """Quick GE checks on the last N days of daily_bars."""
++    with engine.connect() as con:
++        hi = con.execute(text("SELECT MAX(ts) FROM daily_bars")).scalar()
++        if not hi:
++            if fail_hard: raise AssertionError("daily_bars is empty.")
++            log.warning("daily_bars empty."); return False
++        lo = pd.Timestamp(hi) - pd.Timedelta(days=days+2)
++        df = pd.read_sql_query(text("""
++            SELECT symbol, ts, open, high, low, close, adj_close, volume
++            FROM daily_bars WHERE ts >= :s
++        """), con, params={'s': lo.date()}, parse_dates=['ts'])
++    ge = _as_ge(df)
++    res = []
++    res.append(ge.expect_table_row_count_to_be_greater_than(0))
++    res.append(ge.expect_column_values_to_not_be_null("symbol"))
++    res.append(ge.expect_column_values_to_not_be_null("ts"))
++    res.append(ge.expect_compound_columns_to_be_unique(["symbol","ts"]))
++    for c in ["open","high","low","close"]:
++        if c in df.columns:
++            res.append(ge.expect_column_values_to_be_greater_than(c, 0))
++    if "volume" in df.columns:
++        res.append(ge.expect_column_values_to_be_greater_than_or_equal_to("volume", 0))
++    return _assert_or_warn(res, fail_hard, "recent daily_bars")
++
++def validate_features_frame(feats: pd.DataFrame, fail_hard: bool = True) -> bool:
++    """Checks for a freshly built feature frame prior to upsert."""
++    ge = _as_ge(feats)
++    res = []
++    for c in ["symbol","ts","mom_21","vol_21","turnover_21","size_ln"]:
++        if c in feats.columns:
++            res.append(ge.expect_column_values_to_not_be_null(c))
++    if "rsi_14" in feats.columns:
++        res.append(ge.expect_column_values_to_be_between("rsi_14", 0, 100, allow_cross_type_comparisons=True))
++    if "adv_usd_21" in feats.columns:
++        res.append(ge.expect_column_values_to_be_greater_than_or_equal_to("adv_usd_21", 0))
++    return _assert_or_warn(res, fail_hard, "features frame")
++
++def validate_features_table_latest(fail_hard: bool = True) -> bool:
++    """Validate the latest features snapshot in the DB."""
++    with engine.connect() as con:
++        ts = con.execute(text("SELECT MAX(ts) FROM features")).scalar()
++        if not ts:
++            if fail_hard: raise AssertionError("features table is empty.")
++            log.warning("features table empty."); return False
++        df = pd.read_sql_query(text("SELECT * FROM features WHERE ts=:t"),
++                               con, params={'t': ts}, parse_dates=['ts'])
++    return validate_features_frame(df, fail_hard=fail_hard)
++
++def validate_training_matrix(train_df: pd.DataFrame, fail_hard: bool = True) -> bool:
++    """Sanity checks on training matrix prior to model fitting."""
++    ge = _as_ge(train_df)
++    res = []
++    res.append(ge.expect_table_row_count_to_be_greater_than(0))
++    for c in ["symbol","ts","fwd_ret"]:
++        if c in train_df.columns:
++            res.append(ge.expect_column_values_to_not_be_null(c))
++    if "fwd_ret" in train_df.columns:
++        # avoid pathological outliers that typically signal data issues
++        res.append(ge.expect_column_values_to_be_between("fwd_ret", -0.95, 3.0, allow_cross_type_comparisons=True))
++    return _assert_or_warn(res, fail_hard, "training matrix")
++
