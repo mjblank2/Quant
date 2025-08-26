@@ -1,98 +1,61 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # Defaults
-: "${PORT:=8000}"
-: "${SERVICE:=web}"              # web | worker | cron
-: "${APP_MODE:=streamlit}"       # streamlit | api
-: "${RUN_MIGRATIONS:=1}"         # 1 to run alembic upgrade head on start
+SERVICE="${SERVICE:-web}"          # web | worker | cron
+APP_MODE="${APP_MODE:-streamlit}"  # streamlit | operator | api
+PORT="${PORT:-10000}"
 
 echo "[entrypoint] SERVICE=${SERVICE} APP_MODE=${APP_MODE} PORT=${PORT}"
 
-run_migrations() {
-  if [[ "${RUN_MIGRATIONS}" != "1" ]]; then
-    echo "[entrypoint] RUN_MIGRATIONS=0; skipping migrations"
-    return 0
-  fi
+# If a command was provided by the runtime (e.g., Render cron dockerCommand),
+# run it instead of our built-in modes.
+if [[ "$#" -gt 0 ]]; then
+  echo "[entrypoint] Command override detected: $*"
+  exec "$@"
+fi
 
-  if [[ -z "${DATABASE_URL:-}" ]]; then
-    echo "[entrypoint] DATABASE_URL not set; skipping migrations"
-    return 0
-  fi
-
-  # Normalize DSN for SQLAlchemy 2.x
-  if [[ "${DATABASE_URL}" == postgres://* ]]; then
-    export DATABASE_URL="${DATABASE_URL/postgres:\/\//postgresql+psycopg://}"
-  elif [[ "${DATABASE_URL}" == postgresql://* && "${DATABASE_URL}" != postgresql+psycopg://* ]]; then
-    export DATABASE_URL="${DATABASE_URL/postgresql:\/\//postgresql+psycopg://}"
-  fi
-
-  if ! command -v alembic >/dev/null 2>&1; then
-    echo "[entrypoint] WARNING: alembic not found; skipping migrations"
-    return 0
-  fi
-
-  set +e
+# Optional Alembic migrations (only if present)
+if [[ -f "alembic.ini" && -d "migrations" ]]; then
   echo "[entrypoint] Running Alembic upgrade..."
-  UPGRADE_LOG="$(alembic upgrade head 2>&1)"
-  STATUS=$?
-  set -e
-
-  if [[ $STATUS -eq 0 ]]; then
+  if alembic upgrade head; then
     echo "[entrypoint] Alembic upgrade succeeded"
-    return 0
+  else
+    echo "[entrypoint] Alembic upgrade failed (continuing)"
   fi
+fi
 
-  echo "[entrypoint] Alembic upgrade failed; inspecting error..."
-  echo "$UPGRADE_LOG"
+case "${SERVICE}" in
+  web)
+    case "${APP_MODE}" in
+      streamlit)
+        echo "[entrypoint] Starting Streamlit dashboard on port ${PORT}"
+        exec streamlit run data_ingestion/dashboard.py \
+          --server.port "${PORT}" --server.address 0.0.0.0
+        ;;
+      operator)
+        echo "[entrypoint] Starting Streamlit operator app on port ${PORT}"
+        exec streamlit run app.py \
+          --server.port "${PORT}" --server.address 0.0.0.0
+        ;;
+      api)
+        echo "[entrypoint] Starting FastAPI on port ${PORT}"
+        exec uvicorn api:app --host 0.0.0.0 --port "${PORT}"
+        ;;
+      *)
+        echo "[entrypoint] Unknown APP_MODE='${APP_MODE}'"; exit 1;;
+    esac
+    ;;
+  worker)
+    echo "[entrypoint] Starting worker..."
+    exec python -m jobs.worker
+    ;;
+  cron)
+    # Default cron behavior (when no dockerCommand override)
+    echo "[entrypoint] Running EOD pipeline..."
+    exec python run_pipeline.py
+    ;;
+  *)
+    echo "[entrypoint] Unknown SERVICE='${SERVICE}'"; exit 1;;
+esac
 
-  # If it's a DuplicateTable error (schema already exists), baseline then retry once
-  if echo "$UPGRADE_LOG" | grep -qiE 'DuplicateTable|already exists'; then
-    echo "[entrypoint] Detected pre-existing schema. Stamping DB to current head, then retrying upgrade once."
-    alembic stamp head || { echo "[entrypoint] WARNING: stamp head failed"; return 0; }
-    alembic upgrade head || { echo "[entrypoint] WARNING: second upgrade attempt failed; continuing anyway"; return 0; }
-    echo "[entrypoint] Alembic upgrade succeeded after stamp."
-    return 0
-  fi
-
-  echo "[entrypoint] WARNING: alembic upgrade failed with non-duplicate error; continuing"
-  return 0
-}
-
-run_service() {
-  case "${SERVICE}" in
-    web)
-      case "${APP_MODE}" in
-        streamlit)
-          echo "[entrypoint] Starting Streamlit dashboard on port ${PORT}"
-          exec streamlit run data_ingestion/dashboard.py --server.port "${PORT}" --server.address 0.0.0.0
-          ;;
-        api)
-          echo "[entrypoint] Starting API (uvicorn) on port ${PORT}"
-          exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT}"
-          ;;
-        *)
-          echo "[entrypoint] Unknown APP_MODE='${APP_MODE}'"; exit 1;;
-      esac
-      ;;
-    worker)
-      echo "[entrypoint] Starting worker..."
-      exec python -m jobs.worker
-      ;;
-    cron)
-    # If a command (CMD) was provided (e.g., cron service with dockerCommand), run it.
-    if [[ "$#" -gt 0 ]]; then
-      echo "[entrypoint] Command override detected: $*
-      exec "$@"
-    fi
-      echo "[entrypoint] Running EOD pipeline..."
-      exec python run_pipeline.py
-      ;;
-    *)
-      echo "[entrypoint] Unknown SERVICE='${SERVICE}'"; exit 1;;
-  esac
-}
-
-# --- Main
-run_migrations
-run_service
