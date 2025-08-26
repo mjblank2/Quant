@@ -80,6 +80,11 @@ run_service() {
       exec python -m jobs.worker
       ;;
     cron)
+    # If a command (CMD) was provided (e.g., cron service with dockerCommand), run it.
+    if [[ "$#" -gt 0 ]]; then
+      echo "[entrypoint] Command override detected: $*
+      exec "$@"
+    fi
       echo "[entrypoint] Running EOD pipeline..."
       exec python run_pipeline.py
       ;;
