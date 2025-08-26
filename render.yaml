@@ -11,21 +11,79 @@ services:
       - key: APCA_API_SECRET_KEY
         sync: false
       - key: APCA_API_BASE_URL
-        value: https://paper-api.alpaca.markets
+        value: https://api.alpaca.markets   # change to https://api.alpaca.markets for live keys
+      - key: ALPACA_DATA_FEED
+        value: sip                                 # use iex unless you have SIP entitlement
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: TIINGO_API_KEY
+        sync: false
+      - key: PYTHONPATH
+        value: /app                                # ensures submodule imports (e.g., from db import …)
+
+cronJobs:
+  - name: ingest-recent
+    schedule: "45 21 * * 1-5"   # after US close
+    command: "python -m data.ingest --days 7"
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: APCA_API_BASE_URL
+        value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
         value: sip
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
         sync: false
+      - key: PYTHONPATH
+        value: /app
 
-cronJobs:
-  - name: ingest-recent
-    schedule: "45 21 * * 1-5"   # Run after US close
-    command: "python -m data.ingest --days 7"
   - name: refresh-universe
-    schedule: "0 14 * * 1"
+    schedule: "0 14 * * 1"      # Mondays 09:00 CT
     command: "python -m data.universe"
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: APCA_API_BASE_URL
+        value: https://api.alpaca.markets
+      - key: ALPACA_DATA_FEED
+        value: sip
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: PYTHONPATH
+        value: /app
+      # (optional) bootstrap helpers if gates are too strict at first run:
+      # - key: SEED_SYMBOLS
+      #   value: AAPL,MSFT,SPY,QQQ,SMCI
+      # - key: ADV_USD_MIN
+      #   value: "0"
+
   - name: eod-pipeline
-    schedule: "30 22 * * 1-5"   # After ingestion
+    schedule: "30 22 * * 1-5"   # after ingestion
     command: "python run_pipeline.py"
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: APCA_API_BASE_URL
+        value: https://api.alpaca.markets
+      - key: ALPACA_DATA_FEED
+        value: sip
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: TIINGO_API_KEY
+        sync: false
+      - key: PYTHONPATH
+        value: /app
