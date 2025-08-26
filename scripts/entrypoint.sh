@@ -8,14 +8,7 @@ PORT="${PORT:-10000}"
 
 echo "[entrypoint] SERVICE=${SERVICE} APP_MODE=${APP_MODE} PORT=${PORT}"
 
-# If a command was provided by the runtime (e.g., Render cron dockerCommand),
-# run it instead of our built-in modes.
-if [[ "$#" -gt 0 ]]; then
-  echo "[entrypoint] Command override detected: $*"
-  exec "$@"
-fi
-
-# Optional Alembic migrations (only if present)
+# Always run Alembic migrations first (if present)
 if [[ -f "alembic.ini" && -d "migrations" ]]; then
   echo "[entrypoint] Running Alembic upgrade..."
   if alembic upgrade head; then
@@ -23,6 +16,13 @@ if [[ -f "alembic.ini" && -d "migrations" ]]; then
   else
     echo "[entrypoint] Alembic upgrade failed (continuing)"
   fi
+fi
+
+# If a command was provided by the runtime (e.g., Render cron dockerCommand),
+# run it instead of our built-in modes.
+if [[ "$#" -gt 0 ]]; then
+  echo "[entrypoint] Command override detected: $*"
+  exec "$@"
 fi
 
 case "${SERVICE}" in
