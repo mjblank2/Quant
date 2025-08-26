@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: smallcap-quant
+    name: bcq-web
     runtime: docker
     dockerfilePath: Dockerfile
     envVars:
