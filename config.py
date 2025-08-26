@@ -52,6 +52,7 @@ ADV_USD_MIN   = _as_float("ADV_USD_MIN", 25_000.0)
 ADV_LOOKBACK  = _as_int("ADV_LOOKBACK", 20)
 MIN_PRICE     = _as_float("MIN_PRICE", 1.00)
 MIN_ADV_USD   = _as_float("MIN_ADV_USD", ADV_USD_MIN)
+MARKET_CAP_MAX = _as_float("MARKET_CAP_MAX", 3_000_000_000.0)
 
 # Modeling
 BACKTEST_START = os.getenv("BACKTEST_START", "2019-01-01")
