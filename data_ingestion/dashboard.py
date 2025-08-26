@@ -7,6 +7,13 @@ import sqlalchemy
 from sqlalchemy import text
 import streamlit as st
 
++from db import create_tables
++try:
++    create_tables()  # initialize schema if this is a fresh DB
++except Exception as e:
++    st.warning(f"Schema init skipped: {e}")
+
+
 st.set_page_config(page_title="Blank Capital Quant – Pro Dashboard", layout="wide")
 
 st.title("Blank Capital Quant")
