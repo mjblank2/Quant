@@ -1,18 +1,27 @@
-\
+# data_ingestion/dashboard.py
+import sys
 import os
 from datetime import date, timedelta
 from typing import List, Optional, Tuple
+
 import pandas as pd
 import sqlalchemy
 from sqlalchemy import text
 import streamlit as st
 
+# --- Ensure repo root is on sys.path so `db.py` can be imported from a subfolder ---
+# /app/
+#   db.py
+#   data_ingestion/
+#     dashboard.py  <-- this file
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))  # add repo root
+
 from db import create_tables
+
 try:
     create_tables()  # initialize schema if this is a fresh DB
 except Exception as e:
     st.warning(f"Schema init skipped: {e}")
-
 
 st.set_page_config(page_title="Blank Capital Quant – Pro Dashboard", layout="wide")
 
@@ -136,7 +145,7 @@ def _apply_symbol_filter(base_sql: str, cols: List[str]) -> Tuple[str, dict]:
 def _apply_date_filter(base_sql: str, cols: List[str]) -> Tuple[str, dict]:
     params = {}
     # date-like columns we try in priority order
-    date_candidates = ["ts", "date", "as_of", "executed_at", "filled_at", "created_at", "timestamp"]
+    date_candidates = ["ts", "date", "as_of", "executed_at", "filled_at", "created_at", "timestamp", "trade_date"]
     date_col = first_existing(cols, date_candidates)
     if date_col:
         base_sql += f" AND {date_col} BETWEEN :start_d AND :end_d"
@@ -157,6 +166,9 @@ def view_prices():
         return
     cols = table_columns("daily_bars")
     needed = [c for c in ["ts", "symbol", "open", "high", "low", "close", "volume"] if c in cols]
+    if not needed:
+        st.info("No displayable columns in `daily_bars`.")
+        return
     sql = f"SELECT {', '.join(needed)} FROM daily_bars WHERE 1=1"
     sql, p1 = _apply_symbol_filter(sql, cols)
     sql, p2 = _apply_date_filter(sql, cols)
@@ -171,9 +183,10 @@ def view_prices():
         _download_button_csv(df, "Download CSV (prices)", "daily_bars.csv")
 
     # Chart one symbol at a time
-    chart_symbol = st.selectbox("Chart symbol", options=sorted(df["symbol"].unique().tolist()))
-    df_sym = df[df["symbol"] == chart_symbol].set_index("ts").sort_index()
-    st.line_chart(df_sym["close"], use_container_width=True)
+    if "symbol" in df.columns and "close" in df.columns and "ts" in df.columns:
+        chart_symbol = st.selectbox("Chart symbol", options=sorted(df["symbol"].unique().tolist()))
+        df_sym = df[df["symbol"] == chart_symbol].set_index("ts").sort_index()
+        st.line_chart(df_sym["close"], use_container_width=True)
 
 # ============
 # Trades View
@@ -184,11 +197,16 @@ def view_trades():
         return
     cols = table_columns("trades")
     sel_cols = [c for c in ["id","client_order_id","symbol","side","qty","notional","price","status",
-                            "executed_at","filled_at","created_at","ts","venue"] if c in cols]
+                            "executed_at","filled_at","created_at","ts","trade_date","venue"] if c in cols]
+    if not sel_cols:
+        st.info("No displayable columns in `trades`.")
+        return
+
     sql = f"SELECT {', '.join(sel_cols)} FROM trades WHERE 1=1"
     sql, p1 = _apply_symbol_filter(sql, cols)
     sql, p2 = _apply_date_filter(sql, cols)
     params = {**p1, **p2}
+
     # Optional side/status filters
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -205,33 +223,46 @@ def view_trades():
         sql += " AND status = :status"
         params["status"] = status
 
-    sql += " ORDER BY COALESCE(executed_at, filled_at, created_at, ts) DESC LIMIT :lim"
+    # Robust ORDER BY: pick the first date-like column that exists; fall back to ts
+    order_candidates = ["executed_at", "filled_at", "created_at", "ts", "trade_date"]
+    order_col = first_existing(cols, order_candidates) or "ts"
+    sql += f" ORDER BY {order_col} DESC LIMIT :lim"
     params["lim"] = int(limit_n)
+
     df = _read_df(sql, params)
     if df.empty:
         st.info("No trades for current filters.")
         return
 
     # KPIs
-    k1,k2,k3,k4 = st.columns(4)
+    k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.metric("Trades", f"{len(df):,}")
     with k2:
         if "qty" in df.columns:
-            st.metric("Shares", f"{int(df['qty'].abs().sum()):,}")
+            try:
+                st.metric("Shares", f"{int(pd.to_numeric(df['qty'], errors='coerce').abs().sum()):,}")
+            except Exception:
+                st.metric("Shares", "—")
         else:
             st.metric("Shares", "—")
     with k3:
         if "notional" in df.columns:
-            st.metric("Notional", f"${df['notional'].abs().sum():,.0f}")
+            try:
+                st.metric("Notional", f"${pd.to_numeric(df['notional'], errors='coerce').abs().sum():,.0f}")
+            except Exception:
+                st.metric("Notional", "—")
         elif {"qty","price"}.issubset(df.columns):
-            notional = (df["qty"].abs()*df["price"].abs()).sum()
-            st.metric("Notional", f"${notional:,.0f}")
+            try:
+                notional = (pd.to_numeric(df["qty"], errors="coerce").abs() * pd.to_numeric(df["price"], errors="coerce").abs()).sum()
+                st.metric("Notional", f"${notional:,.0f}")
+            except Exception:
+                st.metric("Notional", "—")
         else:
             st.metric("Notional", "—")
     with k4:
         if "status" in df.columns:
-            st.metric("Filled", f"{(df['status']=='filled').mean()*100:.1f}%")
+            st.metric("Filled", f"{(df['status'].astype(str)=='filled').mean()*100:.1f}%")
         else:
             st.metric("Filled", "—")
 
@@ -248,11 +279,20 @@ def view_positions():
     cols = table_columns("positions")
     sel_cols = [c for c in ["symbol","shares","quantity","qty","avg_price","market_value","unrealized_pnl",
                             "realized_pnl","side","ts","as_of","updated_at","weight","exposure"] if c in cols]
+    if not sel_cols:
+        st.info("No displayable columns in `positions`.")
+        return
+
     sql = f"SELECT {', '.join(sel_cols)} FROM positions WHERE 1=1"
     sql, p1 = _apply_symbol_filter(sql, cols)
     sql, p2 = _apply_date_filter(sql, cols)
     params = {**p1, **p2}
-    sql += " ORDER BY COALESCE(as_of, ts, updated_at) DESC, symbol LIMIT 100000"
+
+    # Choose best available timestamp column for ordering
+    pos_order_candidates = ["as_of", "ts", "updated_at"]
+    pos_order_col = first_existing(cols, pos_order_candidates) or "ts"
+    sql += f" ORDER BY {pos_order_col} DESC, symbol LIMIT 100000"
+
     df = _read_df(sql, params)
     if df.empty:
         st.info("No positions for current filters.")
@@ -269,23 +309,32 @@ def view_positions():
         qcol = None
 
     # KPIs
-    k1,k2,k3,k4 = st.columns(4)
+    k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.metric("Positions", f"{df['symbol'].nunique():,}" if "symbol" in df.columns else f"{len(df):,}")
     with k2:
         if qcol:
-            st.metric("Gross Shares", f"{int(df[qcol].abs().sum()):,}")
+            try:
+                st.metric("Gross Shares", f"{int(pd.to_numeric(df[qcol], errors='coerce').abs().sum()):,}")
+            except Exception:
+                st.metric("Gross Shares", "—")
         else:
             st.metric("Gross Shares", "—")
     with k3:
         if "market_value" in df.columns:
-            st.metric("Gross MV", f"${df['market_value'].abs().sum():,.0f}")
+            try:
+                st.metric("Gross MV", f"${pd.to_numeric(df['market_value'], errors='coerce').abs().sum():,.0f}")
+            except Exception:
+                st.metric("Gross MV", "—")
         else:
             st.metric("Gross MV", "—")
     with k4:
         if qcol:
-            net_shares = df[qcol].sum()
-            st.metric("Net Shares", f"{int(net_shares):,}")
+            try:
+                net_shares = pd.to_numeric(df[qcol], errors="coerce").sum()
+                st.metric("Net Shares", f"{int(net_shares):,}")
+            except Exception:
+                st.metric("Net Shares", "—")
         else:
             st.metric("Net Shares", "—")
 
@@ -302,10 +351,15 @@ def view_predictions():
     cols = table_columns("predictions")
     # Common columns we try to include
     sel_cols = [c for c in ["ts","symbol","model_version","horizon","score","prediction","rank","prob"] if c in cols]
+    if not sel_cols:
+        st.info("No displayable columns in `predictions`.")
+        return
+
     sql = f"SELECT {', '.join(sel_cols)} FROM predictions WHERE 1=1"
     sql, p1 = _apply_symbol_filter(sql, cols)
     sql, p2 = _apply_date_filter(sql, cols)
     params = {**p1, **p2}
+
     # Optional filter by model_version if present
     if "model_version" in cols:
         mv = _read_df("SELECT DISTINCT model_version FROM predictions ORDER BY 1 LIMIT 200", {}).dropna()
@@ -315,7 +369,11 @@ def view_predictions():
             sql += " AND model_version = :mv"
             params["mv"] = choice
 
-    sql += " ORDER BY ts DESC, symbol LIMIT 200000"
+    # Consistent ordering
+    pred_order_candidates = ["ts", "symbol"]
+    pred_order_col = first_existing(cols, pred_order_candidates) or "ts"
+    sql += f" ORDER BY {pred_order_col} DESC, symbol LIMIT 200000"
+
     df = _read_df(sql, params)
     if df.empty:
         st.info("No predictions for current filters.")
@@ -362,7 +420,7 @@ def view_predictions():
 tabs = st.tabs(["Overview", "Trades", "Positions", "Predictions", "Prices"])
 
 with tabs[0]:
-    c1,c2,c3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("Tables in DB", f"{len(list_tables()):,}")
     with c2:
@@ -382,3 +440,4 @@ with tabs[3]:
 
 with tabs[4]:
     view_prices()
+
