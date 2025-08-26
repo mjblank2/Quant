@@ -1,6 +1,9 @@
 services:
+  # -----------------------------
+  # Web UI (read-only Streamlit)
+  # -----------------------------
   - type: web
-    name: bcq-web
+    name: smallcap-quant
     runtime: docker
     dockerfilePath: Dockerfile
     envVars:
@@ -11,23 +14,61 @@ services:
       - key: APCA_API_SECRET_KEY
         sync: false
       - key: APCA_API_BASE_URL
-        value: https://api.alpaca.markets   # use https://api.alpaca.markets for live keys
+        value: https://api.alpaca.markets   # live base URL
       - key: ALPACA_DATA_FEED
-        value: sip                               # use sip only if you have SIP entitlement
+        value: sip                          # use 'iex' if you don't have SIP entitlement
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
         sync: false
       - key: PYTHONPATH
         value: /app
+      # The entrypoint defaults SERVICE=web APP_MODE=streamlit
 
+  # -----------------------------
+  # Worker (on-demand compute)
+  # -----------------------------
+  - type: worker
+    name: quant-worker
+    runtime: docker
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: SERVICE
+        value: worker                       # entrypoint will run: python -m jobs.worker
+      - key: WORKER_TASK
+        value: idle                         # stays alive; exec tasks via Shell or override
+      - key: PYTHONPATH
+        value: /app
+      - key: DATABASE_URL
+        sync: false
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: APCA_API_BASE_URL
+        value: https://api.alpaca.markets
+      - key: ALPACA_DATA_FEED
+        value: sip                          # or 'iex'
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: TIINGO_API_KEY
+        sync: false
+      # Optional toggles used by your code:
+      # - key: SYNC_TO_BROKER
+      #   value: "false"
+      # - key: LOG_LEVEL
+      #   value: INFO
+
+  # ---------------------------------------------------------
   # Cron: refresh universe (Mon 09:00 CT = 14:00 UTC)
+  # Runs Alembic first; bootstraps by relaxing ADV threshold
+  # ---------------------------------------------------------
   - type: cron
     name: refresh-universe
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "0 14 * * 1"
-    dockerCommand: "python -m data.universe"
+    dockerCommand: "bash -lc 'alembic upgrade head && python -m data.universe'"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -38,21 +79,27 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip
+        value: sip                          # or 'iex'
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
         sync: false
       - key: PYTHONPATH
         value: /app
+      # Bootstrap tweak so the job doesn't fail when ADV is missing:
+      - key: ADV_USD_MIN
+        value: "-1"                         # revert later when Polygon ADV is flowing
 
+  # --------------------------------------------------------------
   # Cron: ingest recent bars (Mon–Fri 16:45 CT ≈ 21:45 UTC)
+  # Runs Alembic first, then fetches ~7 days to keep data current
+  # --------------------------------------------------------------
   - type: cron
     name: ingest-recent
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "45 21 * * 1-5"
-    dockerCommand: "python -m data.ingest --days 7"
+    dockerCommand: "bash -lc 'alembic upgrade head && python -m data.ingest --days 7'"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -63,7 +110,7 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip
+        value: sip                          # or 'iex'
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
@@ -71,13 +118,16 @@ services:
       - key: PYTHONPATH
         value: /app
 
-  # Cron: EOD pipeline (Mon–Fri 17:30 CT ≈ 22:30 UTC)
+  # --------------------------------------------------------------
+  # Cron: full EOD pipeline (Mon–Fri 17:30 CT ≈ 22:30 UTC)
+  # Runs Alembic first, then executes run_pipeline.py (train/predict)
+  # --------------------------------------------------------------
   - type: cron
     name: eod-pipeline
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "30 22 * * 1-5"
-    dockerCommand: "python run_pipeline.py"
+    dockerCommand: "bash -lc 'alembic upgrade head && python run_pipeline.py'"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -88,37 +138,18 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip
+        value: sip                          # or 'iex'
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
         sync: false
       - key: PYTHONPATH
         value: /app
+      # Optional: gating / blend controls used by models.ml, if you want to override:
+      # - key: BLEND_WEIGHTS
+      #   value: "xgb:0.5,rf:0.3,ridge:0.2"
+      # - key: REGIME_GATING
+      #   value: "true"
 
-  - type: worker
-    name: quant-worker
-    runtime: docker
-    dockerfilePath: Dockerfile
-  # Option A: use entrypoint's worker mode (requires jobs/worker.py to exist)
-    envVars:
-    - key: SERVICE
-      value: worker
-    - key: PYTHONPATH
-      value: /app
-    - key: DATABASE_URL
-      sync: false
-    - key: APCA_API_KEY_ID
-      sync: false
-    - key: APCA_API_SECRET_KEY
-      sync: false
-    - key: APCA_API_BASE_URL
-      value: https://api.alpaca.markets
-    - key: ALPACA_DATA_FEED
-      value: sip
-    - key: POLYGON_API_KEY
-      sync: false
-    - key: TIINGO_API_KEY
-      sync: false
       
 
