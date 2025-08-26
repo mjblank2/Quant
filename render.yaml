@@ -1,7 +1,7 @@
 services:
   - type: web
     name: smallcap-quant
-    env: docker
+    runtime: docker
     dockerfilePath: Dockerfile
     envVars:
       - key: DATABASE_URL
@@ -11,20 +11,23 @@ services:
       - key: APCA_API_SECRET_KEY
         sync: false
       - key: APCA_API_BASE_URL
-        value: https://api.alpaca.markets   # change to https://api.alpaca.markets for live keys
+        value: https://api.alpaca.markets   # use https://api.alpaca.markets for live keys
       - key: ALPACA_DATA_FEED
-        value: sip                                 # use iex unless you have SIP entitlement
+        value: sip                               # use sip only if you have SIP entitlement
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
         sync: false
       - key: PYTHONPATH
-        value: /app                                # ensures submodule imports (e.g., from db import …)
+        value: /app
 
-cronJobs:
-  - name: ingest-recent
-    schedule: "45 21 * * 1-5"   # after US close
-    command: "python -m data.ingest --days 7"
+  # Cron: refresh universe (Mon 09:00 CT = 14:00 UTC)
+  - type: cron
+    name: refresh-universe
+    runtime: docker
+    dockerfilePath: Dockerfile
+    schedule: "0 14 * * 1"
+    dockerCommand: "python -m data.universe"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -43,33 +46,13 @@ cronJobs:
       - key: PYTHONPATH
         value: /app
 
-  - name: refresh-universe
-    schedule: "0 14 * * 1"      # Mondays 09:00 CT
-    command: "python -m data.universe"
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: APCA_API_KEY_ID
-        sync: false
-      - key: APCA_API_SECRET_KEY
-        sync: false
-      - key: APCA_API_BASE_URL
-        value: https://api.alpaca.markets
-      - key: ALPACA_DATA_FEED
-        value: sip
-      - key: POLYGON_API_KEY
-        sync: false
-      - key: PYTHONPATH
-        value: /app
-      # (optional) bootstrap helpers if gates are too strict at first run:
-      # - key: SEED_SYMBOLS
-      #   value: AAPL,MSFT,SPY,QQQ,SMCI
-      # - key: ADV_USD_MIN
-      #   value: "0"
-
-  - name: eod-pipeline
-    schedule: "30 22 * * 1-5"   # after ingestion
-    command: "python run_pipeline.py"
+  # Cron: ingest recent bars (Mon–Fri 16:45 CT ≈ 21:45 UTC)
+  - type: cron
+    name: ingest-recent
+    runtime: docker
+    dockerfilePath: Dockerfile
+    schedule: "45 21 * * 1-5"
+    dockerCommand: "python -m data.ingest --days 7"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -87,3 +70,29 @@ cronJobs:
         sync: false
       - key: PYTHONPATH
         value: /app
+
+  # Cron: EOD pipeline (Mon–Fri 17:30 CT ≈ 22:30 UTC)
+  - type: cron
+    name: eod-pipeline
+    runtime: docker
+    dockerfilePath: Dockerfile
+    schedule: "30 22 * * 1-5"
+    dockerCommand: "python run_pipeline.py"
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: APCA_API_BASE_URL
+        value: https://api.alpaca.markets
+      - key: ALPACA_DATA_FEED
+        value: sip
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: TIINGO_API_KEY
+        sync: false
+      - key: PYTHONPATH
+        value: /app
+
