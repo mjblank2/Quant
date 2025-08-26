@@ -80,8 +80,8 @@ run_service() {
       exec python -m jobs.worker
       ;;
     cron)
-      echo "[entrypoint] Running scheduled task..."
-      exec python -m jobs.daily
+      echo "[entrypoint] Running EOD pipeline..."
+      exec python run_pipeline.py
       ;;
     *)
       echo "[entrypoint] Unknown SERVICE='${SERVICE}'"; exit 1;;
