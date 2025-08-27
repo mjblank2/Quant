@@ -61,14 +61,14 @@ services:
 
   # ---------------------------------------------------------
   # Cron: refresh universe (Mon 09:00 CT = 14:00 UTC)
-  # Runs Alembic first; bootstraps by relaxing ADV threshold
+  # Entry point already runs Alembic; just run the module.
   # ---------------------------------------------------------
   - type: cron
     name: refresh-universe
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "0 14 * * 1"
-    dockerCommand: "bash -lc 'alembic upgrade head && python -m data.universe'"
+    dockerCommand: "python -m data.universe"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -92,14 +92,13 @@ services:
 
   # --------------------------------------------------------------
   # Cron: ingest recent bars (Mon–Fri 16:45 CT ≈ 21:45 UTC)
-  # Runs Alembic first, then fetches ~7 days to keep data current
   # --------------------------------------------------------------
   - type: cron
     name: ingest-recent
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "45 21 * * 1-5"
-    dockerCommand: "bash -lc 'alembic upgrade head && python -m data.ingest --days 7'"
+    dockerCommand: "python -m data.ingest --days 7"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -120,14 +119,13 @@ services:
 
   # --------------------------------------------------------------
   # Cron: full EOD pipeline (Mon–Fri 17:30 CT ≈ 22:30 UTC)
-  # Runs Alembic first, then executes run_pipeline.py (train/predict)
   # --------------------------------------------------------------
   - type: cron
     name: eod-pipeline
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "30 22 * * 1-5"
-    dockerCommand: "bash -lc 'alembic upgrade head && python run_pipeline.py'"
+    dockerCommand: "python run_pipeline.py"
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -145,11 +143,8 @@ services:
         sync: false
       - key: PYTHONPATH
         value: /app
-      # Optional: gating / blend controls used by models.ml, if you want to override:
+      # Optional: gating / blend controls used by models.ml
       # - key: BLEND_WEIGHTS
       #   value: "xgb:0.5,rf:0.3,ridge:0.2"
       # - key: REGIME_GATING
       #   value: "true"
-
-      
-
