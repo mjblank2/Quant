@@ -9,7 +9,7 @@ PORT="${PORT:-10000}"
 echo "[entrypoint] SERVICE=${SERVICE} APP_MODE=${APP_MODE} PORT=${PORT}"
 
 # Always run Alembic migrations first (if present)
-if [[ -f "alembic.ini" && -d "migrations" ]]; then
+if [[ -f "alembic.ini" && -d "alembic" ]]; then
   echo "[entrypoint] Running Alembic upgrade..."
   if alembic upgrade head; then
     echo "[entrypoint] Alembic upgrade succeeded"
@@ -58,4 +58,3 @@ case "${SERVICE}" in
   *)
     echo "[entrypoint] Unknown SERVICE='${SERVICE}'"; exit 1;;
 esac
-
