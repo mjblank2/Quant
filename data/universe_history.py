@@ -28,11 +28,12 @@ def take_snapshot(as_of: date | None = None) -> int:
     return int(len(snap))
 
 def gate_training_with_universe(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter (symbol, ts) rows to those investable as of ts using snapshots."""
-    if df.empty:
+    """Filter (symbol, ts) rows to those investable as of ts using snapshots. Preserves original row order."""
+    if df.empty or 'symbol' not in df.columns or 'ts' not in df.columns:
         return df
-    # Load all snapshots covering df['ts'] range
-    lo, hi = pd.to_datetime(df['ts'].min()).date(), pd.to_datetime(df['ts'].max()).date()
+    # Load snapshots up to max ts in df
+    lo = pd.to_datetime(df['ts'].min()).date()
+    hi = pd.to_datetime(df['ts'].max()).date()
     with engine.connect() as con:
         uh = pd.read_sql_query(text("""
             SELECT as_of, symbol FROM universe_history
@@ -41,23 +42,20 @@ def gate_training_with_universe(df: pd.DataFrame) -> pd.DataFrame:
     if uh.empty:
         return df  # no gating if snapshots missing
     uh['as_of'] = pd.to_datetime(uh['as_of']).dt.date
-    # For fast membership check, for each (symbol, ts) we need existence of snapshot <= ts
-    # Build last snapshot date per symbol not exceeding ts via merge_asof per symbol
-    out = []
-    for s, g in df.groupby('symbol'):
-        snaps = uh[uh['symbol']==s].sort_values('as_of')[['as_of']].rename(columns={'as_of':'snap'})
+
+    keep_indices = []
+    for s, g in df.groupby('symbol', sort=False):
+        snaps = uh[uh['symbol'] == s].sort_values('as_of')[['as_of']]
         if snaps.empty:
-            continue
-        gg = g.sort_values('ts').copy()
-        gg['tsd'] = pd.to_datetime(gg['ts']).dt.date
-        m = pd.merge_asof(gg[['tsd']], snaps, left_on='tsd', right_on='snap', direction='backward')
-        gg['investable'] = m['snap'].notna()
-        out.append(gg.assign(symbol=s))
-    if not out:
-        return df.iloc[0:0]
-    inv = pd.concat(out, ignore_index=True)
-    keep_idx = inv['investable'].values
-    # Reindex back to the original order
-    df2 = df.reset_index(drop=True).copy()
-    df2 = df2.loc[keep_idx].copy()
-    return df2
+            continue  # no snapshots for this symbol -> drop all rows for s
+        ts_series = pd.to_datetime(g['ts']).dt.date.rename('tsd').to_frame()
+        m = pd.merge_asof(ts_series.sort_values('tsd'),
+                          snaps.rename(columns={'as_of': 'snap'}).sort_values('snap'),
+                          left_on='tsd', right_on='snap', direction='backward')
+        investable = m['snap'].notna().values
+        # collect original indices where investable == True
+        keep_indices.extend(g.index[investable].tolist())
+
+    if not keep_indices:
+        return df.iloc[0:0]  # none investable
+    return df.loc[sorted(keep_indices)]  # preserve original order across symbols
