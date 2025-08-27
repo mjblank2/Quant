@@ -61,7 +61,8 @@ services:
 
   # ---------------------------------------------------------
   # Cron: refresh universe (Mon 09:00 CT = 14:00 UTC)
-  # Entry point already runs Alembic; just run the module.
+  # Using direct Python command - entrypoint runs Alembic automatically,
+  # avoiding nested shell quoting issues with bash -lc wrapping.
   # ---------------------------------------------------------
   - type: cron
     name: refresh-universe
@@ -92,6 +93,8 @@ services:
 
   # --------------------------------------------------------------
   # Cron: ingest recent bars (Mon–Fri 16:45 CT ≈ 21:45 UTC)
+  # Direct Python invocation - entrypoint handles Alembic upgrade,
+  # no bash -lc needed to avoid shell quoting complications.
   # --------------------------------------------------------------
   - type: cron
     name: ingest-recent
@@ -119,6 +122,8 @@ services:
 
   # --------------------------------------------------------------
   # Cron: full EOD pipeline (Mon–Fri 17:30 CT ≈ 22:30 UTC)
+  # Direct Python execution - entrypoint runs Alembic first,
+  # avoiding bash -lc and potential quote escaping issues.
   # --------------------------------------------------------------
   - type: cron
     name: eod-pipeline

@@ -26,6 +26,43 @@ docker build -t smallcap-quant:latest .
 docker run -e DATABASE_URL=... -e POLYGON_API_KEY=... -p 8501:8501 smallcap-quant:latest
 ```
 
+## Render Deployment & Cron Jobs
+
+The system is configured for deployment on Render with automated cron jobs for data ingestion and pipeline execution.
+
+### Cron Job Configuration
+
+All cron jobs use direct Python module invocation to avoid shell quoting issues:
+
+```yaml
+# ✅ Correct: Direct Python commands
+dockerCommand: "python -m data.universe"
+dockerCommand: "python -m data.ingest --days 7"  
+dockerCommand: "python run_pipeline.py"
+
+# ❌ Avoid: bash -lc wrapping causes quote escaping issues
+# dockerCommand: "bash -lc 'python -m data.universe'"
+```
+
+**Why direct commands work:**
+- The container entrypoint (`scripts/entrypoint.sh`) automatically runs `alembic upgrade head` before executing any dockerCommand
+- No need for bash -lc wrapping or complex quote escaping
+- Simpler, more reliable execution in Render's container environment
+
+### Local Testing
+
+Test cron commands locally using Docker:
+
+```bash
+# Build container
+docker build -t smallcap-quant .
+
+# Test cron commands (entrypoint runs Alembic first)
+docker run --rm -e DATABASE_URL=... -e POLYGON_API_KEY=... smallcap-quant python -m data.universe
+docker run --rm -e DATABASE_URL=... -e POLYGON_API_KEY=... smallcap-quant python -m data.ingest --days 7
+docker run --rm -e DATABASE_URL=... -e POLYGON_API_KEY=... smallcap-quant python run_pipeline.py
+```
+
 ## Notes
 
 - Fundamentals are fetched from Polygon's `vX/reference/financials`; we store **as_of** using the filing/period date and join with `merge_asof(direction='backward')` to avoid look-ahead.
