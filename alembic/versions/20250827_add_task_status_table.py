@@ -1,7 +1,7 @@
 """add_task_status_table
 
 Revision ID: 20250827_add_task_status_table
-Revises: alembic_versions_20250827_08_add_feature_extensions
+Revises: 20250827_10_bitemporal_timescale
 Create Date: 2025-01-27 16:30:00.000000
 
 """
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '20250827_add_task_status_table'
-down_revision = 'alembic_versions_20250827_08_add_feature_extensions'
+down_revision = '20250827_10_bitemporal_timescale'
 branch_labels = None
 depends_on = None
 
