@@ -9,31 +9,15 @@ import sqlalchemy
 from sqlalchemy import text
 import streamlit as st
 
-# --- Ensure repo root is on sys.path so `db.py` can be imported from a subfolder ---
-# /app/
-#   db.py
-#   data_ingestion/
-#     dashboard.py  <-- this file
+# Ensure repo root on sys.path so `db.py` can be imported from a subfolder
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))  # add repo root
-
-from db import create_tables
-
-try:
-    create_tables()  # initialize schema if this is a fresh DB
-except Exception as e:
-    st.warning(f"Schema init skipped: {e}")
 
 st.set_page_config(page_title="Blank Capital Quant – Pro Dashboard", layout="wide")
 
 st.title("Blank Capital Quant")
-st.caption("Interactive dashboard for **Trades**, **Positions**, **Predictions**, and **Prices** (auto-adapts to your schema).")
-
-# =====================================
-# Connection & Introspection Utilities
-# =====================================
+st.caption("Interactive dashboard for Trades, Positions, Predictions, and Prices (auto-adapts to your schema).")
 
 def _normalize_dsn(url: str) -> str:
-    # Accept postgres:// or postgresql:// and upgrade to SQLAlchemy 2 driver string
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg://", 1)
     elif url.startswith("postgresql://") and "+psycopg" not in url:
@@ -60,6 +44,16 @@ def get_engine():
 engine = get_engine()
 if engine is None:
     st.stop()
+
+# Initialize schema if this is a fresh DB (lazy import to avoid crashing on missing envs)
+try:
+    from db import create_tables
+    try:
+        create_tables()
+    except Exception as e:
+        st.warning(f"Schema init skipped: {e}")
+except Exception as e:
+    st.warning(f"Could not import create_tables: {e}")
 
 @st.cache_data(ttl=120)
 def list_tables() -> List[str]:
@@ -101,7 +95,6 @@ def _download_button_csv(df: pd.DataFrame, label: str, filename: str):
         use_container_width=True
     )
 
-# Shared symbol universe (from daily_bars if present, else from trades/predictions if available)
 @st.cache_data(ttl=120)
 def load_symbols(limit: int = 2000) -> List[str]:
     universe = []
@@ -117,13 +110,10 @@ def load_symbols(limit: int = 2000) -> List[str]:
             universe = [r[0] for r in conn.execute(q, {"lim": limit}).fetchall()]
     return universe
 
-# ========================
-# Sidebar: Global Filters
-# ========================
 with st.sidebar:
     st.header("Global Filters")
     symbols = load_symbols()
-    pick_all = st.checkbox("All symbols", value=not symbols)  # if no symbols found, default to 'all'
+    pick_all = st.checkbox("All symbols", value=not symbols)
     selected_symbols = symbols if pick_all else st.multiselect("Symbols", options=symbols, default=symbols[:10] if symbols else [])
     default_start = date.today() - timedelta(days=365)
     start_date = st.date_input("Start date", value=default_start)
@@ -132,9 +122,6 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Filters apply where the view has matching columns (e.g., symbol, ts).")
 
-# =====================
-# Helper Query Runners
-# =====================
 def _apply_symbol_filter(base_sql: str, cols: List[str]) -> Tuple[str, dict]:
     params = {}
     if selected_symbols and "symbol" in cols:
@@ -144,7 +131,6 @@ def _apply_symbol_filter(base_sql: str, cols: List[str]) -> Tuple[str, dict]:
 
 def _apply_date_filter(base_sql: str, cols: List[str]) -> Tuple[str, dict]:
     params = {}
-    # date-like columns we try in priority order
     date_candidates = ["ts", "date", "as_of", "executed_at", "filled_at", "created_at", "timestamp", "trade_date"]
     date_col = first_existing(cols, date_candidates)
     if date_col:
@@ -157,9 +143,6 @@ def _read_df(sql: str, params: dict) -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql(text(sql), conn, params=params)
 
-# ==============
-# Prices (Bars)
-# ==============
 def view_prices():
     if not has_table("daily_bars"):
         st.info("Table `daily_bars` not found.")
@@ -182,21 +165,17 @@ def view_prices():
         st.dataframe(df, use_container_width=True, height=350)
         _download_button_csv(df, "Download CSV (prices)", "daily_bars.csv")
 
-    # Chart one symbol at a time
     if "symbol" in df.columns and "close" in df.columns and "ts" in df.columns:
         chart_symbol = st.selectbox("Chart symbol", options=sorted(df["symbol"].unique().tolist()))
         df_sym = df[df["symbol"] == chart_symbol].set_index("ts").sort_index()
         st.line_chart(df_sym["close"], use_container_width=True)
 
-# ============
-# Trades View
-# ============
 def view_trades():
     if not has_table("trades"):
         st.info("Table `trades` not found.")
         return
     cols = table_columns("trades")
-    sel_cols = [c for c in ["id","client_order_id","symbol","side","qty","notional","price","status",
+    sel_cols = [c for c in ["id","client_order_id","symbol","side","quantity","qty","notional","price","status",
                             "executed_at","filled_at","created_at","ts","trade_date","venue"] if c in cols]
     if not sel_cols:
         st.info("No displayable columns in `trades`.")
@@ -207,7 +186,6 @@ def view_trades():
     sql, p2 = _apply_date_filter(sql, cols)
     params = {**p1, **p2}
 
-    # Optional side/status filters
     c1, c2, c3 = st.columns(3)
     with c1:
         side = st.selectbox("Side", options=["(any)","buy","sell"] if "side" in cols else ["(n/a)"])
@@ -223,7 +201,6 @@ def view_trades():
         sql += " AND status = :status"
         params["status"] = status
 
-    # Robust ORDER BY: pick the first date-like column that exists; fall back to ts
     order_candidates = ["executed_at", "filled_at", "created_at", "ts", "trade_date"]
     order_col = first_existing(cols, order_candidates) or "ts"
     sql += f" ORDER BY {order_col} DESC LIMIT :lim"
@@ -239,9 +216,10 @@ def view_trades():
     with k1:
         st.metric("Trades", f"{len(df):,}")
     with k2:
-        if "qty" in df.columns:
+        qcol = "quantity" if "quantity" in df.columns else ("qty" if "qty" in df.columns else None)
+        if qcol:
             try:
-                st.metric("Shares", f"{int(pd.to_numeric(df['qty'], errors='coerce').abs().sum()):,}")
+                st.metric("Shares", f"{int(pd.to_numeric(df[qcol], errors='coerce').abs().sum()):,}")
             except Exception:
                 st.metric("Shares", "—")
         else:
@@ -252,9 +230,9 @@ def view_trades():
                 st.metric("Notional", f"${pd.to_numeric(df['notional'], errors='coerce').abs().sum():,.0f}")
             except Exception:
                 st.metric("Notional", "—")
-        elif {"qty","price"}.issubset(df.columns):
+        elif qcol and "price" in df.columns:
             try:
-                notional = (pd.to_numeric(df["qty"], errors="coerce").abs() * pd.to_numeric(df["price"], errors="coerce").abs()).sum()
+                notional = (pd.to_numeric(df[qcol], errors="coerce").abs() * pd.to_numeric(df["price"], errors="coerce").abs()).sum()
                 st.metric("Notional", f"${notional:,.0f}")
             except Exception:
                 st.metric("Notional", "—")
@@ -269,9 +247,6 @@ def view_trades():
     st.dataframe(df, use_container_width=True, height=420)
     _download_button_csv(df, "Download CSV (trades)", "trades.csv")
 
-# ==============
-# Positions View
-# ==============
 def view_positions():
     if not has_table("positions"):
         st.info("Table `positions` not found.")
@@ -288,7 +263,6 @@ def view_positions():
     sql, p2 = _apply_date_filter(sql, cols)
     params = {**p1, **p2}
 
-    # Choose best available timestamp column for ordering
     pos_order_candidates = ["as_of", "ts", "updated_at"]
     pos_order_col = first_existing(cols, pos_order_candidates) or "ts"
     sql += f" ORDER BY {pos_order_col} DESC, symbol LIMIT 100000"
@@ -298,7 +272,6 @@ def view_positions():
         st.info("No positions for current filters.")
         return
 
-    # Normalize shares/qty
     if "shares" in df.columns:
         qcol = "shares"
     elif "quantity" in df.columns:
@@ -308,7 +281,6 @@ def view_positions():
     else:
         qcol = None
 
-    # KPIs
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.metric("Positions", f"{df['symbol'].nunique():,}" if "symbol" in df.columns else f"{len(df):,}")
@@ -341,16 +313,12 @@ def view_positions():
     st.dataframe(df, use_container_width=True, height=420)
     _download_button_csv(df, "Download CSV (positions)", "positions.csv")
 
-# ==================
-# Predictions (ML)
-# ==================
 def view_predictions():
     if not has_table("predictions"):
         st.info("Table `predictions` not found.")
         return
     cols = table_columns("predictions")
-    # Common columns we try to include
-    sel_cols = [c for c in ["ts","symbol","model_version","horizon","score","prediction","rank","prob"] if c in cols]
+    sel_cols = [c for c in ["ts","symbol","model_version","horizon","score","prediction","rank","prob","y_pred"] if c in cols]
     if not sel_cols:
         st.info("No displayable columns in `predictions`.")
         return
@@ -360,7 +328,6 @@ def view_predictions():
     sql, p2 = _apply_date_filter(sql, cols)
     params = {**p1, **p2}
 
-    # Optional filter by model_version if present
     if "model_version" in cols:
         mv = _read_df("SELECT DISTINCT model_version FROM predictions ORDER BY 1 LIMIT 200", {}).dropna()
         mv_opt = ["(any)"] + mv["model_version"].astype(str).tolist()
@@ -369,7 +336,6 @@ def view_predictions():
             sql += " AND model_version = :mv"
             params["mv"] = choice
 
-    # Consistent ordering
     pred_order_candidates = ["ts", "symbol"]
     pred_order_col = first_existing(cols, pred_order_candidates) or "ts"
     sql += f" ORDER BY {pred_order_col} DESC, symbol LIMIT 200000"
@@ -379,7 +345,6 @@ def view_predictions():
         st.info("No predictions for current filters.")
         return
 
-    # Pick a date to view cross-section
     if "ts" in df.columns:
         latest_date = pd.to_datetime(df["ts"]).max().date()
         pick_date = st.date_input("Cross-section date", value=latest_date)
@@ -387,21 +352,18 @@ def view_predictions():
     else:
         cross = df.copy()
 
-    # Score column detection
     score_col = None
-    for c in ["score","prediction","prob","rank"]:
+    for c in ["y_pred","score","prediction","prob","rank"]:
         if c in cross.columns:
             score_col = c
             break
 
     if score_col:
         st.subheader(f"Top/Bottom by {score_col}")
-        # Dropna, sort both ways
         cross2 = cross.dropna(subset=[score_col]).copy()
         if cross2.empty:
             st.info("No non-null scores for the selected date.")
         else:
-            # Top / Bottom tables
             left, right = st.columns(2)
             with left:
                 st.markdown("**Top 20**")
@@ -414,9 +376,6 @@ def view_predictions():
         st.dataframe(df, use_container_width=True, height=380)
         _download_button_csv(df, "Download CSV (predictions)", "predictions.csv")
 
-# ==============
-# Layout / Tabs
-# ==============
 tabs = st.tabs(["Overview", "Trades", "Positions", "Predictions", "Prices"])
 
 with tabs[0]:
@@ -427,7 +386,7 @@ with tabs[0]:
         st.metric("Symbols detected", f"{len(load_symbols()):,}")
     with c3:
         st.metric("Date window", f"{start_date} → {end_date}")
-    st.markdown("Use the tabs above and the **Global Filters** in the sidebar to slice your data.")
+    st.markdown("Use the tabs above and the Global Filters in the sidebar to slice your data.")
 
 with tabs[1]:
     view_trades()
@@ -437,6 +396,9 @@ with tabs[2]:
 
 with tabs[3]:
     view_predictions()
+
+with tabs[4]:
+    view_prices()
 
 with tabs[4]:
     view_prices()
