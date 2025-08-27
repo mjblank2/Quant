@@ -40,6 +40,7 @@ class Universe(Base):
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
     name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     exchange: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # added to match migrations & code usage
     adv_usd_20: Mapped[float | None] = mapped_column(Float, nullable=True)
     included: Mapped[bool] = mapped_column(Boolean, default=True)
     last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -72,6 +73,7 @@ class Fundamentals(Base):
     gross_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     profit_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    available_at: Mapped[date | None] = mapped_column(Date, nullable=True)  # added to match migrations & loaders
     __table_args__ = (Index("ix_fundamentals_symbol_asof", "symbol", "as_of"),)
 
 class AltSignal(Base):
@@ -104,7 +106,7 @@ class Feature(Base):
     rsi_14: Mapped[float | None] = mapped_column(Float)
     turnover_21: Mapped[float | None] = mapped_column(Float)
     size_ln: Mapped[float | None] = mapped_column(Float)
-    adv_usd_21: Mapped[float | None] = mapped_column(Float)
+    adv_usd_21: Mapped[float | None] = mapped_column(Float)  # v16 extension
     f_pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_pb: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_ps_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -113,9 +115,9 @@ class Feature(Base):
     f_gm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_profit_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-    beta_63: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension (if present)
-    overnight_gap: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension (if present)
-    illiq_21: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension (if present)
+    beta_63: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    overnight_gap: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    illiq_21: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
     __table_args__ = (Index("ix_features_symbol_ts", "symbol", "ts"),)
 
 class Prediction(Base):
@@ -168,6 +170,7 @@ class Trade(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="generated")
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # added to match migrations and usage
     filled_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     avg_fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     order_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # v17: lot hints, overlay notes
