@@ -275,15 +275,30 @@ def create_tables():
 # Efficient UPSERT helper
 from contextlib import nullcontext
 def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000, conn=None):
+    """
+    Insert/update DataFrame rows into 'table' with ON CONFLICT handling.
+    Automatically batches statements to stay under PostgreSQL's parameter limit.
+    """
     if df is None or df.empty:
         return
     df = df.replace({pd.NA: None, np.nan: None})
+
+    # Safety: Postgres hard limit for bind params per statement is 65535.
+    # Keep a cushion under it.
+    MAX_BIND_PARAMS = 60000
+
     ctx = engine.begin() if conn is None else nullcontext(conn)
     with ctx as connection:
-        for start in range(0, len(df), chunk_size):
-            part = df.iloc[start:start+chunk_size]
+        cols_all = list(df.columns)
+        # rows per statement bounded by MAX_BIND_PARAMS / num_columns
+        per_stmt_rows = max(1, min(chunk_size, MAX_BIND_PARAMS // max(1, len(cols_all))))
+
+        for start in range(0, len(df), per_stmt_rows):
+            part = df.iloc[start:start + per_stmt_rows]
             cols = list(part.columns)
             records = part.to_dict(orient="records")
+            if not records:
+                continue
             stmt = insert(table).values(records)
             update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
             if update_cols:
