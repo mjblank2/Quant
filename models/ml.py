@@ -211,3 +211,57 @@ def train_and_predict_all_models(window_years: int = 4):
             upsert_dataframe(out_fallback[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
     log.info("Live training and prediction complete (v17).")
     return outputs
+
+# --- Minimal walk-forward backtest (used by Streamlit app) ---
+from config import PREFERRED_MODEL
+from db import BacktestEquity
+
+def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) -> pd.DataFrame:
+    """
+    Simple WFB: for each ts, take top-N positive names by y_pred (given model_version),
+    realize fwd_ret over TARGET_HORIZON_DAYS, average cross-sectionally, and cumulate to equity.
+    Persists results to backtest_equity.
+    """
+    mv = model_version or PREFERRED_MODEL
+    with engine.connect() as con:
+        preds = pd.read_sql_query(
+            text("SELECT symbol, ts, y_pred FROM predictions WHERE model_version = :mv ORDER BY ts, y_pred DESC"),
+            con, params={"mv": mv}, parse_dates=['ts']
+        )
+    if preds.empty:
+        log.warning("No predictions found for backtest.")
+        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
+    # Compute realized forward returns
+    with engine.connect() as con:
+        px = pd.read_sql_query(
+            text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars"),
+            con, parse_dates=['ts']
+        )
+    if px.empty:
+        log.warning("No prices for backtest.")
+        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
+    px = px.sort_values(['symbol','ts'])
+    px['px_fwd'] = px.groupby('symbol')['px'].shift(-TARGET_HORIZON_DAYS)
+    px['fwd_ret'] = (px['px_fwd']/px['px']) - 1.0
+    df = preds.merge(px[['symbol','ts','fwd_ret']], on=['symbol','ts'], how='left')
+    if df['fwd_ret'].isna().all():
+        log.warning("No fwd returns matched for backtest.")
+        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
+    # Pick top-N positive per ts
+    port = (
+        df[df['y_pred'] > 0]
+        .sort_values(['ts','y_pred'], ascending=[True, False])
+        .groupby('ts')
+        .head(top_n)
+        .groupby('ts')['fwd_ret'].mean()
+        .dropna()
+        .sort_index()
+    )
+    if port.empty:
+        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
+    equity = (1.0 + port).cumprod()
+    dd = equity / equity.cummax() - 1.0
+    out = pd.DataFrame({'ts': port.index.normalize(), 'equity': equity.values, 'daily_return': port.values, 'drawdown': dd.values, 'tcost_impact': 0.0})
+    # Persist
+    upsert_dataframe(out, BacktestEquity, ['ts'])
+    return out
