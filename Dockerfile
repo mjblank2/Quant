@@ -31,6 +31,7 @@ USER appuser
 # Make entrypoint executable if present
 RUN test -f /app/scripts/entrypoint.sh && chmod +x /app/scripts/entrypoint.sh || true
 
-EXPOSE 8000
+# Align exposed port with Streamlit default in entrypoint (PORT=10000)
+EXPOSE 10000
 
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
