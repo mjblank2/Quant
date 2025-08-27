@@ -5,11 +5,15 @@ from sqlalchemy import text, bindparam
 from db import engine
 from risk.sector import sector_asof
 from risk.risk_model import portfolio_beta
+import logging
+
+log = logging.getLogger(__name__)
 from config import (
     LONG_COUNT_MIN, LONG_COUNT_MAX, MAX_PER_SECTOR,
     GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT,
     MIN_PRICE, MIN_ADV_USD, BETA_HEDGE_SYMBOL, BETA_HEDGE_MAX_WEIGHT, BETA_TARGET,
-    MAX_NAME_CORR, SECTOR_NEUTRALIZE, USE_QP_OPTIMIZER, QP_CORR_PENALTY
+    MAX_NAME_CORR, SECTOR_NEUTRALIZE, USE_QP_OPTIMIZER, QP_CORR_PENALTY,
+    USE_MVO
 )
 
 def _latest_prices(symbols: list[str]) -> pd.Series:
@@ -44,6 +48,19 @@ def _pairwise_corr_filter(cands: pd.DataFrame, max_corr: float = 0.85) -> list[s
     return keep
 
 def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[str] | None = None) -> pd.Series:
+    # If MVO is enabled, delegate to convex optimizer for sizing; otherwise use heuristic long-bucket.
+    if pred_df is None or pred_df.empty:
+        return pd.Series(dtype=float)
+    
+    if USE_MVO:
+        try:
+            from portfolio.mvo import build_portfolio_mvo
+            alpha = pred_df.set_index('symbol')['y_pred']
+            return build_portfolio_mvo(alpha, as_of)
+        except Exception as e:
+            log.warning(f"MVO optimization failed, falling back to heuristic: {e}")
+    
+    # Original heuristic optimizer
     if pred_df is None or pred_df.empty:
         return pd.Series(dtype=float)
     pred_df = pred_df.copy().dropna(subset=['y_pred']).sort_values('y_pred', ascending=False)

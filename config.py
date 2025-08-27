@@ -143,3 +143,30 @@ VOLUME_ANOMALY_THRESHOLD_SIGMA = _as_float("VOLUME_ANOMALY_THRESHOLD_SIGMA", 4.0
 # Point-in-time data governance
 ENABLE_BITEMPORAL = _as_bool("ENABLE_BITEMPORAL", True)
 DEFAULT_KNOWLEDGE_LATENCY_DAYS = _as_int("DEFAULT_KNOWLEDGE_LATENCY_DAYS", 1)
+
+# --- Phase 4: Advanced Portfolio Optimization & Execution ---
+# Factor risk model + covariance
+USE_FACTOR_MODEL     = _as_bool("USE_FACTOR_MODEL", True)
+EWMA_LAMBDA          = _as_float("EWMA_LAMBDA", 0.94)
+USE_LEDOIT_WOLF      = _as_bool("USE_LEDOIT_WOLF", True)
+
+# Convex MVO optimizer
+USE_MVO              = _as_bool("USE_MVO", True)
+MVO_RISK_LAMBDA      = _as_float("MVO_RISK_LAMBDA", 25.0)
+MVO_COST_LAMBDA      = _as_float("MVO_COST_LAMBDA", 5.0)
+BETA_MIN             = _as_float("BETA_MIN", -0.10)
+BETA_MAX             = _as_float("BETA_MAX",  0.10)
+TURNOVER_LIMIT_ANNUAL = _as_float("TURNOVER_LIMIT_ANNUAL", 3.0)  # ~3x/year
+LIQUIDITY_MAX_PCT_ADV = _as_float("LIQUIDITY_MAX_PCT_ADV", 0.05)
+
+# Advanced execution algorithms
+ENABLE_CHILD_ORDERS  = _as_bool("ENABLE_CHILD_ORDERS", True)
+DEFAULT_EXECUTION_SLICES = _as_int("DEFAULT_EXECUTION_SLICES", 8)
+VWAP_LOOKBACK_DAYS   = _as_int("VWAP_LOOKBACK_DAYS", 20)
+
+# FIX protocol and latency optimization
+ENABLE_FIX_PROTOCOL  = _as_bool("ENABLE_FIX_PROTOCOL", False)
+FIX_HOST             = os.getenv("FIX_HOST", "localhost")
+FIX_PORT             = _as_int("FIX_PORT", 9878)
+FIX_SENDER_COMP_ID   = os.getenv("FIX_SENDER_COMP_ID", "CLIENT")
+FIX_TARGET_COMP_ID   = os.getenv("FIX_TARGET_COMP_ID", "BROKER")
