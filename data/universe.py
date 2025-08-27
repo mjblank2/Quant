@@ -136,9 +136,21 @@ def _enrich_universe(symbols: List[str]) -> pd.DataFrame:
 # --------------------------
 # Rebuild universe (main)
 # --------------------------
+from sqlalchemy import inspect
+
 def _allowed_universe_columns() -> set[str]:
-    """Columns that actually exist on the Universe table (for safe upserts)."""
-    return {c.name for c in Universe.__table__.columns}
+    """
+    Return the actual columns present in the universe table.
+    This avoids attempting to insert into columns that don't exist.
+    """
+    try:
+        # Use SQLAlchemy's inspector to fetch real table columns
+        inspector = inspect(engine)
+        cols = inspector.get_columns("universe")
+        return {c["name"] for c in cols}
+    except Exception:
+        # Fallback to model-defined columns if inspection fails
+        return {c.name for c in Universe.__table__.columns}
 
 def rebuild_universe() -> pd.DataFrame:
     # 1) Base list from Alpaca; otherwise SEED_SYMBOLS
