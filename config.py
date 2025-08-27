@@ -128,3 +128,18 @@ RUSSELL_INDEX           = os.getenv("RUSSELL_INDEX", "R2000")
 
 # --- Options overlay ---
 IV_FALLBACK = _as_float("IV_FALLBACK", 0.35)
+
+# --- Phase 2: Data Infrastructure and Integrity ---
+# TimescaleDB (PostgreSQL extension) settings
+ENABLE_TIMESCALEDB = _as_bool("ENABLE_TIMESCALEDB", True)
+TIMESCALEDB_CHUNK_TIME_INTERVAL = os.getenv("TIMESCALEDB_CHUNK_TIME_INTERVAL", "7 days")
+
+# Data validation and quality control
+ENABLE_DATA_VALIDATION = _as_bool("ENABLE_DATA_VALIDATION", True)
+DATA_STALENESS_THRESHOLD_HOURS = _as_int("DATA_STALENESS_THRESHOLD_HOURS", 48)
+PRICE_ANOMALY_THRESHOLD_SIGMA = _as_float("PRICE_ANOMALY_THRESHOLD_SIGMA", 5.0)
+VOLUME_ANOMALY_THRESHOLD_SIGMA = _as_float("VOLUME_ANOMALY_THRESHOLD_SIGMA", 4.0)
+
+# Point-in-time data governance
+ENABLE_BITEMPORAL = _as_bool("ENABLE_BITEMPORAL", True)
+DEFAULT_KNOWLEDGE_LATENCY_DAYS = _as_int("DEFAULT_KNOWLEDGE_LATENCY_DAYS", 1)
