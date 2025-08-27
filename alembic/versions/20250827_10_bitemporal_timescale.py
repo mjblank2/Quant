@@ -72,7 +72,7 @@ def upgrade():
         sa.Column('source', sa.String(32), nullable=False),
         sa.Column('source_timestamp', sa.DateTime(), nullable=True),
         sa.Column('quality_score', sa.Float(), nullable=True),
-        sa.Column('metadata', sa.JSON(), nullable=True),
+        sa.Column('lineage_metadata', sa.JSON(), nullable=True),
     )
     
     op.create_index('ix_lineage_table_symbol_date', 'data_lineage', ['table_name', 'symbol', 'data_date'])

@@ -253,7 +253,7 @@ class DataLineage(Base):
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     source_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    lineage_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     __table_args__ = (
         Index("ix_lineage_table_symbol_date", "table_name", "symbol", "data_date"),
         Index("ix_lineage_ingestion_time", "ingestion_timestamp"),

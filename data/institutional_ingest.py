@@ -67,7 +67,7 @@ def log_validation_result(result: ValidationResult, validation_type: str, symbol
 
 
 def log_data_lineage(table_name: str, symbols: List[str], data_date: date,
-                     source: str, quality_score: float = None, metadata: dict = None):
+                     source: str, quality_score: float = None, lineage_metadata: dict = None):
     """Log data lineage for governance and auditing."""
     try:
         lineage_records = []
@@ -79,9 +79,9 @@ def log_data_lineage(table_name: str, symbols: List[str], data_date: date,
                 'data_date': data_date,
                 'ingestion_timestamp': datetime.now(),
                 'source': source,
-                'source_timestamp': metadata.get('source_timestamp') if metadata else None,
+                'source_timestamp': lineage_metadata.get('source_timestamp') if lineage_metadata else None,
                 'quality_score': quality_score,
-                'metadata': metadata
+                'lineage_metadata': lineage_metadata
             })
 
         if lineage_records:
@@ -159,7 +159,7 @@ def validate_and_ingest_daily_bars(df: pd.DataFrame, source: str = "unknown") ->
                     data_date=pd.to_datetime(data_date).date(),
                     source=source,
                     quality_score=0.95,  # Default good quality score
-                    metadata={'record_count': len(df[df['ts'] == data_date])}
+                    lineage_metadata={'record_count': len(df[df['ts'] == data_date])}
                 )
 
         # Post-ingestion validation
@@ -217,7 +217,7 @@ def validate_and_ingest_fundamentals(df: pd.DataFrame, source: str = "polygon") 
                     data_date=pd.to_datetime(data_date).date(),
                     source=source,
                     quality_score=0.90,  # Fundamentals typically have good quality
-                    metadata={
+                    lineage_metadata={
                         'record_count': len(df[df['as_of'] == data_date]),
                         'has_knowledge_date': 'knowledge_date' in df.columns
                     }
