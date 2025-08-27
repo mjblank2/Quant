@@ -16,7 +16,10 @@ def main(sync_broker: bool = False):
     outs = train_and_predict_all_models()
     trades = generate_today_trades()
     if sync_broker:
-        ids = trades.index.tolist() if "id" in trades.columns else []
+        try:
+            ids = trades["id"].dropna().astype(int).tolist() if "id" in trades.columns else []
+        except Exception:
+            ids = []
         if ids:
             sync_trades_to_broker(ids)
     return True
