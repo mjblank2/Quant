@@ -196,7 +196,8 @@ def rebuild_universe() -> pd.DataFrame:
     new_syms = tuple(out["symbol"].unique().tolist())
 
     with engine.begin() as con:
-        upsert_dataframe(out, Universe, ["symbol"], conn=con)
+        # Use a conservative chunk size; helper will enforce param-limit anyway.
+        upsert_dataframe(out, Universe, ["symbol"], chunk_size=5000, conn=con)
         if new_syms:
             stmt = (
                 text("UPDATE universe SET included = FALSE WHERE included = TRUE AND symbol NOT IN :syms")
@@ -208,4 +209,3 @@ def rebuild_universe() -> pd.DataFrame:
 
 if __name__ == "__main__":
     rebuild_universe()
-
