@@ -206,6 +206,20 @@ class BacktestEquity(Base):
     drawdown: Mapped[float] = mapped_column(Float)
     tcost_impact: Mapped[float] = mapped_column(Float, default=0.0)
 
+# --- Task Queue Status Tracking ---
+class TaskStatus(Base):
+    __tablename__ = "task_status"
+    task_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # PENDING, STARTED, SUCCESS, FAILURE, RETRY
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
+    __table_args__ = (Index("ix_task_status_created_at", "created_at"),)
+
 def create_tables():
     Base.metadata.create_all(engine)
     from config import STARTING_CAPITAL
