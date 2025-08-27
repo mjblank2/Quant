@@ -40,10 +40,10 @@ case "${SERVICE}" in
         ;;
       api)
         echo "[entrypoint] Starting FastAPI on port ${PORT}"
-        exec uvicorn api:app --host 0.0.0.0 --port "${PORT}"
+        exec uvicorn health_api:app --host 0.0.0.0 --port "${PORT}"
         ;;
       *)
-        echo "[entrypoint] Unknown APP_MODE='${APP_MODE}'"; exit 1;;
+        echo "[entrypoint] Unknown APP_MODE='${APP_MODE}'\n Available modes: streamlit, operator, api"; exit 1;;
     esac
     ;;
   worker)
