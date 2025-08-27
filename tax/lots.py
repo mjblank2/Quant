@@ -27,7 +27,7 @@ def _load_filled_trades() -> pd.DataFrame:
         df = pd.read_sql_query(text("""
             SELECT trade_date, symbol, side, filled_quantity, avg_fill_price
             FROM trades
-            WHERE status IN ('filled','partial_fill') AND filled_quantity IS NOT NULL AND avg_fill_price IS NOT NULL
+            WHERE status IN ('filled','partially_filled') AND filled_quantity IS NOT NULL AND avg_fill_price IS NOT NULL
             ORDER BY trade_date, symbol
         """), con, parse_dates=['trade_date'])
     return df if df is not None else pd.DataFrame(columns=['trade_date','symbol','side','filled_quantity','avg_fill_price'])
@@ -38,26 +38,23 @@ def rebuild_tax_lots_from_trades() -> int:
     trades = _load_filled_trades()
     if trades.empty:
         return 0
-    # reset table
     with engine.begin() as con:
         con.execute(text("DELETE FROM tax_lots"))
     lots = []
     for s, g in trades.groupby('symbol'):
         g = g.sort_values('trade_date')
-        # list of (open_date, shares_remaining, cost_basis)
         open_lots = []
         for _, r in g.iterrows():
             qty = int(r['filled_quantity'])
             px  = float(r['avg_fill_price'])
-            if r['side'].upper() == 'BUY':
+            if str(r['side']).upper() == 'BUY':
                 open_lots.append([r['trade_date'].date(), qty, px])
             else:
-                # SELL: match per method
                 remain = abs(qty)
                 if TAX_LOT_METHOD == 'fifo':
-                    open_lots.sort(key=lambda x: x[0])  # oldest first
-                else:  # HIFO default
-                    open_lots.sort(key=lambda x: x[2], reverse=True)  # highest basis first
+                    open_lots.sort(key=lambda x: x[0])
+                else:
+                    open_lots.sort(key=lambda x: x[2], reverse=True)
                 i = 0
                 while remain > 0 and i < len(open_lots):
                     if open_lots[i][1] <= remain:
@@ -89,10 +86,9 @@ def _open_lots(symbol: str) -> pd.DataFrame:
 
 def tax_sell_penalty_bps(symbol: str, as_of) -> float:
     """
-    A rough scalar penalty (bps) for closing a position in `symbol` on `as_of`:
-    - penalize short-term gains (held < TAX_LT_DAYS).
-    - light penalty for wash-sale risk if harvesting a loss soon after a buy (within TAX_WASH_DAYS).
-    Uses *open lots* only; assumes reducing profitable lots first under HIFO, otherwise FIFO.
+    Rough penalty (bps) for closing a position in `symbol` on `as_of`:
+    - penalize short-term gains (held < TAX_LT_DAYS)
+    - light penalty for wash-sale risk within TAX_WASH_DAYS
     """
     lots = _open_lots(symbol)
     if lots.empty:
@@ -100,11 +96,10 @@ def tax_sell_penalty_bps(symbol: str, as_of) -> float:
     as_of = pd.to_datetime(as_of).date()
     penalty = 0.0
     for _, r in lots.iterrows():
-        holding_days = (as_of - r['open_date'].date()).days
-        # If lot is in gain territory we don't know unrealized PnL; use heuristic: penalize if < LT threshold
+        od = pd.to_datetime(r['open_date']).date()
+        holding_days = (as_of - od).days
         if holding_days < TAX_LT_DAYS:
             penalty += TAX_ST_PENALTY_BPS * min(1.0, (TAX_LT_DAYS - holding_days) / TAX_LT_DAYS)
-        # wash-sale heuristic (weak): if within +-TAX_WASH_DAYS, add small penalty
         if holding_days <= TAX_WASH_DAYS:
             penalty += 10.0
     return penalty
