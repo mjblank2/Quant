@@ -123,7 +123,3 @@ RUSSELL_INDEX           = os.getenv("RUSSELL_INDEX", "R2000")
 
 # --- Options overlay ---
 IV_FALLBACK = _as_float("IV_FALLBACK", 0.35)
-
-
-# Options overlay
-IV_FALLBACK = _as_float("IV_FALLBACK", 0.35)
