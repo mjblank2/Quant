@@ -10,3 +10,6 @@ logs/
 data_cache/
 .DS_Store
 .streamlit/
+*.db
+*.sqlite
+*.sqlite3
