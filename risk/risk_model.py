@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from db import engine
 
 def neutralize_with_sectors(pred: pd.Series, factors: pd.DataFrame | None, sector_dummies: pd.DataFrame | None) -> pd.Series:
@@ -39,11 +39,12 @@ def est_beta_asof(symbols: list[str], as_of, market_symbol: str = "IWM", lookbac
     sql = """
         SELECT symbol, ts, COALESCE(adj_close, close) AS px
         FROM daily_bars
-        WHERE symbol IN :syms OR symbol=:mkt
+        WHERE (symbol IN :syms) OR symbol = :mkt
         ORDER BY symbol, ts
     """
     params = {'syms': tuple(symbols), 'mkt': market_symbol}
-    df = pd.read_sql_query(text(sql).bindparams(), engine, params=params, parse_dates=['ts'])
+    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
+    df = pd.read_sql_query(stmt, engine, params=params, parse_dates=['ts'])
     if df.empty or market_symbol not in df['symbol'].unique():
         return pd.Series(index=symbols, dtype=float)
     # returns
@@ -62,7 +63,8 @@ def est_beta_asof(symbols: list[str], as_of, market_symbol: str = "IWM", lookbac
             continue
         cov = gg['ret'].rolling(lookback).cov(gg['mret'])
         var = gg['mret'].rolling(lookback).var()
-        beta = (cov/var).iloc[-1] if var.iloc[-1] and np.isfinite(var.iloc[-1]) else np.nan
+        last_var = var.iloc[-1] if len(var) > 0 else np.nan
+        beta = (cov/var).iloc[-1] if (pd.notna(last_var) and float(last_var) > 0) else np.nan
         out.append((s, float(beta) if beta is not None and np.isfinite(beta) else np.nan))
     return pd.Series(dict(out)).reindex(symbols)
 
