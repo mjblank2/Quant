@@ -173,6 +173,10 @@ def rebuild_universe() -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # Truncate long names to fit the database column length
+    max_name_len = Universe.__table__.c.name.type.length  # usually 128
+    df["name"] = df["name"].astype(str).str.slice(0, max_name_len)
+
     # 4) Gates — tolerant on missing enrichment (pass-through)
     #    Tighten ADV_USD_MIN later once enrichment is flowing reliably.
     df["include_mc"]  = df.get("market_cap").isna()  | (df.get("market_cap") < MARKET_CAP_MAX)
