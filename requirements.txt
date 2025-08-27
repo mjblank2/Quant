@@ -13,6 +13,8 @@ cvxpy
 alembic>=1.13,<2
 celery[redis]>=5.3.0
 redis>=5.0.0
+fastapi>=0.100.0
+uvicorn>=0.20.0
 # TimescaleDB support (PostgreSQL extension)
 # Data validation and quality
 great-expectations>=0.18.0

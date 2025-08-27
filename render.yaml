@@ -1,14 +1,38 @@
 services:
   # -----------------------------
+  # Redis Service (Task Queue)
+  # -----------------------------
+  - type: redis
+    name: quant-redis
+    ipAllowList: []
+    plan: starter  # Use 'standard' for production
+    
+  # -----------------------------
   # Web UI (read-only Streamlit)
   # -----------------------------
   - type: web
     name: smallcap-quant
     runtime: docker
     dockerfilePath: Dockerfile
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: quant-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: quant-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: quant-redis
+          property: connectionString
       - key: APCA_API_KEY_ID
         sync: false
       - key: APCA_API_SECRET_KEY
@@ -41,6 +65,21 @@ services:
         value: /app
       - key: DATABASE_URL
         sync: false
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: quant-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: quant-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: quant-redis
+          property: connectionString
       - key: APCA_API_KEY_ID
         sync: false
       - key: APCA_API_SECRET_KEY

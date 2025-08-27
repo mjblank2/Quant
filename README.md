@@ -12,6 +12,7 @@
 
 ## Quickstart
 
+### Local Development
 ```bash
 # 1) Configure environment (DATABASE_URL, POLYGON_API_KEY, Alpaca keys...)
 cp .env.example .env  # edit values
@@ -20,7 +21,20 @@ cp .env.example .env  # edit values
 pip install -r requirements.txt
 alembic upgrade head
 streamlit run app.py
+```
 
+### Deploy to Render (Recommended)
+```bash
+# 1) Use our comprehensive deployment guide
+# See: DEPLOY_TO_RENDER.md for complete instructions
+
+# 2) Quick deployment checklist:
+python scripts/verify_render_setup.py  # Verify setup
+# Then deploy using render.yaml blueprint in Render dashboard
+```
+
+### Docker Deployment
+```bash
 # 3) Production (Docker)
 docker build -t smallcap-quant:latest .
 docker run -e DATABASE_URL=... -e POLYGON_API_KEY=... -p 8501:8501 smallcap-quant:latest
