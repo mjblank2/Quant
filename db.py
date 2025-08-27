@@ -59,7 +59,11 @@ class SharesOutstanding(Base):
     as_of: Mapped[date] = mapped_column(Date, primary_key=True)
     shares: Mapped[int] = mapped_column(BigInteger)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    __table_args__ = (Index("ix_shares_symbol_asof", "symbol", "as_of"),)
+    knowledge_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # bi-temporal support
+    __table_args__ = (
+        Index("ix_shares_symbol_asof", "symbol", "as_of"),
+        Index("ix_shares_outstanding_bitemporal", "symbol", "as_of", "knowledge_date"),
+    )
 
 class Fundamentals(Base):
     __tablename__ = "fundamentals"
@@ -73,8 +77,12 @@ class Fundamentals(Base):
     gross_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     profit_margins: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-    available_at: Mapped[date | None] = mapped_column(Date, nullable=True)  # added to match migrations & loaders
-    __table_args__ = (Index("ix_fundamentals_symbol_asof", "symbol", "as_of"),)
+    available_at: Mapped[date | None] = mapped_column(Date, nullable=True)  # when data became available
+    knowledge_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # bi-temporal support
+    __table_args__ = (
+        Index("ix_fundamentals_symbol_asof", "symbol", "as_of"),
+        Index("ix_fundamentals_bitemporal", "symbol", "as_of", "knowledge_date"),
+    )
 
 class AltSignal(Base):
     __tablename__ = "alt_signals"
@@ -219,6 +227,37 @@ class TaskStatus(Base):
     error_message: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
     __table_args__ = (Index("ix_task_status_created_at", "created_at"),)
+
+# --- Data Quality and Governance ---
+class DataValidationLog(Base):
+    __tablename__ = "data_validation_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    validation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # PASSED, FAILED, WARNING
+    message: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    affected_symbols: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    __table_args__ = (
+        Index("ix_validation_log_timestamp", "run_timestamp"),
+        Index("ix_validation_log_type_status", "validation_type", "status"),
+    )
+
+class DataLineage(Base):
+    __tablename__ = "data_lineage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    table_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    data_date: Mapped[date] = mapped_column(Date, nullable=False)
+    ingestion_timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lineage_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    __table_args__ = (
+        Index("ix_lineage_table_symbol_date", "table_name", "symbol", "data_date"),
+        Index("ix_lineage_ingestion_time", "ingestion_timestamp"),
+    )
 
 def create_tables():
     Base.metadata.create_all(engine)
