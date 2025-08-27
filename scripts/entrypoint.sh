@@ -48,7 +48,12 @@ case "${SERVICE}" in
     ;;
   worker)
     echo "[entrypoint] Starting worker..."
-    exec python -m jobs.worker
+    if [[ "${WORKER_TASK:-idle}" == "celery" ]]; then
+      echo "[entrypoint] Starting Celery worker..."
+      exec python -m jobs.worker celery
+    else
+      exec python -m jobs.worker
+    fi
     ;;
   cron)
     # Default cron behavior (when no dockerCommand override)

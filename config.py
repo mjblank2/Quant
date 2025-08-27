@@ -41,6 +41,11 @@ def _as_bool(env_name: str, default: bool) -> bool:
 # --- Database ---
 DATABASE_URL = _fix_db_url(os.getenv("DATABASE_URL", ""))
 
+# --- Task Queue (Celery + Redis) ---
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL)
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
+
 # --- Provider keys / endpoints ---
 APCA_API_KEY_ID     = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY")
 APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_SECRET_KEY")
