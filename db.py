@@ -272,8 +272,11 @@ def create_tables():
     except Exception as e:
         log.warning(f"Could not initialize SystemState: {e}")
 
+
 # Efficient UPSERT helper
 from contextlib import nullcontext
+
+
 def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000, conn=None):
     """
     Insert/update DataFrame rows into 'table' with ON CONFLICT handling.
@@ -284,9 +287,9 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
     df = df.replace({pd.NA: None, np.nan: None})
 
     # Safety: PostgreSQL's parameter limit varies by configuration.
-    # Use a conservative limit well below the theoretical 65535 maximum
-    # to account for different PostgreSQL configurations and prevent errors.
-    MAX_BIND_PARAMS = 32000  # Reduced from 60000 for safety
+    # Use a very conservative limit to ensure compatibility across different PostgreSQL setups.
+    # Some configurations may have limits as low as 16,000 parameters.
+    MAX_BIND_PARAMS = 10000  # Very conservative to prevent parameter limit errors
 
     ctx = engine.begin() if conn is None else nullcontext(conn)
     with ctx as connection:
@@ -294,7 +297,7 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         # rows per statement bounded by MAX_BIND_PARAMS / num_columns
         # Add additional safety: ensure we don't exceed reasonable batch sizes
         theoretical_max_rows = MAX_BIND_PARAMS // max(1, len(cols_all))
-        per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows, 5000))  # Cap at 5000 rows max
+        per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows, 1000))  # Cap at 1000 rows max
 
         for start in range(0, len(df), per_stmt_rows):
             part = df.iloc[start:start + per_stmt_rows]
@@ -302,10 +305,22 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
             records = part.to_dict(orient="records")
             if not records:
                 continue
-            stmt = insert(table).values(records)
-            update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
-            if update_cols:
-                stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
-            else:
-                stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
-            connection.execute(stmt)
+
+            try:
+                stmt = insert(table).values(records)
+                update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
+                if update_cols:
+                    stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+                else:
+                    stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
+                connection.execute(stmt)
+            except Exception as e:
+                # If we still hit parameter limits, retry with smaller batches
+                if "parameter" in str(e).lower() and len(records) > 10:
+                    log.warning(f"Parameter limit hit with {len(records)} records, retrying with smaller batches")
+                    # Recursively call with much smaller chunks
+                    smaller_df = pd.DataFrame(records)
+                    upsert_dataframe(smaller_df, table, conflict_cols, chunk_size=10, conn=connection)
+                else:
+                    # Re-raise if it's not a parameter limit issue or if we're already at minimum size
+                    raise
