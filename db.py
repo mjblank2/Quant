@@ -283,15 +283,18 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         return
     df = df.replace({pd.NA: None, np.nan: None})
 
-    # Safety: Postgres hard limit for bind params per statement is 65535.
-    # Keep a cushion under it.
-    MAX_BIND_PARAMS = 60000
+    # Safety: PostgreSQL's parameter limit varies by configuration. 
+    # Use a conservative limit well below the theoretical 65535 maximum
+    # to account for different PostgreSQL configurations and prevent errors.
+    MAX_BIND_PARAMS = 32000  # Reduced from 60000 for safety
 
     ctx = engine.begin() if conn is None else nullcontext(conn)
     with ctx as connection:
         cols_all = list(df.columns)
         # rows per statement bounded by MAX_BIND_PARAMS / num_columns
-        per_stmt_rows = max(1, min(chunk_size, MAX_BIND_PARAMS // max(1, len(cols_all))))
+        # Add additional safety: ensure we don't exceed reasonable batch sizes
+        theoretical_max_rows = MAX_BIND_PARAMS // max(1, len(cols_all))
+        per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows, 5000))  # Cap at 5000 rows max
 
         for start in range(0, len(df), per_stmt_rows):
             part = df.iloc[start:start + per_stmt_rows]
