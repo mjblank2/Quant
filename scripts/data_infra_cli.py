@@ -133,13 +133,9 @@ def cmd_migrate(args):
     log.info("Running database migrations")
     
     try:
-        # Ensure tables are created
-        create_tables()
-        print("✅ Database tables created/updated")
-        
-        # Run alembic upgrade
+        # Run alembic upgrade to all heads
         import subprocess
-        result = subprocess.run(['alembic', 'upgrade', 'head'], 
+        result = subprocess.run(['alembic', 'upgrade', 'heads'], 
                               capture_output=True, text=True)
         
         if result.returncode == 0:

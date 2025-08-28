@@ -1,7 +1,7 @@
 """Add bi-temporal support and TimescaleDB optimization
 
 Revision ID: 20250827_10_bitemporal_timescale
-Revises: 20250824_000828_add_available_at_to_fundamentals
+Revises: 20250824_000828_avail
 Create Date: 2025-01-27 16:40:00.000000
 
 """
@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 # revision identifiers
 revision = '20250827_10_bitemporal_timescale'
-down_revision = '20250824_000828_add_available_at_to_fundamentals'
+down_revision = '20250824_000828_avail'
 branch_labels = None
 depends_on = None
 
