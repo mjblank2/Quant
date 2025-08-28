@@ -283,7 +283,7 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         return
     df = df.replace({pd.NA: None, np.nan: None})
 
-    # Safety: PostgreSQL's parameter limit varies by configuration. 
+    # Safety: PostgreSQL's parameter limit varies by configuration.
     # Use a conservative limit well below the theoretical 65535 maximum
     # to account for different PostgreSQL configurations and prevent errors.
     MAX_BIND_PARAMS = 32000  # Reduced from 60000 for safety
