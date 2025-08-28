@@ -86,13 +86,14 @@ def first_existing(cols: List[str], candidates: List[str]) -> Optional[str]:
 def has_table(name: str) -> bool:
     return name in list_tables()
 
-def _download_button_csv(df: pd.DataFrame, label: str, filename: str):
+def _download_button_csv(df: pd.DataFrame, label: str, filename: str, key: str = None):
     st.download_button(
         label=label,
         data=df.to_csv(index=False).encode("utf-8"),
         file_name=filename,
         mime="text/csv",
-        use_container_width=True
+        use_container_width=True,
+        key=key
     )
 
 @st.cache_data(ttl=120)
@@ -163,7 +164,7 @@ def view_prices():
         return
     with st.expander("Data (prices)", expanded=False):
         st.dataframe(df, use_container_width=True, height=350)
-        _download_button_csv(df, "Download CSV (prices)", "daily_bars.csv")
+        _download_button_csv(df, "Download CSV (prices)", "daily_bars.csv", key="download_prices")
 
     if "symbol" in df.columns and "close" in df.columns and "ts" in df.columns:
         chart_symbol = st.selectbox("Chart symbol", options=sorted(df["symbol"].unique().tolist()))
@@ -245,7 +246,7 @@ def view_trades():
             st.metric("Filled", "—")
 
     st.dataframe(df, use_container_width=True, height=420)
-    _download_button_csv(df, "Download CSV (trades)", "trades.csv")
+    _download_button_csv(df, "Download CSV (trades)", "trades.csv", key="download_trades")
 
 def view_positions():
     if not has_table("positions"):
@@ -311,7 +312,7 @@ def view_positions():
             st.metric("Net Shares", "—")
 
     st.dataframe(df, use_container_width=True, height=420)
-    _download_button_csv(df, "Download CSV (positions)", "positions.csv")
+    _download_button_csv(df, "Download CSV (positions)", "positions.csv", key="download_positions")
 
 def view_predictions():
     if not has_table("predictions"):
@@ -374,7 +375,7 @@ def view_predictions():
 
     with st.expander("All predictions (filtered)", expanded=False):
         st.dataframe(df, use_container_width=True, height=380)
-        _download_button_csv(df, "Download CSV (predictions)", "predictions.csv")
+        _download_button_csv(df, "Download CSV (predictions)", "predictions.csv", key="download_predictions")
 
 tabs = st.tabs(["Overview", "Trades", "Positions", "Predictions", "Prices"])
 
@@ -399,7 +400,3 @@ with tabs[3]:
 
 with tabs[4]:
     view_prices()
-
-with tabs[4]:
-    view_prices()
-
