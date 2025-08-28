@@ -67,6 +67,7 @@ The pipeline has been enhanced with comprehensive error handling and diagnostics
 ❌ Database migration failed
 ❌ Bar ingestion failed
 ❌ Pipeline execution failed
+❌ SQLAlchemy parameter limit exceeded (f405 error)
 ```
 
 ## Exit Codes
@@ -74,6 +75,26 @@ The pipeline has been enhanced with comprehensive error handling and diagnostics
 - **0**: Success - all operations completed successfully
 - **1**: Failure - one or more critical operations failed
 - **130**: Interrupted - execution was stopped by user (SIGINT)
+
+## Common Issues and Solutions
+
+### Parameter Limit Errors (f405)
+
+**Symptoms:**
+- Error message mentioning "f405" 
+- Parameters listed as 'symbol_m0', 'ts_m0', etc. up to large numbers (e.g., 'm2055')
+- "Exited with status 1" from cronjob
+
+**Root Cause:**
+PostgreSQL has varying parameter limits (as low as 16,000 in some configurations) and bulk operations can exceed these limits.
+
+**Solution:**
+The system now automatically:
+- Uses conservative parameter limits (10,000 max)
+- Caps batch sizes at 1,000 rows maximum
+- Implements retry logic with smaller batches on parameter limit errors
+
+**Fixed in version:** This issue has been resolved in the current version.
 
 ## Debugging Steps
 
