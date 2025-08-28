@@ -325,6 +325,6 @@ st.subheader("Trade Log (latest 200)")
 try:
     trades = load_trades()
     st.dataframe(trades)
-    st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv")
+    st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv", key="download_trades_main")
 except Exception:
     st.info("No trades yet.")
