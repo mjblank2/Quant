@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import List, Dict, Optional, Callable
 import logging
 import pandas as pd
-from db import SessionLocal, Trade, engine
 from config import (
     APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL,
     ENABLE_FIX_PROTOCOL
@@ -10,18 +9,38 @@ from config import (
 
 log = logging.getLogger(__name__)
 
+# Attempt to import Alpaca trade API at module load so it can be patched in tests.
+try:  # pragma: no cover - simple import wrapper
+    import alpaca_trade_api as tradeapi  # type: ignore
+except Exception:  # pragma: no cover - dependency may be missing in tests
+    tradeapi = None  # type: ignore
 
-def _submit_order_alpaca_rest(symbol: str, qty: int, side: str, arrival_price: float | None = None, client_order_id: str | None = None) -> str | None:
+
+def _submit_order_alpaca_rest(
+    symbol: str,
+    qty: int,
+    side: str,
+    arrival_price: float | None = None,
+    client_order_id: str | None = None,
+) -> str | None:
     """Submit order via Alpaca REST API"""
+    if tradeapi is None:
+        log.error("alpaca_trade_api is not available")
+        return None
     try:
-        import alpaca_trade_api as tradeapi
-        api = tradeapi.REST(key_id=APCA_API_KEY_ID, secret_key=APCA_API_SECRET_KEY, base_url=APCA_API_BASE_URL)
+        api = tradeapi.REST(
+            key_id=APCA_API_KEY_ID,
+            secret_key=APCA_API_SECRET_KEY,
+            base_url=APCA_API_BASE_URL,
+        )
 
         # Idempotency: if client_order_id exists, return existing order
         if client_order_id:
             try:
                 existing = api.get_order_by_client_order_id(client_order_id)
-                return getattr(existing, 'id', None)
+                existing_id = getattr(existing, "id", None)
+                if isinstance(existing_id, str) and existing_id:
+                    return existing_id
             except Exception:
                 pass
 
@@ -97,8 +116,10 @@ def sync_trades_to_broker(trade_ids: List[int]) -> Dict[int, str]:
     - Child order scheduling for VWAP/TWAP/IS
     - Advanced execution algorithms
     """
+    from db import SessionLocal, Trade  # Local import to avoid requiring DATABASE_URL at module load
+
     results: Dict[int, str] = {}
-    
+
     with SessionLocal() as s:
         trades = s.query(Trade).filter(Trade.id.in_(trade_ids), Trade.status == 'generated').all()
 
@@ -153,7 +174,8 @@ def schedule_and_execute_child_orders(parent_trades: List[int], execution_style:
     try:
         from trading.execution import schedule_child_orders
         from sqlalchemy import text
-        
+        from db import SessionLocal, engine  # Local import to avoid global DB dependency
+
         # Load parent trades
         with SessionLocal() as s:
             trades_df = pd.read_sql_query(
