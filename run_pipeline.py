@@ -45,9 +45,20 @@ def _check_database_connection() -> tuple[bool, str]:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         
-        # Check if basic tables exist
+        # Check if basic tables exist - use database-agnostic approach
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='universe'"))
+            # Try PostgreSQL first (most common in production)
+            if "postgresql" in DATABASE_URL.lower():
+                result = conn.execute(text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema='public' AND table_name='universe'"
+                ))
+            else:
+                # Fallback for SQLite
+                result = conn.execute(text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='universe'"
+                ))
+            
             if result.fetchone() is None:
                 return False, "Database tables not found - migrations may need to be run"
         
@@ -60,8 +71,16 @@ def _run_alembic_upgrade() -> tuple[bool, str]:
     """Attempt to run Alembic database migrations."""
     try:
         import subprocess
+        import shutil
+        
+        # Find alembic command
+        alembic_cmd = shutil.which("alembic")
+        if not alembic_cmd:
+            return False, "Alembic command not found in PATH"
+            
+        # Use 'heads' instead of 'head' due to multiple head revisions in the migration system
         result = subprocess.run(
-            ["alembic", "upgrade", "head"],
+            [alembic_cmd, "upgrade", "heads"],
             capture_output=True,
             text=True,
             timeout=60
@@ -86,70 +105,159 @@ def _create_basic_database_schema() -> tuple[bool, str]:
         from config import DATABASE_URL
         
         engine = create_engine(DATABASE_URL)
+        is_postgresql = "postgresql" in DATABASE_URL.lower()
         
         # Create basic tables needed for pipeline
         with engine.connect() as conn:
-            # Create universe table
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS universe (
-                    symbol TEXT PRIMARY KEY,
-                    included BOOLEAN DEFAULT TRUE,
-                    first_date DATE,
-                    last_date DATE,
-                    market_cap REAL,
-                    adv_usd REAL
-                )
-            """))
+            # First, check if tables already exist to avoid conflicts
+            if is_postgresql:
+                table_check_query = """
+                    SELECT table_name FROM information_schema.tables 
+                    WHERE table_schema='public' AND table_name IN ('universe', 'daily_bars', 'features', 'trades')
+                """
+            else:
+                table_check_query = """
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name IN ('universe', 'daily_bars', 'features', 'trades')
+                """
             
-            # Create daily_bars table  
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS daily_bars (
-                    symbol TEXT,
-                    ts DATE,
-                    open REAL,
-                    high REAL,
-                    low REAL,
-                    close REAL,
-                    adj_close REAL,
-                    volume INTEGER,
-                    vwap REAL,
-                    trade_count INTEGER,
-                    PRIMARY KEY (symbol, ts)
-                )
-            """))
+            existing_tables = {row[0] for row in conn.execute(text(table_check_query)).fetchall()}
             
-            # Create features table
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS features (
-                    symbol TEXT,
-                    ts DATE,
-                    ret_1d REAL,
-                    ret_5d REAL,
-                    ret_21d REAL,
-                    vol_21 REAL,
-                    size_ln REAL,
-                    PRIMARY KEY (symbol, ts)
-                )
-            """))
+            # Create universe table if it doesn't exist
+            if 'universe' not in existing_tables:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS universe (
+                        symbol TEXT PRIMARY KEY,
+                        included BOOLEAN DEFAULT TRUE,
+                        first_date DATE,
+                        last_date DATE,
+                        market_cap REAL,
+                        adv_usd REAL
+                    )
+                """))
             
-            # Create trades table
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS trades (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT,
-                    quantity INTEGER,
-                    side TEXT,
-                    price REAL,
-                    status TEXT DEFAULT 'generated',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
+            # Create daily_bars table if it doesn't exist
+            if 'daily_bars' not in existing_tables:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS daily_bars (
+                        symbol TEXT,
+                        ts DATE,
+                        open REAL,
+                        high REAL,
+                        low REAL,
+                        close REAL,
+                        adj_close REAL,
+                        volume INTEGER,
+                        vwap REAL,
+                        trade_count INTEGER,
+                        PRIMARY KEY (symbol, ts)
+                    )
+                """))
             
-            # Insert a default universe entry for testing
-            conn.execute(text("""
-                INSERT OR IGNORE INTO universe (symbol, included, market_cap, adv_usd) 
-                VALUES ('AAPL', TRUE, 1000000000, 50000000)
-            """))
+            # Create features table if it doesn't exist
+            if 'features' not in existing_tables:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS features (
+                        symbol TEXT,
+                        ts DATE,
+                        ret_1d REAL,
+                        ret_5d REAL,
+                        ret_21d REAL,
+                        vol_21 REAL,
+                        size_ln REAL,
+                        PRIMARY KEY (symbol, ts)
+                    )
+                """))
+            
+            # Create trades table if it doesn't exist - use database-appropriate syntax
+            if 'trades' not in existing_tables:
+                if is_postgresql:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS trades (
+                            id SERIAL PRIMARY KEY,
+                            symbol TEXT,
+                            quantity INTEGER,
+                            side TEXT,
+                            price REAL,
+                            status TEXT DEFAULT 'generated',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                else:
+                    # SQLite syntax
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS trades (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            symbol TEXT,
+                            quantity INTEGER,
+                            side TEXT,
+                            price REAL,
+                            status TEXT DEFAULT 'generated',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+            
+            # Insert a default universe entry for testing, but handle existing schemas
+            # First check what columns exist in the universe table
+            if is_postgresql:
+                col_check_query = """
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name='universe' AND column_name IN ('adv_usd', 'adv_usd_20')
+                """
+            else:
+                # For SQLite, we need to use PRAGMA
+                try:
+                    # Get table info
+                    pragma_result = conn.execute(text("PRAGMA table_info(universe)")).fetchall()
+                    universe_columns = {row[1] for row in pragma_result}  # column name is index 1
+                except:
+                    universe_columns = set()
+            
+            if not is_postgresql:
+                # Use the columns we detected for SQLite
+                if 'adv_usd' in universe_columns:
+                    # Our schema
+                    conn.execute(text("""
+                        INSERT OR IGNORE INTO universe (symbol, included, market_cap, adv_usd) 
+                        VALUES ('AAPL', TRUE, 1000000000, 50000000)
+                    """))
+                elif 'adv_usd_20' in universe_columns:
+                    # Alembic schema
+                    conn.execute(text("""
+                        INSERT OR IGNORE INTO universe (symbol, included, market_cap, adv_usd_20) 
+                        VALUES ('AAPL', TRUE, 1000000000, 50000000)
+                    """))
+                elif 'symbol' in universe_columns:
+                    # Minimal insert - just symbol
+                    conn.execute(text("""
+                        INSERT OR IGNORE INTO universe (symbol) VALUES ('AAPL')
+                    """))
+            else:
+                # PostgreSQL - similar logic but with different syntax
+                col_result = conn.execute(text("""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name='universe' AND column_name IN ('adv_usd', 'adv_usd_20')
+                """)).fetchall()
+                
+                universe_pg_columns = {row[0] for row in col_result}
+                
+                if 'adv_usd' in universe_pg_columns:
+                    conn.execute(text("""
+                        INSERT INTO universe (symbol, included, market_cap, adv_usd) 
+                        VALUES ('AAPL', TRUE, 1000000000, 50000000)
+                        ON CONFLICT (symbol) DO NOTHING
+                    """))
+                elif 'adv_usd_20' in universe_pg_columns:
+                    conn.execute(text("""
+                        INSERT INTO universe (symbol, included, market_cap, adv_usd_20) 
+                        VALUES ('AAPL', TRUE, 1000000000, 50000000)
+                        ON CONFLICT (symbol) DO NOTHING
+                    """))
+                else:
+                    conn.execute(text("""
+                        INSERT INTO universe (symbol) VALUES ('AAPL')
+                        ON CONFLICT (symbol) DO NOTHING
+                    """))
             
             conn.commit()
         
