@@ -293,6 +293,37 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
     ctx = engine.begin() if conn is None else nullcontext(conn)
     with ctx as connection:
+        # Filter DataFrame columns to only include columns that exist in the actual database table
+        # This prevents errors when migrations haven't been applied yet
+        try:
+            # Get actual table columns from database
+            if "postgresql" in str(connection.engine.url).lower():
+                # PostgreSQL
+                actual_columns_result = connection.execute(text("""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name = :table_name AND table_schema = 'public'
+                """), {"table_name": table.__tablename__})
+                actual_columns = {row[0] for row in actual_columns_result.fetchall()}
+            else:
+                # SQLite
+                actual_columns_result = connection.execute(text(f"PRAGMA table_info({table.__tablename__})"))
+                actual_columns = {row[1] for row in actual_columns_result.fetchall()}  # column name is index 1 in SQLite
+                
+        except Exception as e:
+            log.warning(f"Could not inspect table columns for {table.__tablename__}: {e}. Using all DataFrame columns.")
+            actual_columns = set(df.columns)
+        
+        df_columns = set(df.columns)
+        valid_columns = df_columns.intersection(actual_columns)
+        
+        if valid_columns != df_columns:
+            missing_in_table = df_columns - actual_columns
+            log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
+            df = df[list(valid_columns)]
+        
+        if df.empty:
+            return
+
         cols_all = list(df.columns)
         # rows per statement bounded by MAX_BIND_PARAMS / num_columns
         # Add additional safety: ensure we don't exceed reasonable batch sizes
