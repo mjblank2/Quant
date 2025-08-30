@@ -33,15 +33,39 @@ def _symbols() -> list[str]:
 
 def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
     if not symbols:
-        return pd.DataFrame(columns=['symbol','ts','open','close','adj_close','volume'])
-    sql = (
-        'SELECT symbol, ts, open, close, adj_close, volume '
+        return pd.DataFrame(columns=['symbol', 'ts', 'open', 'close', 'adj_close', 'volume'])
+
+    # First try with adj_close column (preferred if available)
+    sql_with_adj = (
+        'SELECT symbol, ts, open, close, COALESCE(adj_close, close) as adj_close, volume '
         'FROM daily_bars '
         'WHERE ts >= :start AND symbol IN :syms '
         'ORDER BY symbol, ts'
     )
-    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
-    return pd.read_sql_query(stmt, engine, params={'start': start_ts.date(), 'syms': tuple(symbols)}, parse_dates=['ts'])
+
+    # Fallback SQL for databases without adj_close column
+    sql_fallback = (
+        'SELECT symbol, ts, open, close, close as adj_close, volume '
+        'FROM daily_bars '
+        'WHERE ts >= :start AND symbol IN :syms '
+        'ORDER BY symbol, ts'
+    )
+
+    stmt_with_adj = text(sql_with_adj).bindparams(bindparam('syms', expanding=True))
+    stmt_fallback = text(sql_fallback).bindparams(bindparam('syms', expanding=True))
+    params = {'start': start_ts.date(), 'syms': tuple(symbols)}
+
+    try:
+        # Try with adj_close first
+        return pd.read_sql_query(stmt_with_adj, engine, params=params, parse_dates=['ts'])
+    except Exception as e:
+        # If adj_close column doesn't exist, fall back to using close as adj_close
+        if "adj_close" in str(e) and ("no such column" in str(e) or "does not exist" in str(e)):
+            log.warning("adj_close column not found in daily_bars table, using close price instead")
+            return pd.read_sql_query(stmt_fallback, engine, params=params, parse_dates=['ts'])
+        else:
+            # Re-raise other exceptions
+            raise
 
 def _load_market_returns(market_symbol: str = "IWM") -> pd.DataFrame:
     try:

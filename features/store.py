@@ -150,9 +150,9 @@ class FeatureStore:
     def _load_base_data(self, symbols: List[str], start_date: Optional[date], end_date: Optional[date]) -> pd.DataFrame:
         """Load base pricing and fundamental data needed for feature computation"""
         try:
-            # Build date filter
+            # Build date filter and parameters
             date_filter = ""
-            params = {'symbols': tuple(symbols)}
+            params = {}
             
             if start_date:
                 date_filter += " AND ts >= :start_date"
@@ -162,16 +162,37 @@ class FeatureStore:
                 date_filter += " AND ts <= :end_date"
                 params['end_date'] = end_date
             
-            # Load pricing data
-            price_sql = f"""
-                SELECT symbol, ts, open, close, adj_close, volume,
+            # Create IN clause for symbols
+            symbol_placeholders = ', '.join([f':sym_{i}' for i in range(len(symbols))])
+            for i, symbol in enumerate(symbols):
+                params[f'sym_{i}'] = symbol
+            
+            # Try loading pricing data with adj_close first
+            price_sql_with_adj = f"""
+                SELECT symbol, ts, open, close, COALESCE(adj_close, close) as adj_close, volume,
                        COALESCE(adj_close, close) AS price_feat
                 FROM daily_bars 
-                WHERE symbol = ANY(:symbols) {date_filter}
+                WHERE symbol IN ({symbol_placeholders}) {date_filter}
                 ORDER BY symbol, ts
             """
             
-            prices = pd.read_sql_query(text(price_sql), self.engine, params=params, parse_dates=['ts'])
+            # Fallback SQL for databases without adj_close column
+            price_sql_fallback = f"""
+                SELECT symbol, ts, open, close, close as adj_close, volume,
+                       close AS price_feat
+                FROM daily_bars 
+                WHERE symbol IN ({symbol_placeholders}) {date_filter}
+                ORDER BY symbol, ts
+            """
+            
+            try:
+                prices = pd.read_sql_query(text(price_sql_with_adj), self.engine, params=params, parse_dates=['ts'])
+            except Exception as e:
+                if "adj_close" in str(e) and ("no such column" in str(e) or "does not exist" in str(e)):
+                    log.warning("adj_close column not found in daily_bars table, using close price instead")
+                    prices = pd.read_sql_query(text(price_sql_fallback), self.engine, params=params, parse_dates=['ts'])
+                else:
+                    raise
             
             if prices.empty:
                 return pd.DataFrame()
@@ -180,11 +201,11 @@ class FeatureStore:
             shares_sql = f"""
                 SELECT symbol, as_of, shares
                 FROM shares_outstanding 
-                WHERE symbol = ANY(:symbols)
+                WHERE symbol IN ({symbol_placeholders})
                 ORDER BY symbol, as_of
             """
             
-            shares = pd.read_sql_query(text(shares_sql), self.engine, params={'symbols': tuple(symbols)}, parse_dates=['as_of'])
+            shares = pd.read_sql_query(text(shares_sql), self.engine, params=params, parse_dates=['as_of'])
             
             # Merge shares with point-in-time logic
             if not shares.empty:
