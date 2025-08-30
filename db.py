@@ -316,11 +316,18 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 connection.execute(stmt)
             except Exception as e:
                 # If we still hit parameter limits, retry with smaller batches
-                if "parameter" in str(e).lower() and len(records) > 10:
-                    log.warning(f"Parameter limit hit with {len(records)} records, retrying with smaller batches")
-                    # Recursively call with much smaller chunks
+                # Also handle PostgreSQL transaction abort errors
+                if (("parameter" in str(e).lower() or "InFailedSqlTransaction" in str(e)) and len(records) > 10):
+                    log.warning(f"Parameter limit or transaction abort error with {len(records)} records, retrying with smaller batches")
+                    # Rollback the current transaction to clear the aborted state
+                    try:
+                        connection.rollback()
+                    except Exception:
+                        pass  # Ignore rollback errors - transaction might already be rolled back
+
+                    # Recursively call with much smaller chunks and no connection (will create new transaction)
                     smaller_df = pd.DataFrame(records)
-                    upsert_dataframe(smaller_df, table, conflict_cols, chunk_size=10, conn=connection)
+                    upsert_dataframe(smaller_df, table, conflict_cols, chunk_size=10, conn=None)
                 else:
                     # Re-raise if it's not a parameter limit issue or if we're already at minimum size
                     raise
