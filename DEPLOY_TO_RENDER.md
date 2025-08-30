@@ -242,6 +242,11 @@ Use the Render shell or dashboard for:
 - Adjust CELERY_WORKER_CONCURRENCY if needed
 - Consider upgrading Render plan for more memory
 
+#### Streamlit JavaScript Module Loading Issues
+- **Symptom**: `TypeError: Failed to fetch dynamically imported module`
+- **Cause**: Incorrect production configuration
+- **Solution**: Ensure `.streamlit/config.toml` has production settings (see RENDER_TROUBLESHOOTING.md)
+
 ### Log Locations
 - **Web Service**: Render web service logs
 - **Worker Service**: Render worker logs  

@@ -3,4 +3,27 @@
 enableCORS = true
 enableXsrfProtection = true
 address = "0.0.0.0"
+headless = true
+runOnSave = false
+allowRunOnSave = false
+enableStaticServing = false
+port = 8501
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false
+serverAddress = "0.0.0.0"
+serverPort = 8501
+
+[global]
+developmentMode = false
+disableWidgetStateDuplicationWarning = true
+showWarningOnDirectExecution = false
+
+[client]
+toolbarMode = "minimal"
+
+[runner]
+magicEnabled = false
+fastReruns = false
 
