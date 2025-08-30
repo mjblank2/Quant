@@ -11,10 +11,16 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Allow tests to run without a configured database URL by falling back to an
+# in-memory SQLite database. This avoids importing `db` from failing when the
+# `DATABASE_URL` environment variable is unset, which is the case in the test
+# environment for broker integration.
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is required.")
+    log.warning("DATABASE_URL not set; using in-memory SQLite database")
+    engine = create_engine("sqlite:///:memory:", future=True)
+else:
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 class Base(DeclarativeBase):

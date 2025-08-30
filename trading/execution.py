@@ -1,17 +1,13 @@
 from __future__ import annotations
-import math
 import pandas as pd
 import numpy as np
 from datetime import datetime, time, timedelta
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
-from enum import Enum
 import logging
 
-from config import (
-    DEFAULT_EXECUTION_SLICES, VWAP_LOOKBACK_DAYS, EXECUTION_STYLE
-)
-from tca.execution import ExecutionStyle, ExecutionParams, TransactionCostModel
+from config import DEFAULT_EXECUTION_SLICES, EXECUTION_STYLE
+from tca.execution import TransactionCostModel
 from tca.market_impact import SquareRootLaw
 
 log = logging.getLogger(__name__)
@@ -20,6 +16,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class ChildOrder:
     """Child order for execution scheduling"""
+
     parent_id: int
     symbol: str
     side: str  # 'buy' or 'sell'
@@ -38,10 +35,9 @@ class ExecutionScheduler:
         self.cost_model = TransactionCostModel()
         self.impact_model = SquareRootLaw()
 
-    def schedule_child_orders(self,
-                            trades_df: pd.DataFrame,
-                            style: str = "twap",
-                            slices: int = None) -> List[ChildOrder]:
+    def schedule_child_orders(
+        self, trades_df: pd.DataFrame, style: str = "twap", slices: int = None
+    ) -> List[ChildOrder]:
         """
         Schedule child orders for a list of parent trades
 
@@ -61,11 +57,11 @@ class ExecutionScheduler:
 
         for _, trade in trades_df.iterrows():
             try:
-                if style.lower() == 'vwap':
+                if style.lower() == "vwap":
                     children = self._schedule_vwap(trade, slices)
-                elif style.lower() == 'twap':
+                elif style.lower() == "twap":
                     children = self._schedule_twap(trade, slices)
-                elif style.lower() == 'is':
+                elif style.lower() == "is":
                     children = self._schedule_implementation_shortfall(trade, slices)
                 else:
                     # Default to TWAP
@@ -74,7 +70,9 @@ class ExecutionScheduler:
                 child_orders.extend(children)
 
             except Exception as e:
-                log.error(f"Failed to schedule child orders for {trade.get('symbol', 'unknown')}: {e}")
+                log.error(
+                    f"Failed to schedule child orders for {trade.get('symbol', 'unknown')}: {e}"
+                )
 
         return child_orders
 
@@ -82,13 +80,13 @@ class ExecutionScheduler:
         """Time-Weighted Average Price execution"""
         children = []
 
-        total_qty = int(trade.get('quantity', 0))
+        total_qty = int(trade.get("quantity", 0))
         if total_qty == 0:
             return children
 
-        parent_id = trade.get('id', 0)
-        symbol = trade.get('symbol', '')
-        side = trade.get('side', 'buy')
+        parent_id = trade.get("id", 0)
+        symbol = trade.get("symbol", "")
+        side = trade.get("side", "buy")
 
         # Market hours: 9:30 AM to 4:00 PM ET
         market_open = time(9, 30)
@@ -121,8 +119,8 @@ class ExecutionScheduler:
                 slice_idx=i + 1,
                 qty=qty,
                 scheduled_time=scheduled_time,
-                style='twap',
-                participation_rate=0.10  # Conservative participation rate
+                style="twap",
+                participation_rate=0.10,  # Conservative participation rate
             )
             children.append(child)
 
@@ -132,30 +130,32 @@ class ExecutionScheduler:
         """Volume-Weighted Average Price execution"""
         children = []
 
-        total_qty = int(trade.get('quantity', 0))
+        total_qty = int(trade.get("quantity", 0))
         if total_qty == 0:
             return children
 
         # Get historical volume profile
-        symbol = trade.get('symbol', '')
+        symbol = trade.get("symbol", "")
         volume_profile = self._get_intraday_volume_profile(symbol)
 
         if volume_profile.empty:
             # Fall back to TWAP if no volume data
             return self._schedule_twap(trade, slices)
 
-        parent_id = trade.get('id', 0)
-        side = trade.get('side', 'buy')
+        parent_id = trade.get("id", 0)
+        side = trade.get("side", "buy")
 
         # Allocate quantities based on volume profile
-        total_volume = volume_profile['volume'].sum()
-        volume_fractions = volume_profile['volume'] / total_volume
+        total_volume = volume_profile["volume"].sum()
+        volume_fractions = volume_profile["volume"] / total_volume
 
         # Market hours execution times
         market_open = time(9, 30)
         execution_start = datetime.combine(datetime.now().date(), market_open)
 
-        for i, (time_bucket, vol_frac) in enumerate(volume_fractions.head(slices).items()):
+        for i, (time_bucket, vol_frac) in enumerate(
+            volume_fractions.head(slices).items()
+        ):
             qty = int(total_qty * vol_frac)
             if qty == 0:
                 continue
@@ -174,41 +174,43 @@ class ExecutionScheduler:
                 slice_idx=i + 1,
                 qty=qty,
                 scheduled_time=scheduled_time,
-                style='vwap',
-                participation_rate=participation_rate
+                style="vwap",
+                participation_rate=participation_rate,
             )
             children.append(child)
 
         # Handle any remaining quantity in final slice
         allocated_qty = sum(child.qty for child in children)
         if allocated_qty < total_qty and children:
-            children[-1].qty += (total_qty - allocated_qty)
+            children[-1].qty += total_qty - allocated_qty
 
         return children
 
-    def _schedule_implementation_shortfall(self, trade: pd.Series, slices: int) -> List[ChildOrder]:
+    def _schedule_implementation_shortfall(
+        self, trade: pd.Series, slices: int
+    ) -> List[ChildOrder]:
         """Implementation Shortfall algorithm - optimal trade-off between market impact and timing risk"""
         children = []
 
-        total_qty = int(trade.get('quantity', 0))
+        total_qty = int(trade.get("quantity", 0))
         if total_qty == 0:
             return children
 
-        symbol = trade.get('symbol', '')
-        price = trade.get('price', 100.0)
+        symbol = trade.get("symbol", "")
+        price = trade.get("price", 100.0)
 
         # Get market data for optimization
         market_data = self._get_market_data(symbol)
-        adv = market_data.get('adv', 1000000)
-        volatility = market_data.get('volatility', 0.20)
+        adv = market_data.get("adv", 1000000)
+        volatility = market_data.get("volatility", 0.20)
 
         # Optimize execution schedule
         optimal_schedule = self._optimize_is_schedule(
             total_qty, price, adv, volatility, slices
         )
 
-        parent_id = trade.get('id', 0)
-        side = trade.get('side', 'buy')
+        parent_id = trade.get("id", 0)
+        side = trade.get("side", "buy")
 
         market_open = time(9, 30)
         execution_start = datetime.combine(datetime.now().date(), market_open)
@@ -226,8 +228,8 @@ class ExecutionScheduler:
                 slice_idx=i + 1,
                 qty=qty,
                 scheduled_time=scheduled_time,
-                style='is',
-                participation_rate=part_rate
+                style="is",
+                participation_rate=part_rate,
             )
             children.append(child)
 
@@ -236,22 +238,45 @@ class ExecutionScheduler:
     def _get_intraday_volume_profile(self, symbol: str) -> pd.DataFrame:
         """Get historical intraday volume profile"""
         try:
-            from db import engine
-            from sqlalchemy import text
-
             # Simple volume profile - could be enhanced with actual intraday data
             # For now, return typical U-shaped pattern
-            times = ['09:30', '10:00', '10:30', '11:00', '11:30', '12:00',
-                    '12:30', '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00']
+            times = [
+                "09:30",
+                "10:00",
+                "10:30",
+                "11:00",
+                "11:30",
+                "12:00",
+                "12:30",
+                "13:00",
+                "13:30",
+                "14:00",
+                "14:30",
+                "15:00",
+                "15:30",
+                "16:00",
+            ]
 
             # U-shaped volume profile (high at open/close, low at midday)
-            volume_multipliers = [1.5, 1.2, 1.0, 0.8, 0.7, 0.6, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6]
+            volume_multipliers = [
+                1.5,
+                1.2,
+                1.0,
+                0.8,
+                0.7,
+                0.6,
+                0.6,
+                0.7,
+                0.8,
+                0.9,
+                1.0,
+                1.2,
+                1.4,
+                1.6,
+            ]
 
-            profile = pd.DataFrame({
-                'time': times,
-                'volume': volume_multipliers
-            })
-            profile = profile.set_index('time')
+            profile = pd.DataFrame({"time": times, "volume": volume_multipliers})
+            profile = profile.set_index("time")
 
             return profile
 
@@ -266,34 +291,33 @@ class ExecutionScheduler:
             from sqlalchemy import text
 
             # Get recent market data
-            stmt = text("""
+            stmt = text(
+                """
                 SELECT AVG(volume * close) as adv,
                        STDDEV(close/LAG(close) OVER (ORDER BY ts) - 1) as vol
                 FROM daily_bars
                 WHERE symbol = :symbol
                 AND ts >= CURRENT_DATE - INTERVAL '20 days'
-            """)
+            """
+            )
 
             result = engine.execute(stmt, symbol=symbol).fetchone()
 
             if result:
                 return {
-                    'adv': result[0] or 1000000,
-                    'volatility': (result[1] or 0.20) * np.sqrt(252)
+                    "adv": result[0] or 1000000,
+                    "volatility": (result[1] or 0.20) * np.sqrt(252),
                 }
 
         except Exception as e:
             log.warning(f"Could not load market data for {symbol}: {e}")
 
         # Default values
-        return {'adv': 1000000, 'volatility': 0.20}
+        return {"adv": 1000000, "volatility": 0.20}
 
-    def _optimize_is_schedule(self,
-                            total_qty: int,
-                            price: float,
-                            adv: float,
-                            volatility: float,
-                            slices: int) -> List[Tuple[int, float, float]]:
+    def _optimize_is_schedule(
+        self, total_qty: int, price: float, adv: float, volatility: float, slices: int
+    ) -> List[Tuple[int, float, float]]:
         """Optimize Implementation Shortfall execution schedule"""
 
         # Simplified IS optimization
@@ -342,9 +366,9 @@ class ExecutionScheduler:
 
 
 # Global function for backward compatibility
-def schedule_child_orders(trades_df: pd.DataFrame,
-                        style: str = None,
-                        slices: int = None) -> pd.DataFrame:
+def schedule_child_orders(
+    trades_df: pd.DataFrame, style: str = None, slices: int = None
+) -> pd.DataFrame:
     """
     Schedule child orders for execution
 
@@ -367,16 +391,18 @@ def schedule_child_orders(trades_df: pd.DataFrame,
     # Convert to DataFrame
     records = []
     for child in child_orders:
-        records.append({
-            'parent_id': child.parent_id,
-            'symbol': child.symbol,
-            'side': child.side,
-            'slice_idx': child.slice_idx,
-            'qty': child.qty,
-            'scheduled_time': child.scheduled_time,
-            'style': child.style,
-            'target_price': child.target_price,
-            'participation_rate': child.participation_rate
-        })
+        records.append(
+            {
+                "parent_id": child.parent_id,
+                "symbol": child.symbol,
+                "side": child.side,
+                "slice_idx": child.slice_idx,
+                "qty": child.qty,
+                "scheduled_time": child.scheduled_time,
+                "style": child.style,
+                "target_price": child.target_price,
+                "participation_rate": child.participation_rate,
+            }
+        )
 
     return pd.DataFrame(records)

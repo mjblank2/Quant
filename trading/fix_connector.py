@@ -3,7 +3,7 @@ import socket
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Callable
+from typing import Dict, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 import logging
