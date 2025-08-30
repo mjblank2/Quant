@@ -64,12 +64,18 @@ case "${SERVICE}" in
       streamlit)
         echo "[entrypoint] Starting Streamlit dashboard on port ${PORT}"
         exec streamlit run data_ingestion/dashboard.py \
-          --server.port "${PORT}" --server.address 0.0.0.0
+          --server.port "${PORT}" \
+          --server.address 0.0.0.0 \
+          --server.headless true \
+          --browser.gatherUsageStats false
         ;;
       operator)
         echo "[entrypoint] Starting Streamlit operator app on port ${PORT}"
         exec streamlit run app.py \
-          --server.port "${PORT}" --server.address 0.0.0.0
+          --server.port "${PORT}" \
+          --server.address 0.0.0.0 \
+          --server.headless true \
+          --browser.gatherUsageStats false
         ;;
       api)
         echo "[entrypoint] Starting FastAPI on port ${PORT}"

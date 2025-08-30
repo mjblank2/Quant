@@ -107,6 +107,38 @@ ModuleNotFoundError: No module named 'streamlit'
 2. Check `SERVICE=web` and `APP_MODE=streamlit` are set
 3. Verify entrypoint script has correct Streamlit command
 
+#### Dynamic Module Loading Failures
+**Symptoms**: Streamlit starts but fails to load JavaScript modules
+```
+TypeError: Failed to fetch dynamically imported module: https://your-app.onrender.com/static/js/index.XXXXXXXX.js
+```
+
+**Solutions**:
+1. Update `.streamlit/config.toml` with production settings:
+   ```toml
+   [server]
+   enableCORS = true
+   enableXsrfProtection = true  
+   address = "0.0.0.0"
+   headless = true
+   runOnSave = false
+   allowRunOnSave = false
+   enableStaticServing = false
+   
+   [browser]
+   gatherUsageStats = false
+   
+   [global]
+   developmentMode = false
+   
+   [runner]
+   magicEnabled = false
+   fastReruns = false
+   ```
+2. Add `--server.headless true` flag to Streamlit commands in entrypoint
+3. Ensure `--browser.gatherUsageStats false` is set for security
+4. Clear browser cache and test again
+
 #### Health Check Failures
 **Symptoms**: Service shows as unhealthy in Render
 ```
