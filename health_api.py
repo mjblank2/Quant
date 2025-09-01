@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import logging
 import time
-from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from datetime import datetime
+from typing import Optional
 from collections import defaultdict, deque
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
     from starlette.middleware.base import BaseHTTPMiddleware
     from sqlalchemy import text
@@ -26,7 +26,7 @@ try:
         DB_AVAILABLE = False
         engine = None
         
-except ImportError as e:
+except ImportError:
     FASTAPI_AVAILABLE = False
     DB_AVAILABLE = False
     engine = None

@@ -2,8 +2,72 @@
 from __future__ import annotations
 import os
 import logging
+import json
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+def _as_bool(env_name: str, default: bool) -> bool:
+    v = os.getenv(env_name)
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return default
+    return str(v).lower() in {"1","true","yes","y"}
+
+# Enhanced logging configuration for observability
+ENABLE_STRUCTURED_LOGGING = _as_bool("ENABLE_STRUCTURED_LOGGING", True)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+def setup_logging():
+    """Configure logging for the application with structured format if enabled."""
+    if ENABLE_STRUCTURED_LOGGING:
+        # Configure structured logging for JSON output
+        class StructuredFormatter(logging.Formatter):
+            def format(self, record):
+                # Check if this is already a JSON structured log
+                if hasattr(record, 'getMessage'):
+                    msg = record.getMessage()
+                    try:
+                        # If it's already JSON, pass through
+                        json.loads(msg)
+                        return msg
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                
+                # Otherwise, create structured log entry
+                log_entry = {
+                    "timestamp": self.formatTime(record),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage(),
+                    "module": record.module,
+                    "function": record.funcName,
+                    "line": record.lineno
+                }
+                
+                if record.exc_info:
+                    log_entry["exception"] = self.formatException(record.exc_info)
+                
+                return json.dumps(log_entry)
+        
+        formatter = StructuredFormatter()
+    else:
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+    
+    # Remove existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add console handler with appropriate formatter
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+# Call setup during import if structured logging is enabled
+if ENABLE_STRUCTURED_LOGGING:
+    setup_logging()
+else:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 def _fix_db_url(url: str) -> str:
     if url and url.startswith("postgres://"):
@@ -31,12 +95,6 @@ def _as_int(env_name: str, default: int) -> int:
     except Exception:
         logging.warning(f"Invalid int for {env_name}='{v}'. Using default: {default}")
         return default
-
-def _as_bool(env_name: str, default: bool) -> bool:
-    v = os.getenv(env_name)
-    if v is None or (isinstance(v, str) and v.strip() == ""):
-        return default
-    return str(v).lower() in {"1","true","yes","y"}
 
 # --- Database ---
 DATABASE_URL = _fix_db_url(os.getenv("DATABASE_URL", ""))
