@@ -302,7 +302,7 @@ with col1:
                 ).sort_values("ts")
             if not prices_df.empty:
                 fig = px.line(prices_df, x="ts", y="close", title=f"{sym} Close (last ~2y, adjusted if available)")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
         else:
             st.info("No prices yet. Backfill market data first.")
     except Exception:
@@ -319,7 +319,7 @@ with col2:
             bt = None
     if bt is not None and not bt.empty:
         fig2 = px.line(bt, x="ts", y="equity", title="Equity Curve")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 st.subheader("Trade Log (latest 200)")
 try:
