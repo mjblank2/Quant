@@ -20,11 +20,11 @@ def app_panel_v17():
         st.write("Regime:", classify_regime(ts))
     st.subheader("Recent AltSignals")
     alt = _df("SELECT ts, symbol, name, value FROM alt_signals ORDER BY ts DESC LIMIT 200", parse_dates=['ts'])
-    st.dataframe(alt)
+    st.dataframe(alt, width='stretch')
 
     st.subheader("Option Overlays (latest)")
     ov = _df("SELECT as_of, symbol, strategy, tenor_days, put_strike, call_strike, est_premium_pct, notes FROM option_overlays ORDER BY as_of DESC LIMIT 200")
-    st.dataframe(ov)
+    st.dataframe(ov, width='stretch')
 
 if __name__ == "__main__":
     app_panel_v17()
