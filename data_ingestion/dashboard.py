@@ -169,7 +169,7 @@ def view_prices():
     if "symbol" in df.columns and "close" in df.columns and "ts" in df.columns:
         chart_symbol = st.selectbox("Chart symbol", options=sorted(df["symbol"].unique().tolist()))
         df_sym = df[df["symbol"] == chart_symbol].set_index("ts").sort_index()
-        st.line_chart(df_sym["close"], width='stretch')
+        st.line_chart(df_sym["close"], use_container_width=True)
 
 def view_trades():
     if not has_table("trades"):
