@@ -92,7 +92,7 @@ def _download_button_csv(df: pd.DataFrame, label: str, filename: str, key: str =
         data=df.to_csv(index=False).encode("utf-8"),
         file_name=filename,
         mime="text/csv",
-        use_container_width=True,
+        width='stretch',
         key=key
     )
 
@@ -163,13 +163,13 @@ def view_prices():
         st.info("No price data for current filters.")
         return
     with st.expander("Data (prices)", expanded=False):
-        st.dataframe(df, use_container_width=True, height=350)
+        st.dataframe(df, width='stretch', height=350)
         _download_button_csv(df, "Download CSV (prices)", "daily_bars.csv", key="download_prices")
 
     if "symbol" in df.columns and "close" in df.columns and "ts" in df.columns:
         chart_symbol = st.selectbox("Chart symbol", options=sorted(df["symbol"].unique().tolist()))
         df_sym = df[df["symbol"] == chart_symbol].set_index("ts").sort_index()
-        st.line_chart(df_sym["close"], use_container_width=True)
+        st.line_chart(df_sym["close"], width='stretch')
 
 def view_trades():
     if not has_table("trades"):
@@ -245,7 +245,7 @@ def view_trades():
         else:
             st.metric("Filled", "—")
 
-    st.dataframe(df, use_container_width=True, height=420)
+    st.dataframe(df, width='stretch', height=420)
     _download_button_csv(df, "Download CSV (trades)", "trades.csv", key="download_trades")
 
 def view_positions():
@@ -311,7 +311,7 @@ def view_positions():
         else:
             st.metric("Net Shares", "—")
 
-    st.dataframe(df, use_container_width=True, height=420)
+    st.dataframe(df, width='stretch', height=420)
     _download_button_csv(df, "Download CSV (positions)", "positions.csv", key="download_positions")
 
 def view_predictions():
@@ -368,13 +368,13 @@ def view_predictions():
             left, right = st.columns(2)
             with left:
                 st.markdown("**Top 20**")
-                st.dataframe(cross2.sort_values(score_col, ascending=False).head(20), use_container_width=True, height=350)
+                st.dataframe(cross2.sort_values(score_col, ascending=False).head(20), width='stretch', height=350)
             with right:
                 st.markdown("**Bottom 20**")
-                st.dataframe(cross2.sort_values(score_col, ascending=True).head(20), use_container_width=True, height=350)
+                st.dataframe(cross2.sort_values(score_col, ascending=True).head(20), width='stretch', height=350)
 
     with st.expander("All predictions (filtered)", expanded=False):
-        st.dataframe(df, use_container_width=True, height=380)
+        st.dataframe(df, width='stretch', height=380)
         _download_button_csv(df, "Download CSV (predictions)", "predictions.csv", key="download_predictions")
 
 tabs = st.tabs(["Overview", "Trades", "Positions", "Predictions", "Prices"])
