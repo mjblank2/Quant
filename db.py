@@ -317,20 +317,55 @@ def _get_table_columns(connection, table):
     try:
         # Get actual table columns from database
         if "postgresql" in str(connection.engine.url).lower():
-            # PostgreSQL
-            actual_columns_result = connection.execute(text("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_name = :table_name AND table_schema = 'public'
-            """), {"table_name": table_name})
-            actual_columns = {row[0] for row in actual_columns_result.fetchall()}
+            # PostgreSQL - try multiple approaches to find table columns
+            actual_columns = set()
+
+            # First try: look in current schema (don't specify schema)
+            try:
+                actual_columns_result = connection.execute(text("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = :table_name
+                    AND table_schema = current_schema()
+                """), {"table_name": table_name})
+                actual_columns = {row[0] for row in actual_columns_result.fetchall()}
+            except Exception:
+                pass
+
+            # Second try: look in 'public' schema (original approach)
+            if not actual_columns:
+                try:
+                    actual_columns_result = connection.execute(text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = :table_name AND table_schema = 'public'
+                    """), {"table_name": table_name})
+                    actual_columns = {row[0] for row in actual_columns_result.fetchall()}
+                except Exception:
+                    pass
+
+            # Third try: look in any schema (remove schema restriction)
+            if not actual_columns:
+                try:
+                    actual_columns_result = connection.execute(text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = :table_name
+                    """), {"table_name": table_name})
+                    actual_columns = {row[0] for row in actual_columns_result.fetchall()}
+                except Exception:
+                    pass
+
         else:
             # SQLite
             actual_columns_result = connection.execute(text(f"PRAGMA table_info({table_name})"))
             actual_columns = {row[1] for row in actual_columns_result.fetchall()}  # column name is index 1 in SQLite
 
-        # Cache the result
-        _table_columns_cache[table_name] = actual_columns
-        return actual_columns
+        # Cache the result only if we found columns
+        if actual_columns:
+            _table_columns_cache[table_name] = actual_columns
+            return actual_columns
+        else:
+            # If no columns found, don't cache and return None
+            log.debug(f"No columns found for table {table_name} in database schema inspection")
+            return None
 
     except Exception as e:
         log.warning(f"Could not inspect table columns for {table_name}: {e}. Using all DataFrame columns.")
