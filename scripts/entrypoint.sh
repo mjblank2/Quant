@@ -25,7 +25,11 @@ check_environment() {
 # Always run Alembic migrations first (if present)
 if [[ -f "alembic.ini" && -d "alembic" ]]; then
   echo "[entrypoint] Running Alembic upgrade..."
-  if alembic upgrade head; then
+  # The Alembic CLI can be confused if the project path is present in
+  # PYTHONPATH because the local `alembic/` migrations package shadows the
+  # installed Alembic library. Run the upgrade with an empty PYTHONPATH so the
+  # CLI imports the correct package; `env.py` will add the project path back.
+  if PYTHONPATH="" alembic upgrade head; then
     echo "[entrypoint] ✅ Alembic upgrade succeeded"
   else
     echo "[entrypoint] ⚠️ Alembic upgrade failed (continuing anyway)"
