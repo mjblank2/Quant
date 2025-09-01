@@ -228,7 +228,7 @@ st.subheader("Universe Summary")
 try:
     uni_df = load_universe()
     st.write(f"Universe size: {len(uni_df)}")
-    st.dataframe(uni_df.head(50))
+    st.dataframe(uni_df.head(50), width='stretch')
 except Exception:
     st.info("Universe table empty or not available yet.")
 
@@ -324,7 +324,7 @@ with col2:
 st.subheader("Trade Log (latest 200)")
 try:
     trades = load_trades()
-    st.dataframe(trades)
+    st.dataframe(trades, width='stretch')
     st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv", key="download_trades_main")
 except Exception:
     st.info("No trades yet.")

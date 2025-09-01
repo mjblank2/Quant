@@ -26,7 +26,7 @@ def app_panel_v16():
         return
 
     st.subheader("Current Target Book")
-    st.dataframe(tp)
+    st.dataframe(tp, width='stretch')
 
     # Market-beta estimate
     try:
@@ -40,12 +40,12 @@ def app_panel_v16():
     sec = sector_asof(tp['symbol'].tolist(), ts).fillna("UNKNOWN")
     se = tp.assign(sector=sec.values).groupby('sector')['weight'].sum().sort_values(ascending=False)
     st.subheader("Sector Exposures")
-    st.dataframe(se.reset_index().rename(columns={'weight':'sum_weight'}))
+    st.dataframe(se.reset_index().rename(columns={'weight':'sum_weight'}), width='stretch')
 
     # Concentration
     st.subheader("Concentration")
     st.write("Top 5 names:")
-    st.dataframe(tp.head(5))
+    st.dataframe(tp.head(5), width='stretch')
 
 if __name__ == "__main__":
     app_panel_v16()
