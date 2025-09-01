@@ -342,8 +342,25 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
         if valid_columns != df_columns:
             missing_in_table = df_columns - actual_columns
-            log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
-            df = df[list(valid_columns)]
+
+            # If columns are missing, try refreshing the cache in case schema has been updated
+            # This handles cases where migrations have been applied but cache is stale
+            table_name = table.__tablename__
+            if table_name in _table_columns_cache:
+                log.debug(f"Detected missing columns {missing_in_table} in {table_name}, refreshing column cache")
+                # Clear this table from cache and re-fetch
+                del _table_columns_cache[table_name]
+                actual_columns_refreshed = _get_table_columns(connection, table)
+
+                if actual_columns_refreshed is not None:
+                    actual_columns = actual_columns_refreshed
+                    valid_columns = df_columns.intersection(actual_columns)
+                    missing_in_table = df_columns - actual_columns
+
+            # Only warn and drop columns if they're still missing after cache refresh
+            if df_columns != valid_columns:
+                log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
+                df = df[list(valid_columns)]
 
         if df.empty:
             return
