@@ -279,10 +279,34 @@ def create_tables():
 # Cache for table column information to avoid repeated database queries
 _table_columns_cache = {}
 
+# Track warnings to avoid repeated logging of the same column issues
+_column_warning_cache = {}
+
 def clear_table_columns_cache():
     """Clear the table columns cache. Useful after database migrations."""
-    global _table_columns_cache
     _table_columns_cache.clear()
+    _column_warning_cache.clear()
+
+
+def _should_log_column_warning(table_name: str, missing_columns: set) -> bool:
+    """
+    Check if we should log a warning about missing columns.
+    Rate-limits repeated warnings about the same missing columns for the same table.
+    """
+    import time
+
+    warning_key = (table_name, frozenset(missing_columns))
+    current_time = time.time()
+
+    # Rate limit: only log the same warning once per 60 seconds
+    if warning_key in _column_warning_cache:
+        last_logged = _column_warning_cache[warning_key]
+        if current_time - last_logged < 60:  # 60 seconds rate limit
+            return False
+
+    _column_warning_cache[warning_key] = current_time
+    return True
+
 
 def _get_table_columns(connection, table):
     """Get table columns with caching to avoid repeated database queries"""
@@ -356,10 +380,18 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                     actual_columns = actual_columns_refreshed
                     valid_columns = df_columns.intersection(actual_columns)
                     missing_in_table = df_columns - actual_columns
+                    log.debug(f"Cache refresh completed for {table_name}, found {len(actual_columns)} columns")
+                else:
+                    log.warning(f"Failed to refresh column cache for {table_name}")
+            else:
+                # Table not in cache yet, this is the first access - no need to refresh
+                log.debug(f"Table {table_name} not in cache yet, first access")
 
             # Only warn and drop columns if they're still missing after cache refresh
             if df_columns != valid_columns:
-                log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
+                # Rate-limit warnings to avoid log spam and memory issues
+                if _should_log_column_warning(table.__tablename__, missing_in_table):
+                    log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
                 df = df[list(valid_columns)]
 
         if df.empty:
