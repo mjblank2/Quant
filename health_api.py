@@ -6,12 +6,13 @@ import os
 import logging
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 from collections import defaultdict, deque
 
 try:
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI, Request, HTTPException
     from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
     from starlette.middleware.base import BaseHTTPMiddleware
     from sqlalchemy import text
     from utils_logging import generate_request_id, structured_logger
@@ -265,7 +266,13 @@ if FASTAPI_AVAILABLE:
     @app.get("/")
     async def root():
         """Root endpoint redirecting to health check."""
-        return {"message": "Small-Cap Quant System API", "health_check": "/health", "status": "/status", "metrics": "/metrics"}
+        return {
+            "message": "Small-Cap Quant System API", 
+            "health_check": "/health", 
+            "status": "/status", 
+            "metrics": "/metrics",
+            "ingest": "/ingest"
+        }
     
     @app.get("/metrics")
     async def get_metrics() -> Dict[str, Any]:
@@ -371,6 +378,67 @@ if FASTAPI_AVAILABLE:
             "user_agent_breakdown": dict(user_agent_stats),
             "ip_breakdown": dict(ip_stats),
         }
+    
+    # Request model for ingest endpoint
+    class IngestRequest(BaseModel):
+        days: Optional[int] = 7
+        source: Optional[str] = "api"
+    
+    @app.post("/ingest")
+    async def trigger_data_ingestion(request: IngestRequest = IngestRequest()) -> Dict[str, Any]:
+        """
+        Trigger data ingestion process via POST request.
+        Accepts optional parameters: days (int) and source (str).
+        """
+        request_id = generate_request_id()
+        
+        try:
+            # Log the ingest request
+            logger.info(f"Data ingestion request received: days={request.days}, source={request.source}, request_id={request_id}")
+            
+            # Import and execute data ingestion
+            try:
+                from data.ingest import ingest_bars_for_universe
+                
+                # Execute ingestion with requested parameters
+                ingest_bars_for_universe(days=request.days)
+                
+                # Return success response
+                response = {
+                    "status": "success",
+                    "message": f"Data ingestion completed successfully for {request.days} days",
+                    "request_id": request_id,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "parameters": {
+                        "days": request.days,
+                        "source": request.source
+                    }
+                }
+                
+                logger.info(f"Data ingestion completed successfully: request_id={request_id}")
+                return JSONResponse(content=response, status_code=200)
+                
+            except ImportError as e:
+                error_msg = f"Data ingestion module not available: {str(e)}"
+                logger.error(f"Import error during ingestion: {error_msg}, request_id={request_id}")
+                raise HTTPException(status_code=503, detail=error_msg)
+                
+        except Exception as e:
+            error_msg = f"Data ingestion failed: {str(e)}"
+            logger.error(f"Error during data ingestion: {error_msg}, request_id={request_id}")
+            
+            response = {
+                "status": "error",
+                "message": error_msg,
+                "request_id": request_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "parameters": {
+                    "days": request.days,
+                    "source": request.source
+                }
+            }
+            
+            return JSONResponse(content=response, status_code=500)
 
 else:
     # Fallback for when FastAPI is not available
