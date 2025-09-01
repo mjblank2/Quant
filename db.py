@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import nullcontext
 from sqlalchemy import create_engine, String, Date, DateTime, Integer, Float, Boolean, BigInteger, Index, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.dialects.postgresql import insert
@@ -274,7 +275,43 @@ def create_tables():
 
 
 # Efficient UPSERT helper
-from contextlib import nullcontext
+
+# Cache for table column information to avoid repeated database queries
+_table_columns_cache = {}
+
+def clear_table_columns_cache():
+    """Clear the table columns cache. Useful after database migrations."""
+    global _table_columns_cache
+    _table_columns_cache.clear()
+
+def _get_table_columns(connection, table):
+    """Get table columns with caching to avoid repeated database queries"""
+    table_name = table.__tablename__
+    if table_name in _table_columns_cache:
+        return _table_columns_cache[table_name]
+
+    try:
+        # Get actual table columns from database
+        if "postgresql" in str(connection.engine.url).lower():
+            # PostgreSQL
+            actual_columns_result = connection.execute(text("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = :table_name AND table_schema = 'public'
+            """), {"table_name": table_name})
+            actual_columns = {row[0] for row in actual_columns_result.fetchall()}
+        else:
+            # SQLite
+            actual_columns_result = connection.execute(text(f"PRAGMA table_info({table_name})"))
+            actual_columns = {row[1] for row in actual_columns_result.fetchall()}  # column name is index 1 in SQLite
+
+        # Cache the result
+        _table_columns_cache[table_name] = actual_columns
+        return actual_columns
+
+    except Exception as e:
+        log.warning(f"Could not inspect table columns for {table_name}: {e}. Using all DataFrame columns.")
+        # Don't cache failed attempts
+        return None
 
 
 def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_size: int = 50000, conn=None):
@@ -295,32 +332,19 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
     with ctx as connection:
         # Filter DataFrame columns to only include columns that exist in the actual database table
         # This prevents errors when migrations haven't been applied yet
-        try:
-            # Get actual table columns from database
-            if "postgresql" in str(connection.engine.url).lower():
-                # PostgreSQL
-                actual_columns_result = connection.execute(text("""
-                    SELECT column_name FROM information_schema.columns 
-                    WHERE table_name = :table_name AND table_schema = 'public'
-                """), {"table_name": table.__tablename__})
-                actual_columns = {row[0] for row in actual_columns_result.fetchall()}
-            else:
-                # SQLite
-                actual_columns_result = connection.execute(text(f"PRAGMA table_info({table.__tablename__})"))
-                actual_columns = {row[1] for row in actual_columns_result.fetchall()}  # column name is index 1 in SQLite
-                
-        except Exception as e:
-            log.warning(f"Could not inspect table columns for {table.__tablename__}: {e}. Using all DataFrame columns.")
+        actual_columns = _get_table_columns(connection, table)
+        if actual_columns is None:
+            # If column inspection failed, use all DataFrame columns
             actual_columns = set(df.columns)
-        
+
         df_columns = set(df.columns)
         valid_columns = df_columns.intersection(actual_columns)
-        
+
         if valid_columns != df_columns:
             missing_in_table = df_columns - actual_columns
             log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
             df = df[list(valid_columns)]
-        
+
         if df.empty:
             return
 
