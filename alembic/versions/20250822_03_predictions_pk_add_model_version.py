@@ -1,4 +1,5 @@
-"""Alter predictions primary key to include model version.
+"""
+Alter predictions primary key to include model version.
 
 Revision ID: 20250822_03
 Revises: 20250822_02
