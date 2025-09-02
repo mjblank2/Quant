@@ -163,10 +163,12 @@ def downgrade():
     conn = op.get_bind()
     inspector = sa.inspect(conn)
     # Remove indexes first (before dropping columns they depend on)
-    op.drop_index('ix_daily_bars_symbol_ts_covering', 'daily_bars', if_exists=True)
-    op.drop_index('ix_daily_bars_recent_volume', 'daily_bars', if_exists=True) 
-    op.drop_index('ix_shares_outstanding_bitemporal', 'shares_outstanding', if_exists=True)
-    op.drop_index('ix_fundamentals_bitemporal', 'fundamentals', if_exists=True)
+    
+    # Remove indexes only if tables exist
+    if inspector.has_table('shares_outstanding'):
+        op.drop_index('ix_shares_outstanding_bitemporal', 'shares_outstanding', if_exists=True)
+    if inspector.has_table('fundamentals'):
+        op.drop_index('ix_fundamentals_bitemporal', 'fundamentals', if_exists=True)
     
     # Remove knowledge_date columns (only if tables exist)
     if inspector.has_table('shares_outstanding'):
