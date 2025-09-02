@@ -17,9 +17,11 @@ depends_on = None
 
 def upgrade() -> None:
     """Ensure ``model_version`` column exists and update PK."""
+    existing_cols = [
+        c["name"] for c in sa.inspect(op.get_bind()).get_columns("predictions")
+    ]
     with op.batch_alter_table("predictions") as batch_op:
-        cols = [c["name"] for c in batch_op.get_columns()]
-        if "model_version" not in cols:
+        if "model_version" not in existing_cols:
             batch_op.add_column(
                 sa.Column(
                     "model_version",
