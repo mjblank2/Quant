@@ -12,7 +12,22 @@ echo "[entrypoint] Environment check: DATABASE_URL=${DATABASE_URL:+SET} PYTHONPA
 # Function to check environment variables for different services
 check_environment() {
     case "${SERVICE}" in
-        web|worker|cron)
+        web)
+            if [[ "${APP_MODE}" == "api" ]]; then
+                if [[ -z "${DATABASE_URL:-}" ]]; then
+                    echo "[entrypoint] ⚠️ DATABASE_URL not set - running without database access"
+                else
+                    echo "[entrypoint] ✅ DATABASE_URL is configured"
+                fi
+            else
+                if [[ -z "${DATABASE_URL:-}" ]]; then
+                    echo "[entrypoint] ❌ ERROR: DATABASE_URL environment variable is required for ${SERVICE} service"
+                    exit 1
+                fi
+                echo "[entrypoint] ✅ DATABASE_URL is configured"
+            fi
+            ;;
+        worker|cron)
             if [[ -z "${DATABASE_URL:-}" ]]; then
                 echo "[entrypoint] ❌ ERROR: DATABASE_URL environment variable is required for ${SERVICE} service"
                 exit 1
