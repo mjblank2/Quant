@@ -128,7 +128,7 @@ def upgrade():
         sa.Column('lineage_metadata', sa.JSON(), nullable=True),
     )
 
-    # Fixed indentation bug so these are inside upgrade()
+    # Create indexes to improve query performance on data_lineage table
     op.create_index('ix_lineage_table_symbol_date', 'data_lineage', ['table_name', 'symbol', 'data_date'])
     op.create_index('ix_lineage_ingestion_time', 'data_lineage', ['ingestion_timestamp'])
 
