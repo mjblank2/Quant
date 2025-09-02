@@ -151,6 +151,23 @@ Health check failed: GET /health returned 503
 3. Test health endpoint locally
 4. Check application logs for errors
 
+**For API Service Specifically**:
+1. Verify `APP_MODE=api` environment variable is set
+2. Check that FastAPI dependencies are installed (fastapi, uvicorn, sqlalchemy)
+3. Test API endpoints: `/health`, `/`, `/ingest`
+
+#### API Service 404 Errors
+**Symptoms**: API endpoints return 404 Not Found
+```
+curl: (22) The requested URL returned error: 404 Not Found
+```
+
+**Solutions**:
+1. Verify service is running in API mode (`APP_MODE=api`)
+2. Check that `data-ingestion-service` is properly deployed
+3. Confirm entrypoint is starting uvicorn correctly
+4. Test locally: `uvicorn health_api:app --host 0.0.0.0 --port 8000`
+
 #### Port Binding Issues
 **Symptoms**: Service starts but is not accessible
 ```

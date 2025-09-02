@@ -40,6 +40,43 @@ docker build -t smallcap-quant:latest .
 docker run -e DATABASE_URL=... -e POLYGON_API_KEY=... -p 8501:8501 smallcap-quant:latest
 ```
 
+## API Endpoints
+
+The system provides REST API endpoints for programmatic access:
+
+### Data Ingestion API
+When deployed to Render, the `data-ingestion-service` provides:
+
+- **Health Check**: `GET /health` - Service health status
+- **System Status**: `GET /status` - Detailed system information  
+- **Metrics**: `GET /metrics` - Performance and monitoring metrics
+- **Data Ingestion**: `POST /ingest` - Trigger data ingestion process
+
+#### Example Usage
+```bash
+# Test service health
+curl https://data-ingestion-service-abcd.onrender.com/health
+
+# Trigger data ingestion for last 7 days
+curl -X POST https://data-ingestion-service-abcd.onrender.com/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"days": 7, "source": "api"}'
+
+# Test all endpoints
+python scripts/test_api_endpoints.py https://data-ingestion-service-abcd.onrender.com
+```
+
+### Local API Development
+```bash
+# Run API server locally
+export SERVICE=web APP_MODE=api DATABASE_URL=...
+uvicorn health_api:app --host 0.0.0.0 --port 8000
+
+# Or use the entrypoint
+export SERVICE=web APP_MODE=api
+scripts/entrypoint.sh
+```
+
 ## Notes
 
 - Fundamentals are fetched from Polygon's `vX/reference/financials`; we store **as_of** using the filing/period date and join with `merge_asof(direction='backward')` to avoid look-ahead.
