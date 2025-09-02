@@ -19,45 +19,79 @@ def upgrade():
     # Add knowledge_date columns for bi-temporal support where missing
     conn = op.get_bind()
     
-    # Check if knowledge_date already exists in shares_outstanding
+    # Check if knowledge_date already exists in shares_outstanding (only if table exists)
     inspector = sa.inspect(conn)
-    shares_cols = [col['name'] for col in inspector.get_columns('shares_outstanding')]
     
-    if 'knowledge_date' not in shares_cols:
-        op.add_column('shares_outstanding', 
-                     sa.Column('knowledge_date', sa.Date(), nullable=True))
+    # Check if shares_outstanding table exists before inspecting columns
+    if inspector.has_table('shares_outstanding'):
+        shares_cols = [col['name'] for col in inspector.get_columns('shares_outstanding')]
         
-        # Initialize knowledge_date as as_of + 1 day (default reporting lag)
-        conn.execute(text("""
-        UPDATE shares_outstanding 
-        SET knowledge_date = as_of + INTERVAL '1 day' 
-        WHERE knowledge_date IS NULL
-        """))
+        if 'knowledge_date' not in shares_cols:
+            op.add_column('shares_outstanding', 
+                         sa.Column('knowledge_date', sa.Date(), nullable=True))
+            
+            # Initialize knowledge_date as as_of + 1 day (default reporting lag)
+            # Use database-agnostic date arithmetic
+            if 'sqlite' in str(conn.engine.url):
+                conn.execute(text("""
+                UPDATE shares_outstanding 
+                SET knowledge_date = date(as_of, '+1 day') 
+                WHERE knowledge_date IS NULL
+                """))
+            else:
+                conn.execute(text("""
+                UPDATE shares_outstanding 
+                SET knowledge_date = as_of + INTERVAL '1 day' 
+                WHERE knowledge_date IS NULL
+                """))
     
-    # Add knowledge_date to fundamentals if not exists
-    fund_cols = [col['name'] for col in inspector.get_columns('fundamentals')]
-    
-    if 'knowledge_date' not in fund_cols:
-        op.add_column('fundamentals', 
-                     sa.Column('knowledge_date', sa.Date(), nullable=True))
+    # Add knowledge_date to fundamentals if not exists (only if table exists)
+    if inspector.has_table('fundamentals'):
+        fund_cols = [col['name'] for col in inspector.get_columns('fundamentals')]
         
-        # Initialize knowledge_date based on available_at or as_of + reporting lag
-        conn.execute(text("""
-        UPDATE fundamentals 
-        SET knowledge_date = COALESCE(available_at, as_of + INTERVAL '1 day')
-        WHERE knowledge_date IS NULL
-        """))
+        if 'knowledge_date' not in fund_cols:
+            op.add_column('fundamentals', 
+                         sa.Column('knowledge_date', sa.Date(), nullable=True))
+            
+            # Initialize knowledge_date based on available_at or as_of + reporting lag
+            # Use database-agnostic date arithmetic
+            if 'sqlite' in str(conn.engine.url):
+                conn.execute(text("""
+                UPDATE fundamentals 
+                SET knowledge_date = COALESCE(available_at, date(as_of, '+1 day'))
+                WHERE knowledge_date IS NULL
+                """))
+            else:
+                conn.execute(text("""
+                UPDATE fundamentals 
+                SET knowledge_date = COALESCE(available_at, as_of + INTERVAL '1 day')
+                WHERE knowledge_date IS NULL
+                """))
     
     # Add data validation metadata table
-    op.create_table('data_validation_log',
-        sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column('run_timestamp', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
-        sa.Column('validation_type', sa.String(64), nullable=False),
-        sa.Column('status', sa.String(20), nullable=False),  # PASSED, FAILED, WARNING
-        sa.Column('message', sa.Text(), nullable=True),
-        sa.Column('metrics', sa.JSON(), nullable=True),
-        sa.Column('affected_symbols', sa.ARRAY(sa.String(20)), nullable=True),
-    )
+    # Create table with database-agnostic column types
+    if 'sqlite' in str(conn.engine.url):
+        # SQLite doesn't support ARRAY, use TEXT instead
+        op.create_table('data_validation_log',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('run_timestamp', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+            sa.Column('validation_type', sa.String(64), nullable=False),
+            sa.Column('status', sa.String(20), nullable=False),  # PASSED, FAILED, WARNING
+            sa.Column('message', sa.Text(), nullable=True),
+            sa.Column('metrics', sa.JSON(), nullable=True),
+            sa.Column('affected_symbols', sa.Text(), nullable=True),  # JSON string for SQLite
+        )
+    else:
+        # PostgreSQL supports ARRAY
+        op.create_table('data_validation_log',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('run_timestamp', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+            sa.Column('validation_type', sa.String(64), nullable=False),
+            sa.Column('status', sa.String(20), nullable=False),  # PASSED, FAILED, WARNING
+            sa.Column('message', sa.Text(), nullable=True),
+            sa.Column('metrics', sa.JSON(), nullable=True),
+            sa.Column('affected_symbols', sa.ARRAY(sa.String(20)), nullable=True),
+        )
     
     op.create_index('ix_validation_log_timestamp', 'data_validation_log', ['run_timestamp'])
     op.create_index('ix_validation_log_type_status', 'data_validation_log', ['validation_type', 'status'])
@@ -93,42 +127,54 @@ def upgrade():
         pass
     
     # Index for recent data queries (common in real-time systems)
-    conn.execute(text("""
-    CREATE INDEX IF NOT EXISTS ix_daily_bars_recent_volume
-    ON daily_bars (ts DESC, volume DESC)
-    WHERE ts >= CURRENT_DATE - INTERVAL '90 days'
-    """))
+    # Use database-agnostic date arithmetic  
+    if 'sqlite' in str(conn.engine.url):
+        conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_daily_bars_recent_volume
+        ON daily_bars (ts DESC, volume DESC)
+        WHERE ts >= date('now', '-90 days')
+        """))
+    else:
+        conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_daily_bars_recent_volume
+        ON daily_bars (ts DESC, volume DESC)
+        WHERE ts >= CURRENT_DATE - INTERVAL '90 days'
+        """))
     
-    # Optimize bi-temporal queries
-    conn.execute(text("""
-    CREATE INDEX IF NOT EXISTS ix_shares_outstanding_bitemporal
-    ON shares_outstanding (symbol, as_of DESC, knowledge_date DESC)
-    """))
+    # Optimize bi-temporal queries (only create indexes if tables exist)
+    if inspector.has_table('shares_outstanding'):
+        conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_shares_outstanding_bitemporal
+        ON shares_outstanding (symbol, as_of DESC, knowledge_date DESC)
+        """))
     
-    conn.execute(text("""
-    CREATE INDEX IF NOT EXISTS ix_fundamentals_bitemporal  
-    ON fundamentals (symbol, as_of DESC, knowledge_date DESC)
-    """))
+    if inspector.has_table('fundamentals'):
+        conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_fundamentals_bitemporal  
+        ON fundamentals (symbol, as_of DESC, knowledge_date DESC)
+        """))
 
 def downgrade():
     # Remove new tables
     op.drop_table('data_lineage')
     op.drop_table('data_validation_log')
     
-    # Remove knowledge_date columns
+    # Remove knowledge_date columns (only if tables exist)
     conn = op.get_bind()
     inspector = sa.inspect(conn)
-    
-    shares_cols = [col['name'] for col in inspector.get_columns('shares_outstanding')]
-    if 'knowledge_date' in shares_cols:
-        op.drop_column('shares_outstanding', 'knowledge_date')
-    
-    fund_cols = [col['name'] for col in inspector.get_columns('fundamentals')]
-    if 'knowledge_date' in fund_cols:
-        op.drop_column('fundamentals', 'knowledge_date')
-    
-    # Remove indexes
+    # Remove indexes first (before dropping columns they depend on)
     op.drop_index('ix_daily_bars_symbol_ts_covering', 'daily_bars', if_exists=True)
     op.drop_index('ix_daily_bars_recent_volume', 'daily_bars', if_exists=True) 
     op.drop_index('ix_shares_outstanding_bitemporal', 'shares_outstanding', if_exists=True)
     op.drop_index('ix_fundamentals_bitemporal', 'fundamentals', if_exists=True)
+    
+    # Remove knowledge_date columns (only if tables exist)
+    if inspector.has_table('shares_outstanding'):
+        shares_cols = [col['name'] for col in inspector.get_columns('shares_outstanding')]
+        if 'knowledge_date' in shares_cols:
+            op.drop_column('shares_outstanding', 'knowledge_date')
+    
+    if inspector.has_table('fundamentals'):
+        fund_cols = [col['name'] for col in inspector.get_columns('fundamentals')]
+        if 'knowledge_date' in fund_cols:
+            op.drop_column('fundamentals', 'knowledge_date')
