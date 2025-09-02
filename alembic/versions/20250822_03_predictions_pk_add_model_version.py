@@ -18,19 +18,18 @@ depends_on = None
 
 def upgrade() -> None:
     """Ensure ``model_version`` column exists and update PK."""
-    # Use SQLAlchemy inspector to check existing columns to avoid duplicate adds
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    cols = [c["name"] for c in inspector.get_columns("predictions")]
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c["name"] for c in inspector.get_columns("predictions")]
 
-    with op.batch_alter_table("predictions") as batch_op:
-        if "model_version" not in cols:
+    if "model_version" not in columns:
+        with op.batch_alter_table("predictions") as batch_op:
             batch_op.add_column(
                 sa.Column(
                     "model_version",
                     sa.String(length=32),
                     server_default="xgb_v1",
-                )
+                ),
             )
 
     try:
