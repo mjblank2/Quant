@@ -230,6 +230,29 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
+            
+            # Fix: Deduplicate rows with same symbol+date but different timestamps
+            # This prevents CardinalityViolation errors in ON CONFLICT DO UPDATE
+            original_count = len(feats)
+            
+            # Normalize timestamps to dates to avoid timezone/time component issues
+            feats['ts'] = feats['ts'].dt.normalize()
+            
+            # Check for duplicates before deduplication
+            duplicate_check = feats.groupby(['symbol', 'ts']).size()
+            duplicates_found = (duplicate_check > 1).sum()
+            
+            if duplicates_found > 0:
+                log.warning(f"Found {duplicates_found} symbol+date pairs with multiple rows. Deduplicating by keeping latest values.")
+                
+                # Keep the latest row for each symbol+date combination
+                # Use the row index as a tiebreaker (later rows are "more recent")
+                latest_indices = feats.groupby(['symbol', 'ts']).tail(1).index
+                feats = feats.loc[latest_indices].reset_index(drop=True)
+                
+                deduplicated_count = len(feats)
+                log.info(f"Deduplication: {original_count} -> {deduplicated_count} rows ({original_count - deduplicated_count} duplicates removed)")
+            
             upsert_dataframe(feats, Feature, ['symbol','ts'])
             new_rows.append(feats)
             log.info(f"Batch completed. New rows: {len(feats)}")
