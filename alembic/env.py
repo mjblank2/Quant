@@ -15,9 +15,26 @@ if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
 from config import DATABASE_URL  # noqa: E402
-# normalized URL (postgresql+psycopg://...)
-from db import Base  # noqa: E402
-# Base import is safe; engine is created using DATABASE_URL
+
+# Handle missing DATABASE_URL gracefully during migrations
+def get_base_metadata():
+    """Import and return Base metadata, handling DATABASE_URL requirements."""
+    try:
+        from db import Base
+        return Base.metadata
+    except RuntimeError as e:
+        if "DATABASE_URL environment variable is required" in str(e):
+            # Create a minimal Base for migrations when DATABASE_URL is not available
+            from sqlalchemy.orm import DeclarativeBase
+            
+            class FallbackBase(DeclarativeBase):
+                pass
+            
+            # Return empty metadata for migrations - this allows Alembic to run
+            # but migrations may fail if they need actual database connections
+            return FallbackBase.metadata
+        else:
+            raise
 
 config = context.config
 config.set_main_option(
@@ -28,7 +45,7 @@ config.set_main_option(
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = get_base_metadata()
 
 
 def run_migrations_offline() -> None:
