@@ -29,7 +29,8 @@ if [[ -f "alembic.ini" && -d "alembic" ]]; then
   # PYTHONPATH because the local `alembic/` migrations package shadows the
   # installed Alembic library. Run the upgrade with an empty PYTHONPATH so the
   # CLI imports the correct package; `env.py` will add the project path back.
-  if PYTHONPATH="" alembic upgrade head; then
+  # Use 'heads' instead of 'head' due to multiple head revisions in the migration system
+  if PYTHONPATH="" alembic upgrade heads; then
     echo "[entrypoint] ✅ Alembic upgrade succeeded"
   else
     echo "[entrypoint] ⚠️ Alembic upgrade failed (continuing anyway)"
