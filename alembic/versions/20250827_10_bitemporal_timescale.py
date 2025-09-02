@@ -128,7 +128,7 @@ def upgrade():
     
     # Index for recent data queries (common in real-time systems)
     # Use database-agnostic date arithmetic  
-    if 'sqlite' in str(conn.engine.url):
+    if conn.engine.dialect.name == 'sqlite':
         conn.execute(text("""
         CREATE INDEX IF NOT EXISTS ix_daily_bars_recent_volume
         ON daily_bars (ts DESC, volume DESC)
