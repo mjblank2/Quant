@@ -325,7 +325,7 @@ def _should_log_column_warning(table_name: str, missing_columns: set) -> bool:
         old_keys = [k for k, v in _column_warning_cache.items() if v < cutoff_time]
         for k in old_keys:
             del _column_warning_cache[k]
-        
+
         # If still too large after cleanup, remove oldest entries
         if len(_column_warning_cache) > MAX_CACHE_SIZE:
             sorted_items = sorted(_column_warning_cache.items(), key=lambda x: x[1])
@@ -434,18 +434,18 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
             # If columns are missing, try refreshing the cache in case schema has been updated
             # This handles cases where migrations have been applied but cache is stale
             import time
-            
+
             table_name = table.__tablename__
             refresh_key = (table_name, frozenset(missing_in_table))
             current_time = time.time()
-            
+
             # Avoid repeated cache refresh attempts for the same missing columns
             should_refresh = table_name in _table_columns_cache
             if refresh_key in _cache_refresh_failures:
                 last_failed_refresh = _cache_refresh_failures[refresh_key]
                 # Only retry cache refresh after 10 minutes
                 should_refresh = should_refresh and (current_time - last_failed_refresh > 600)
-            
+
             if should_refresh:
                 log.debug(f"Detected missing columns {missing_in_table} in {table_name}, refreshing column cache")
                 # Clear this table from cache and re-fetch
@@ -456,11 +456,11 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                     actual_columns = actual_columns_refreshed
                     valid_columns = df_columns.intersection(actual_columns)
                     missing_in_table_after_refresh = df_columns - actual_columns
-                    
+
                     # If columns are still missing after refresh, record this to avoid repeated attempts
                     if missing_in_table_after_refresh == missing_in_table:
                         _cache_refresh_failures[refresh_key] = current_time
-                    
+
                     missing_in_table = missing_in_table_after_refresh
                     log.debug(f"Cache refresh completed for {table_name}, found {len(actual_columns)} columns")
                 else:
