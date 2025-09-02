@@ -282,27 +282,56 @@ _table_columns_cache = {}
 # Track warnings to avoid repeated logging of the same column issues
 _column_warning_cache = {}
 
+# Track failed cache refresh attempts to avoid repeated refresh attempts
+_cache_refresh_failures = {}
+
 def clear_table_columns_cache():
     """Clear the table columns cache. Useful after database migrations."""
     _table_columns_cache.clear()
     _column_warning_cache.clear()
+    _cache_refresh_failures.clear()
 
 
 def _should_log_column_warning(table_name: str, missing_columns: set) -> bool:
     """
     Check if we should log a warning about missing columns.
     Rate-limits repeated warnings about the same missing columns for the same table.
+    Implements aggressive rate limiting for known issues to prevent memory problems.
     """
     import time
 
     warning_key = (table_name, frozenset(missing_columns))
     current_time = time.time()
 
-    # Rate limit: only log the same warning once per 60 seconds
+    # Special handling for adj_close column warnings - these are often expected
+    # during data ingestion and should be rate-limited more aggressively
+    if 'adj_close' in missing_columns and len(missing_columns) == 1:
+        rate_limit_seconds = 300  # 5 minutes for adj_close only warnings
+    else:
+        rate_limit_seconds = 60   # 1 minute for other column warnings
+
+    # Check if we've already logged this warning recently
     if warning_key in _column_warning_cache:
         last_logged = _column_warning_cache[warning_key]
-        if current_time - last_logged < 60:  # 60 seconds rate limit
+        if current_time - last_logged < rate_limit_seconds:
             return False
+
+    # Implement cache size management to prevent memory growth
+    # Remove old entries if cache gets too large
+    MAX_CACHE_SIZE = 100
+    if len(_column_warning_cache) > MAX_CACHE_SIZE:
+        # Remove entries older than 1 hour to free memory
+        cutoff_time = current_time - 3600
+        old_keys = [k for k, v in _column_warning_cache.items() if v < cutoff_time]
+        for k in old_keys:
+            del _column_warning_cache[k]
+        
+        # If still too large after cleanup, remove oldest entries
+        if len(_column_warning_cache) > MAX_CACHE_SIZE:
+            sorted_items = sorted(_column_warning_cache.items(), key=lambda x: x[1])
+            items_to_remove = len(_column_warning_cache) - MAX_CACHE_SIZE + 10
+            for k, _ in sorted_items[:items_to_remove]:
+                del _column_warning_cache[k]
 
     _column_warning_cache[warning_key] = current_time
     return True
@@ -404,8 +433,20 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
             # If columns are missing, try refreshing the cache in case schema has been updated
             # This handles cases where migrations have been applied but cache is stale
+            import time
+            
             table_name = table.__tablename__
-            if table_name in _table_columns_cache:
+            refresh_key = (table_name, frozenset(missing_in_table))
+            current_time = time.time()
+            
+            # Avoid repeated cache refresh attempts for the same missing columns
+            should_refresh = table_name in _table_columns_cache
+            if refresh_key in _cache_refresh_failures:
+                last_failed_refresh = _cache_refresh_failures[refresh_key]
+                # Only retry cache refresh after 10 minutes
+                should_refresh = should_refresh and (current_time - last_failed_refresh > 600)
+            
+            if should_refresh:
                 log.debug(f"Detected missing columns {missing_in_table} in {table_name}, refreshing column cache")
                 # Clear this table from cache and re-fetch
                 del _table_columns_cache[table_name]
@@ -414,19 +455,33 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 if actual_columns_refreshed is not None:
                     actual_columns = actual_columns_refreshed
                     valid_columns = df_columns.intersection(actual_columns)
-                    missing_in_table = df_columns - actual_columns
+                    missing_in_table_after_refresh = df_columns - actual_columns
+                    
+                    # If columns are still missing after refresh, record this to avoid repeated attempts
+                    if missing_in_table_after_refresh == missing_in_table:
+                        _cache_refresh_failures[refresh_key] = current_time
+                    
+                    missing_in_table = missing_in_table_after_refresh
                     log.debug(f"Cache refresh completed for {table_name}, found {len(actual_columns)} columns")
                 else:
                     log.warning(f"Failed to refresh column cache for {table_name}")
+                    _cache_refresh_failures[refresh_key] = current_time
             else:
                 # Table not in cache yet, this is the first access - no need to refresh
-                log.debug(f"Table {table_name} not in cache yet, first access")
+                if table_name not in _table_columns_cache:
+                    log.debug(f"Table {table_name} not in cache yet, first access")
+                else:
+                    log.debug(f"Skipping cache refresh for {table_name} - recently attempted for same missing columns")
 
             # Only warn and drop columns if they're still missing after cache refresh
             if df_columns != valid_columns:
                 # Rate-limit warnings to avoid log spam and memory issues
                 if _should_log_column_warning(table.__tablename__, missing_in_table):
-                    log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
+                    # Use DEBUG level for known issues like adj_close to reduce log noise
+                    if 'adj_close' in missing_in_table and len(missing_in_table) == 1:
+                        log.debug(f"Dropping adj_close column (not present in {table.__tablename__}). This may indicate pending migration.")
+                    else:
+                        log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
                 df = df[list(valid_columns)]
 
         if df.empty:
