@@ -1,4 +1,5 @@
-"""Alter predictions primary key to include model version.
+"""
+Alter predictions primary key to include model version.
 
 Revision ID: 20250822_03
 Revises: 20250822_02
@@ -17,8 +18,12 @@ depends_on = None
 
 def upgrade() -> None:
     """Ensure ``model_version`` column exists and update PK."""
+    # Use SQLAlchemy inspector to check existing columns to avoid duplicate adds
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    cols = [c["name"] for c in inspector.get_columns("predictions")]
+
     with op.batch_alter_table("predictions") as batch_op:
-        cols = [c["name"] for c in batch_op.get_columns()]
         if "model_version" not in cols:
             batch_op.add_column(
                 sa.Column(
