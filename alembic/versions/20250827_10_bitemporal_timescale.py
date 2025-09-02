@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import text
 
-# revision identifiers, used by Alembic.
+# revision identifiers
 revision = '20250827_10_bitemporal_timescale'
 down_revision = '20250824_000828_avail'
 branch_labels = None
