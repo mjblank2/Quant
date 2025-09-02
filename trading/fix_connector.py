@@ -3,7 +3,7 @@ import socket
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Callable
+from typing import Dict, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 import logging
@@ -23,7 +23,7 @@ class OrderStatus(Enum):
     FILLED = "2"
     DONE_FOR_DAY = "3"
     CANCELED = "4"
-    REPLACED = "8"
+    REPLACED = "5"
     PENDING_CANCEL = "6"
     REJECTED = "8"
 
