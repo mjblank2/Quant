@@ -121,6 +121,14 @@ The `render.yaml` defines these services:
 - **Port**: Automatically assigned by Render
 - **Environment**: `SERVICE=web APP_MODE=streamlit`
 
+#### Data Ingestion API Service
+- **Name**: `data-ingestion-service`
+- **Type**: Web Service
+- **Build**: Docker
+- **Port**: Automatically assigned by Render
+- **Environment**: `SERVICE=web APP_MODE=api`
+- **Endpoints**: `/health`, `/ingest`, `/metrics`, `/status`
+
 #### Worker Service (Background Tasks)
 - **Name**: `quant-worker`  
 - **Type**: Worker
@@ -151,6 +159,11 @@ alembic upgrade head
 #### Check Web Service
 - Access the Streamlit dashboard via Render's provided URL
 - Verify database connection and basic functionality
+
+#### Check Data Ingestion API Service
+- Test the health endpoint: `https://data-ingestion-service-abcd.onrender.com/health`
+- Verify API endpoints are accessible: `https://data-ingestion-service-abcd.onrender.com/`
+- Test data ingestion: `curl -X POST https://data-ingestion-service-abcd.onrender.com/ingest -H "Content-Type: application/json" -d '{"days": 1}'`
 
 #### Check Worker Service  
 - Review worker logs for successful startup
