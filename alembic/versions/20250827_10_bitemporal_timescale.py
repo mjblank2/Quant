@@ -42,11 +42,19 @@ def upgrade():
                      sa.Column('knowledge_date', sa.Date(), nullable=True))
         
         # Initialize knowledge_date based on available_at or as_of + reporting lag
-        conn.execute(text("""
-        UPDATE fundamentals 
-        SET knowledge_date = COALESCE(available_at, as_of + INTERVAL '1 day')
-        WHERE knowledge_date IS NULL
-        """))
+        # Check if available_at column exists before using it
+        if 'available_at' in fund_cols:
+            conn.execute(text("""
+            UPDATE fundamentals 
+            SET knowledge_date = COALESCE(available_at, as_of + INTERVAL '1 day')
+            WHERE knowledge_date IS NULL
+            """))
+        else:
+            conn.execute(text("""
+            UPDATE fundamentals 
+            SET knowledge_date = as_of + INTERVAL '1 day'
+            WHERE knowledge_date IS NULL
+            """))
     
     # Add data validation metadata table
     op.create_table('data_validation_log',
