@@ -9,12 +9,14 @@ import logging
 log = logging.getLogger(__name__)
 
 def _compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    """Computes Relative Strength Index."""
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
     avg_gain = gain.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+    # Add epsilon to avoid division by zero
+    rs = avg_gain / (avg_loss + 1e-8)
     return 100.0 - (100.0 / (1.0 + rs))
 
 def _last_feature_dates() -> dict[str, pd.Timestamp]:
@@ -162,11 +164,10 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 g['market_cap_pit'] = g['price_feat'] * g['shares']
             else:
                 # Fallback: estimate market cap using median volume-to-shares ratio
-                # This provides a rough approximation when shares outstanding data is missing
                 median_volume = g['volume'].median()
-                estimated_shares = median_volume * 10  # Conservative estimate: 10x median volume
+                estimated_shares = median_volume * 10  # Conservative estimate
                 g['market_cap_pit'] = g['price_feat'] * estimated_shares
-                log.debug(f"No shares outstanding data for {sym}, using estimated market cap")
+                log.debug(f"No shares outstanding for {sym}, using estimated market cap")
 
             mc = g['market_cap_pit']
             g['size_ln'] = np.log(mc.clip(lower=1.0))
@@ -190,19 +191,16 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 var = g['mret'].rolling(63).var()
                 g['beta_63'] = cov / var.replace(0, np.nan)
             else:
-                # Fallback: use market-neutral beta when market returns unavailable
-                g['beta_63'] = 1.0
+                g['beta_63'] = 1.0 # Fallback
                 if 'mret' not in g.columns:
-                    log.debug(f"No market returns data available, using beta=1.0 for {sym}")
+                    log.debug(f"No market returns data, using beta=1.0 for {sym}")
 
             # finalize
             last_ts = last_map.get(sym)
             if last_ts is not None and not pd.isna(last_ts):
                 g = g[g['ts'] > pd.Timestamp(last_ts)]
 
-            # Define essential features and create final columns
-            essential = ['ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14','turnover_21','size_ln','adv_usd_21','overnight_gap','illiq_21','beta_63']
-            fcols = ['symbol','ts'] + essential + ['f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio']
+            fcols = ['symbol','ts'] + ['ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14','turnover_21','size_ln','adv_usd_21','overnight_gap','illiq_21','beta_63'] + ['f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio']
             g['f_pe_ttm'] = g.get('pe_ttm')
             g['f_pb'] = g.get('pb')
             g['f_ps_ttm'] = g.get('ps_ttm')
@@ -212,70 +210,20 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['f_profit_margin'] = g.get('profit_margins')
             g['f_current_ratio'] = g.get('current_ratio')
 
-            # More flexible filtering: require at least core price/momentum features
-            # but allow auxiliary features (size, turnover, beta) to be NaN
-            core_features = ['ret_1d', 'ret_5d', 'ret_21d', 'vol_21', 'rsi_14', 'overnight_gap', 'adv_usd_21', 'illiq_21']
-            available_core = [f for f in core_features if f in g.columns]
-            
-            # Keep rows that have valid core features (allow auxiliary features to be NaN)
-            if available_core:
-                keep_idx = g[available_core].dropna().index
-            else:
-                # Fallback: keep rows with any non-NaN price features
-                keep_idx = g[['ret_1d']].dropna().index
-            
-            g2 = g.loc[keep_idx, fcols].copy()
+            core_features = ['ret_1d', 'ret_5d', 'vol_21']
+            g2 = g.dropna(subset=core_features)[fcols].copy()
             if len(g2) > 0:
                 out_frames.append(g2)
 
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
-            
-            # Fix: Deduplicate rows with same symbol+date but different timestamps
-            # This prevents CardinalityViolation errors in ON CONFLICT DO UPDATE
-            original_count = len(feats)
-            
-            # Normalize timestamps to dates to avoid timezone/time component issues
-            feats['ts'] = feats['ts'].dt.normalize()
-            
-            # Check for duplicates before deduplication
-            duplicate_check = feats.groupby(['symbol', 'ts']).size()
-            duplicates_found = (duplicate_check > 1).sum()
-            
-            if duplicates_found > 0:
-                log.warning(f"Found {duplicates_found} symbol+date pairs with multiple rows. Deduplicating by keeping latest values.")
-                
-                # Keep the latest row for each symbol+date combination
-                # Use the row index as a tiebreaker (later rows are "more recent")
-                latest_indices = feats.groupby(['symbol', 'ts']).tail(1).index
-                feats = feats.loc[latest_indices].reset_index(drop=True)
-                
-                deduplicated_count = len(feats)
-                log.info(f"Deduplication: {original_count} -> {deduplicated_count} rows ({original_count - deduplicated_count} duplicates removed)")
-            
-            # Final safety check before upsert to ensure no duplicates remain
-            final_duplicate_check = feats.groupby(['symbol', 'ts']).size()
-            final_duplicates = (final_duplicate_check > 1).sum()
-            if final_duplicates > 0:
-                log.error(f"CRITICAL: {final_duplicates} duplicates still exist after deduplication! This should not happen.")
-                log.error("Duplicate pairs: %s", final_duplicate_check[final_duplicate_check > 1].to_dict())
-                # Emergency deduplication - should not be needed but prevents pipeline failure
-                feats = feats.drop_duplicates(subset=['symbol', 'ts'], keep='last').reset_index(drop=True)
-                log.error(f"Emergency deduplication applied, final row count: {len(feats)}")
-
-            upsert_dataframe(feats, Feature, ['symbol', 'ts'])
+            upsert_dataframe(feats, Feature, ['symbol','ts'])
             new_rows.append(feats)
             log.info(f"Batch completed. New rows: {len(feats)}")
 
-    total_features = sum(len(batch) for batch in new_rows) if new_rows else 0
-    total_symbols = len(set().union(*[batch['symbol'].unique() for batch in new_rows])) if new_rows else 0
-    
-    log.info(f"Feature build complete. Generated {total_features} feature rows for {total_symbols} symbols.")
-    if total_features == 0:
-        log.warning("No features were generated. Check data availability and essential feature requirements.")
-    
     return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     build_features()
+
