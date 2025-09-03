@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Run after merging or pulling new changes to keep code formatted.
+set -Eeuo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "🛠️  Post-merge hook: running Black formatter"
+black .
+
+echo "✅ Formatting complete. Happy hacking!"
