@@ -8,9 +8,9 @@
 
 Safe to re-run; all DDL guarded by inspector checks or IF NOT EXISTS.
 
-Revision ID: 20250827_10
-Revises: 20250825_07
-Create Date: 2025-08-27
+Revision ID: 20250903_01
+Revises: 20250827_12
+Create Date: 2025-09-03
 """
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
-revision = "20250827_10"
-down_revision = "20250825_07"
+revision = "20250903_01"
+down_revision = "20250827_12"
 branch_labels = None
 depends_on = None
 
