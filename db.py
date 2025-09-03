@@ -521,6 +521,16 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
                     # Recursively call with much smaller chunks and no connection (will create new transaction)
                     smaller_df = pd.DataFrame(records)
+
+                    # CRITICAL FIX: Ensure no duplicates exist in retry data to prevent CardinalityViolation
+                    # Remove any duplicate rows based on the conflict columns before retry
+                    if len(smaller_df) > 0 and conflict_cols:
+                        original_size = len(smaller_df)
+                        smaller_df = smaller_df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
+                        dedupe_size = len(smaller_df)
+                        if dedupe_size < original_size:
+                            log.warning(f"Removed {original_size - dedupe_size} duplicate rows during retry to prevent CardinalityViolation")
+
                     upsert_dataframe(smaller_df, table, conflict_cols, chunk_size=10, conn=None)
                 else:
                     # Re-raise if it's not a parameter limit issue or if we're already at minimum size

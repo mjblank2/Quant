@@ -253,7 +253,17 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 deduplicated_count = len(feats)
                 log.info(f"Deduplication: {original_count} -> {deduplicated_count} rows ({original_count - deduplicated_count} duplicates removed)")
             
-            upsert_dataframe(feats, Feature, ['symbol','ts'])
+            # Final safety check before upsert to ensure no duplicates remain
+            final_duplicate_check = feats.groupby(['symbol', 'ts']).size()
+            final_duplicates = (final_duplicate_check > 1).sum()
+            if final_duplicates > 0:
+                log.error(f"CRITICAL: {final_duplicates} duplicates still exist after deduplication! This should not happen.")
+                log.error("Duplicate pairs: %s", final_duplicate_check[final_duplicate_check > 1].to_dict())
+                # Emergency deduplication - should not be needed but prevents pipeline failure
+                feats = feats.drop_duplicates(subset=['symbol', 'ts'], keep='last').reset_index(drop=True)
+                log.error(f"Emergency deduplication applied, final row count: {len(feats)}")
+
+            upsert_dataframe(feats, Feature, ['symbol', 'ts'])
             new_rows.append(feats)
             log.info(f"Batch completed. New rows: {len(feats)}")
 
