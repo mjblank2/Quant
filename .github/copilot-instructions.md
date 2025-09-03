@@ -1,270 +1,335 @@
-# Small-Cap Quantitative Trading System
+# Small-Cap Quantitative Trading System (v17)
 
-**Always follow these instructions first and fallback to search or bash commands only when encountering unexpected information that does not match the info here.**
+**Always follow these instructions first and fall back to search or ad‑hoc commands only when something doesn’t match what’s documented here.**
 
-The Small-Cap Quant System is a sophisticated quantitative trading platform built with Python, featuring Polygon/Alpaca market data integration, machine learning models, portfolio optimization, and institutional-grade execution algorithms.
+This system is a small-cap quantitative trading platform in Python with:
+- Market data via Polygon (PTI), Alpaca Markets, and optional Tiingo
+- ML models (XGBoost, Random Forest, Ridge) with blending and regime gating
+- Advanced portfolio optimization (CVXPY MVO with robust fallbacks)
+- Point-in-time data governance (available_at, knowledge_date) and bi-temporal support
+- TimescaleDB optional acceleration for time-series tables
+- Task queue (Celery + Redis) for async pipelines
+- Streamlit operator UI and a generic data dashboard
+
 
 ## Quick Start & Environment Setup
 
-**CRITICAL**: Set up environment variables first before any operations:
+CRITICAL: Export environment variables before any operation.
+
 ```bash
-# Copy environment template and configure
-cp .env .env.local  # edit with your DATABASE_URL, API keys
+# Copy and customize local env (example)
+cp .env .env.local  # then edit with your connection string and API keys
+
+# Database DSN (PostgreSQL recommended). The app auto-normalizes postgres:// to postgresql+psycopg://
 export DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"
+
+# Market data providers
 export POLYGON_API_KEY="your_polygon_key"
-export ALPACA_API_KEY="your_alpaca_key"
-export ALPACA_SECRET_KEY="your_alpaca_secret"
+# Prefer APCA_*; ALPACA_* is still accepted as fallback
+export APCA_API_KEY_ID="your_alpaca_key"
+export APCA_API_SECRET_KEY="your_alpaca_secret"
+export APCA_API_BASE_URL="https://paper-api.alpaca.markets"  # paper by default
+export ALPACA_DATA_FEED="sip"  # or 'iex' on some plans
+export TIINGO_API_KEY="your_tiingo_key"  # optional
+
+# Task queue
+export REDIS_URL="redis://localhost:6379/0"
+export CELERY_BROKER_URL="$REDIS_URL"
+export CELERY_RESULT_BACKEND="$REDIS_URL"
+
+# Feature toggles (defaults shown)
+export ENABLE_STRUCTURED_LOGGING=1
+export ENABLE_TIMESCALEDB=1
+export ENABLE_DATA_VALIDATION=1
+export USE_UNIVERSE_HISTORY=1
+export REGIME_GATING=1
 ```
+
 
 ## Building and Dependencies
 
-**NEVER CANCEL builds or installations. Set timeouts to 300+ seconds.**
+NEVER CANCEL builds or installations. Set timeouts >= 300 seconds.
 
 ```bash
-# Install dependencies (takes ~1-2 minutes)
+# Base dependencies (~1–2 minutes in CI)
 pip install -r requirements.txt
+# Extra pin for psycopg wheels (optional on many systems)
 pip install -r requirements.extra.txt
 
-# Install additional dev tools for linting
-pip install flake8 pytest
+# Dev tools
+pip install flake8 pytest pytest-asyncio
 
-# Verify installation
-python -c "import streamlit, sqlalchemy, xgboost, cvxpy; print('Core dependencies OK')"
+# Smoke import check
+python - <<'PY'
+import streamlit, sqlalchemy, xgboost, cvxpy, celery, fastapi, great_expectations
+print('Core + optional deps OK')
+PY
 ```
 
-**Actual timing measured**: 
-- requirements.txt: 1m 13s
-- requirements.extra.txt: 1.4s  
-- dev tools: 3.9s
-- Total: ~1-2 minutes as documented. NEVER cancel during package downloads.
+Actual timing (reference, Ubuntu CI):
+- requirements.txt: ~1m 10s–1m 20s
+- requirements.extra.txt: ~1–2s
+- Dev tools: ~4s
+
 
 ## Database Setup and Migrations
 
-**Database is REQUIRED for most functionality. Known issue with multiple migration heads.**
+A database is required for most functionality. The migration history may have multiple heads; always upgrade to heads.
 
 ```bash
-# RECOMMENDED: Use alembic heads instead of head due to multiple head issue
+# Preferred (handles multi-head):
 alembic upgrade heads
 
-# Alternative: try data_infra_cli (also affected by migration conflicts)
-python scripts/data_infra_cli.py migrate
+# If Alembic CLI is confused by PYTHONPATH shadowing, run with a clean path:
+PYTHONPATH="" alembic upgrade heads
 
-# For testing: use SQLite (may have migration conflicts)
+# For quick local testing without Postgres (some migrations become no-ops):
 export DATABASE_URL="sqlite:///test.db"
 ```
 
-**Known Issues**: The database migration system currently has multiple head revisions that cause conflicts. This affects both `alembic upgrade head` and the data_infra_cli script. Use `alembic upgrade heads` or skip database-dependent features for validation.
+TimescaleDB and Bi-temporal notes:
+- Migrations are resilient and idempotent for fundamentals.available_at, fundamentals.knowledge_date, indexes, and shares_outstanding. Safe to re-run.
+- Optional TimescaleDB hypertable conversion for daily_bars is attempted on Postgres. Permissions may be required by your DB host.
+
+Helpful CLI for infrastructure operations:
+```bash
+# TimescaleDB and validation utilities
+python scripts/data_infra_cli.py --help
+python scripts/data_infra_cli.py timescale --check
+python scripts/data_infra_cli.py timescale --setup   # creates hypertables when possible
+python scripts/data_infra_cli.py validate --full    # runs data validation pipeline
+python scripts/data_infra_cli.py health-check       # institutional ingest health check
+```
+
+Known migration caveats:
+- Multiple migration branches exist; always use "heads" not "head".
+- On CI or containerized builds, SSL or permission issues can surface when running DDL (extensions). These are environment-specific and don’t indicate app bugs.
+
 
 ## Running the Application
 
-### Streamlit Web Application
+### Streamlit Operator UI
 ```bash
-# Main operator interface (requires DATABASE_URL)
+# Requires DATABASE_URL
 streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
 
-# Alternative dashboard (may work with limited DB access)
+### Generic Data Dashboard
+```bash
+# Adapts to your schema; still requires DATABASE_URL to connect
 streamlit run data_ingestion/dashboard.py --server.port 8501 --server.address 0.0.0.0
 ```
 
-### Docker Deployment
+### Task Queue (Celery + Redis)
+Enable async pipelines and long-running jobs from the UI.
+
 ```bash
-# Build container (may fail in CI environments due to SSL issues)
-docker build -t smallcap-quant:latest .
+# Start Redis (choose one)
+# macOS (Homebrew):
+brew services start redis
+# Docker:
+docker run --rm -p 6379:6379 redis:7
 
-# Run web service
-docker run -e DATABASE_URL="..." -e POLYGON_API_KEY="..." -p 8501:8501 smallcap-quant:latest
-
-# Run worker mode
-docker run -e SERVICE=worker -e DATABASE_URL="..." smallcap-quant:latest
-
-# Run cron/pipeline mode
-docker run -e SERVICE=cron -e DATABASE_URL="..." smallcap-quant:latest
+# Start Celery worker from repo root
+celery -A tasks worker --loglevel=info
+# Windows or limited environments may prefer:
+# celery -A tasks worker --pool=solo --loglevel=info
 ```
 
-**Docker Build Issues**: In CI environments, Docker build may fail at ~43 seconds due to SSL certificate verification errors with PyPI. This is an environment-specific issue, not a fundamental Dockerfile problem. In normal environments, build takes 5-10 minutes. NEVER CANCEL. Set timeout to 1200+ seconds.
+In the Streamlit sidebar, check "Use Task Queue (async)" to dispatch jobs (rebuild universe, ingest, features, train, backtest, generate trades, broker sync, full pipeline).
+
+### Docker Deployment
+```bash
+# Build image (may fail in CI due to PyPI SSL issues unrelated to Dockerfile)
+docker build -t smallcap-quant:latest .
+
+# Web service (entrypoint supports SERVICE, APP_MODE, PORT)
+# Default PORT in entrypoint is 10000
+docker run --rm \
+  -e DATABASE_URL="postgresql+psycopg://user:pass@host/db" \
+  -e POLYGON_API_KEY=... -e APCA_API_KEY_ID=... -e APCA_API_SECRET_KEY=... \
+  -e SERVICE=web -e APP_MODE=streamlit -e PORT=10000 \
+  -p 10000:10000 smallcap-quant:latest
+
+# Worker mode
+docker run --rm -e SERVICE=worker -e DATABASE_URL="..." smallcap-quant:latest
+
+# Cron/pipeline mode
+docker run --rm -e SERVICE=cron   -e DATABASE_URL="..." smallcap-quant:latest
+```
+
+Docker build note: CI runners sometimes fail around ~40–50s with SSL certificate verification errors pulling wheels. This is environmental.
+
 
 ## Testing and Validation
 
-### Unit Tests
+### Unit/Smoke Tests
 ```bash
-# Run individual test files (work without DB)
-python test_alpha_factory.py          # ~1.2 seconds
-python test_phase4_optimization.py    # ~1.1 seconds
+# Fast smoke tests that don’t require a running broker
+python test_alpha_factory.py          # ~1.2s
+python test_phase4_optimization.py    # ~1.1s
 
-# Run pytest suite (most tests require DATABASE_URL)
-python -m pytest test_phase2_infrastructure.py -v  # ~1.1 seconds, works despite DB issues
-python -m pytest test_integration_phase2.py -v     # requires DB
+# Phase 2 infrastructure tests (many parts mock DB / set env)
+python -m pytest test_phase2_infrastructure.py -v  # ~1.1s
+python -m pytest test_integration_phase2.py -v     # imports + config checks; sets a mock DATABASE_URL
 ```
 
 ### Code Quality
 ```bash
-# Lint code (always run before committing)
+# Lint key files
 flake8 app.py config.py --count
-flake8 --max-line-length=160 .  # full project lint
-
-# Expected: Many style violations exist - document but continue
+# Full project lint (longer)
+flake8 --max-line-length=160 .
 ```
 
-**Actual timing measured**: Individual tests run in 1.1-1.2 seconds. Pytest suite takes 1.1 seconds. All timing is accurate as documented.
+Observed timings (reference): individual tests ~1.1–1.2s; pytest phase2 ~1.1s.
+
 
 ## Core Workflows
 
-### Data Pipeline (Full EOD Process)
+### End-of-Day Pipeline
 ```bash
-# Full production pipeline (requires API keys + DATABASE_URL)
+# Full pipeline (requires API keys + DATABASE_URL)
 python run_pipeline.py
-
-# Individual components
-python -m models.features          # Feature engineering
-python -c "from validation.wfo import run_wfo; print(run_wfo())"  # Walk-forward optimization (if available)
 ```
 
-### Key Modules and Entry Points
+### Individual Steps (from UI or CLI)
 ```bash
-# Feature engineering
+# Universe + data
+ython -c "from data.universe import rebuild_universe; print(rebuild_universe()[:5])"
+python -c "from data.ingest import ingest_bars_for_universe; ingest_bars_for_universe(730)"  # ~2y backfill
+python -c "from data.fundamentals import fetch_fundamentals_for_universe; print(fetch_fundamentals_for_universe().shape)"
+
+# Features / ML
 python -m models.features
+python -c "from models.ml import train_and_predict_all_models; outs=train_and_predict_all_models(); print(sum(len(v) for v in outs.values()) if outs else 0)"
 
-# ML model training and prediction
-python -m models.ml
-
-# Trade generation
-python trading/generate_trades.py
-
-# Data ingestion
-python data/ingest.py
+# Trades / Broker
+python -c "from trading.generate_trades import generate_today_trades; print(len(generate_today_trades()))"
+python -c "from trading.broker import sync_trades_to_broker; print(sync_trades_to_broker([]))"  # pass real IDs
 ```
+
 
 ## Manual Validation Scenarios
 
-**ALWAYS test these complete scenarios after making changes:**
+ALWAYS run these after meaningful changes.
 
-### Scenario 1: Basic Application Startup
-1. Set DATABASE_URL environment variable
-2. Run `alembic upgrade heads` (note: use 'heads' not 'head' due to migration conflicts)
-3. Start Streamlit: `streamlit run app.py` (starts successfully despite DB migration issues)
-4. Verify the web interface loads at http://localhost:8501
-5. Check that sidebar navigation works
+### Scenario 1: Basic App Startup
+1. Set DATABASE_URL
+2. Run Alembic migrations: `alembic upgrade heads` (or `PYTHONPATH="" alembic upgrade heads`)
+3. Start Streamlit: `streamlit run app.py`
+4. Confirm UI loads at http://localhost:8501 and top metrics show timestamps
 
-### Scenario 2: Core Testing Without Database
-1. Run `python test_alpha_factory.py` - completes in ~1.2 seconds, shows "🎉 All tests passed!"
-2. Run `python test_phase4_optimization.py` - completes in ~1.1 seconds, shows "🎉 All Phase 4 smoke tests passed!"
-3. Verify no import errors in core modules: `python -c "from models import features, ml; from data import ingest; from trading import generate_trades; print('All imports successful')"`
+### Scenario 2: Async Task Queue
+1. Start Redis and a Celery worker
+2. In the Streamlit sidebar, enable "Use Task Queue (async)"
+3. Dispatch Rebuild Universe → Ingest → Features → Train → Generate Trades
+4. Monitor Task Monitoring panel for status and errors
 
 ### Scenario 3: Docker Validation
-1. Build: `docker build -t test-quant .` (may fail in CI environments due to SSL issues)
-2. Test startup: `docker run --rm -e DATABASE_URL="sqlite:///test.db" -p 8501:8501 test-quant` (if build succeeds)
-3. Verify container starts without crashes
+1. Build: `docker build -t test-quant .`
+2. Run: `docker run --rm -e DATABASE_URL="sqlite:///test.db" -e PORT=10000 -p 10000:10000 test-quant`
+3. Verify container starts; Alembic tries `upgrade heads` and continues even if migrations warn
 
 ### Scenario 4: Verification Scripts
-1. Run `python scripts/verify_render_setup.py` - should complete in ~0.06 seconds showing "🎉 All checks passed!"
-2. Test entrypoint: `chmod +x scripts/entrypoint.sh && export SERVICE=web APP_MODE=streamlit && scripts/entrypoint.sh` (works with migration warnings)
+1. `python scripts/verify_render_setup.py` → should print "All checks passed" items with ✅
+2. `chmod +x scripts/entrypoint.sh && SERVICE=web APP_MODE=streamlit scripts/entrypoint.sh` → should start or error clearly on missing env
 
-## Timing Expectations and Warnings
 
-**NEVER CANCEL these operations:**
+## Timing Expectations and Timeouts
 
-- **Dependency installation**: 1-2 minutes (measured: requirements.txt 1m13s, extra 1.4s). Timeout: 300+ seconds.
-- **Docker build**: 5-10 minutes for full build (fails in CI at 43s due to SSL issues). Timeout: 1200+ seconds.
-- **Database migrations**: 10-30 seconds (may fail due to multiple head conflicts). Timeout: 120 seconds.
-- **Model training** (with data): 5-30 minutes depending on dataset. Timeout: 3600+ seconds.
-- **Full pipeline execution**: 10-60 minutes depending on universe size. Timeout: 7200+ seconds.
-- **Individual tests**: 1-2 seconds each (measured: 1.1-1.2s). Timeout: 60 seconds.
-- **Verification scripts**: Under 1 second (measured: 0.06s). Timeout: 30 seconds.
+NEVER CANCEL these operations:
+- Dependency installation: 1–2 minutes. Timeout: 300+ seconds.
+- Docker build: 5–10 minutes. Timeout: 1200+ seconds.
+- Database migrations: 10–30 seconds (multi-head tolerant). Timeout: 120 seconds.
+- Model training (with data): 5–30 minutes, dataset dependent. Timeout: 3600+ seconds.
+- Full pipeline execution: 10–60 minutes, universe dependent. Timeout: 7200+ seconds.
+- Individual tests: 1–2 seconds each. Timeout: 60 seconds.
+- Verification scripts: < 1 second. Timeout: 30 seconds.
+
 
 ## Troubleshooting
 
-### Common Issues
-1. **"DATABASE_URL environment variable is required"**
-   - Set DATABASE_URL before running any data operations
-   - Use SQLite for testing: `export DATABASE_URL="sqlite:///test.db"`
+Common issues and fixes:
+1) "DATABASE_URL environment variable is required"
+   - Set DATABASE_URL. For local smoke: `export DATABASE_URL="sqlite:///test.db"`
 
-2. **Database migration multiple head conflicts**
-   - Use `alembic upgrade heads` instead of `alembic upgrade head`
-   - Known issue: migrations have conflicting head revisions
-   - Alternative: skip database-dependent features for testing
+2) Alembic migration conflicts / multiple heads
+   - Use `alembic upgrade heads` (not `head`). In CI, run with `PYTHONPATH=""` to avoid alembic package shadowing.
 
-3. **Import errors for modules requiring database**
-   - Most core modules require DATABASE_URL to import
-   - Use test files that work without DB for validation
+3) TimescaleDB extension or hypertable creation errors
+   - Permission-related on managed Postgres. Use `scripts/data_infra_cli.py timescale --check` and proceed without Timescale if unavailable.
 
-4. **API quota exceeded**
-   - Check Polygon/Alpaca API quotas
-   - Reduce universe size in testing
+4) Docker build SSL errors in CI
+   - Environment-specific PyPI SSL verification. Retry or pin mirrors; local builds typically succeed.
 
-5. **Docker build SSL failures in CI**
-   - Common in CI environments due to certificate verification
-   - Not a fundamental Dockerfile issue
-   - Works in normal development environments
+5) Import errors when DATABASE_URL not set
+   - Many modules import db.py which requires DATABASE_URL. Set a local SQLite URL for imports/tests.
 
-### What Works Without Database
-- `test_alpha_factory.py` - Feature and validation testing (1.2s)
-- `test_phase4_optimization.py` - Portfolio optimization tests (1.1s)
-- `test_phase2_infrastructure.py` - Infrastructure tests (1.1s, works despite DB issues)
-- Linting with flake8 (shows expected violations)
-- Docker build process (may fail in CI due to SSL)
-- Basic import testing of core modules
-- Streamlit application startup (loads with migration warnings)
-- `scripts/verify_render_setup.py` - Deployment verification (0.06s)
+6) Celery/Redis connectivity
+   - Ensure Redis is running and `REDIS_URL` matches. Start worker from repo root so `tasks` module resolves.
 
-### What Requires Database
-- Data ingestion and pipeline (`run_pipeline.py`)
-- Full integration tests without mocking
-- Model training and backtesting with real data
-- Trade generation with real data
-- Database-dependent Streamlit features
+7) API quotas / rate limits
+   - Reduce symbol universe or backfill window; monitor provider usage.
+
+What works without a real Postgres DB:
+- `test_alpha_factory.py`, `test_phase4_optimization.py`
+- `test_phase2_infrastructure.py` and `test_integration_phase2.py` (they set/patch env/engine)
+- Linting with flake8
+- Docker build (CI SSL caveats)
+
+Requires a database:
+- Data ingestion and EOD pipeline
+- Full backtests and trade generation with real data
+- Streamlit features that query tables
+
 
 ## Key File Locations
 
-**Configuration**: `config.py` - All environment variables and settings
-**Main Entry**: `app.py` - Streamlit web application
-**Pipeline**: `run_pipeline.py` - Full EOD data processing
-**Database**: `db.py` - SQLAlchemy models and connections
-**Models**: `models/` - ML model training and prediction
-**Data**: `data/` - Ingestion, validation, and processing
-**Trading**: `trading/` - Order generation and broker integration
-**Tests**: `test_*.py` - Unit and integration tests
-**Docker**: `Dockerfile`, `scripts/entrypoint.sh` - Containerization
-**Migrations**: `alembic/` - Database schema management
+- Configuration: `config.py` (env vars, toggles, logging)
+- Main UI: `app.py` (Streamlit operator UI)
+- Dashboard: `data_ingestion/dashboard.py`
+- Pipeline: `run_pipeline.py` (checks, migrations, orchestration helpers)
+- Database: `db.py` (SQLAlchemy models, engine, upserts)
+- Models: `models/` (features, ML, regimes, transformers)
+- Risk: `risk/` (covariance, sector neutralization, risk model)
+- Portfolio: `portfolio/` (MVO optimizer and fallbacks)
+- Trading: `trading/` (trade generation, broker sync)
+- Data Infra: `data/validation.py`, `data/timescale.py`, `data/institutional_ingest.py`
+- Tasks: `tasks/` (Celery tasks, dispatch utilities)
+- Migrations: `alembic/` (use `heads`)
+- Scripts: `scripts/entrypoint.sh`, `scripts/verify_render_setup.py`, `scripts/data_infra_cli.py`
+- Tests: `test_*.py`
 
-## Development Workflow
-
-1. **Always** set environment variables first
-2. **Always** run `alembic upgrade heads` after DB changes (note: use 'heads' not 'head')
-3. **Always** run linting before commits: `flake8 --max-line-length=160 .`
-4. **Always** test changes with validation scenarios above
-5. **Always** use appropriate timeouts for long-running operations (see timing section)
-6. **Never** cancel builds, installations, or long-running data operations
-7. **Always** test both individual test files for quick validation
-8. **Always** run `python scripts/verify_render_setup.py` before deployment
 
 ## Production Notes
 
-- Uses PostgreSQL with TimescaleDB extension for time-series data
-- Integrates with Polygon.io and Alpaca Markets APIs
-- Supports institutional execution algorithms (VWAP, TWAP)
-- Includes advanced portfolio optimization with CVXPY
-- Features walk-forward backtesting and validation
-- Includes Docker deployment for Render/cloud platforms
+- PostgreSQL + (optional) TimescaleDB extension for time-series
+- Provider integrations: Polygon.io (PTI), Alpaca Markets, optional Tiingo
+- Execution support: VWAP/TWAP and TCA hooks; portfolio construction with liquidity and beta constraints
+- Walk-forward backtesting and validation tools
+- Docker-first deployment; Render-friendly entrypoint with SERVICE/APP_MODE
+
 
 ## Validation Summary
 
-**Last validated**: August 2025
-**Validation environment**: CI/Ubuntu with Python 3.12
+- Last validated: September 2025
+- Validation environment: CI/Ubuntu, Python 3.12
 
-**Working commands** (all tested and timing verified):
-- `pip install -r requirements.txt` (1m 13s)
-- `pip install -r requirements.extra.txt` (1.4s)
-- `python test_alpha_factory.py` (1.2s)
-- `python test_phase4_optimization.py` (1.1s)
-- `python -m pytest test_phase2_infrastructure.py -v` (1.1s)
+Working commands (verified):
+- `pip install -r requirements.txt` (~1m 13s)
+- `pip install -r requirements.extra.txt` (~1–2s)
+- `python test_alpha_factory.py` (~1.2s)
+- `python test_phase4_optimization.py` (~1.1s)
+- `python -m pytest test_phase2_infrastructure.py -v` (~1.1s)
 - `streamlit run app.py` (starts successfully)
-- `streamlit run data_ingestion/dashboard.py` (starts successfully)
-- `flake8 --max-line-length=160 .` (shows expected violations)
-- `python scripts/verify_render_setup.py` (0.06s, passes all checks)
+- `streamlit run data_ingestion/dashboard.py` (connects when DATABASE_URL set)
+- `celery -A tasks worker --loglevel=info` (task queue ready with Redis)
+- `python scripts/verify_render_setup.py` (~0.06s, passes checks)
 
-**Known issues to document**:
-- Database migrations have multiple head conflicts - use `alembic upgrade heads`
-- Docker build fails in CI environments due to SSL certificate issues
-- Most functionality works despite migration warnings
+Known issues to document:
+- Multi-head Alembic history – use `alembic upgrade heads`
+- CI Docker builds may fail early due to SSL certificate verification
+- Some features require provider entitlements and may rate-limit in free tiers
 
-> ⚠️ Trading is risky; always paper trade first. Ensure API entitlements and quotas are appropriate for your use case.
+⚠️ Trading is risky; paper trade first. Ensure API entitlements/quotas match your use case.
