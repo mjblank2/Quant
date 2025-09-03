@@ -63,7 +63,7 @@ curl -X POST https://data-ingestion-service-abcd.onrender.com/ingest \
   -d '{"days": 7, "source": "api"}'
 
 # Test all endpoints
-python scripts/test_api_endpoints.py https://data-ingestion-service-abcd.onrender.com
+python scripts/api_endpoints.py https://data-ingestion-service-abcd.onrender.com
 ```
 
 ### Local API Development
