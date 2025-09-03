@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import pandas as pd
 import numpy as np
+import pandas_market_calendars as mcal
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Tuple, Optional
 from sqlalchemy import text
@@ -170,25 +171,27 @@ def check_data_completeness(symbols: List[str] = None) -> ValidationResult:
         result.add_warning("No symbols found in universe for completeness check")
         return result
     
-    # Check for missing daily bars in last 30 days
+    start_date = date.today() - timedelta(days=30)
+    end_date = date.today() - timedelta(days=1)
+    nyse = mcal.get_calendar('NYSE')
+    schedule = nyse.schedule(start_date=start_date, end_date=end_date)
+    trading_days = [d.date() for d in mcal.date_range(schedule, frequency='1D')]
+
+    if not trading_days:
+        result.add_warning("No trading days available for completeness check")
+        return result
+
     with engine.connect() as conn:
         missing_query = """
         WITH symbol_dates AS (
             SELECT s.symbol, d.ts
             FROM (SELECT unnest(%(symbols)s) as symbol) s
-            CROSS JOIN (
-                SELECT generate_series(
-                    CURRENT_DATE - INTERVAL '30 days',
-                    CURRENT_DATE - INTERVAL '1 day',
-                    '1 day'::interval
-                )::date as ts
-            ) d
-            WHERE EXTRACT(dow FROM d.ts) NOT IN (0, 6)  -- Exclude weekends
+            CROSS JOIN (SELECT unnest(%(dates)s)::date as ts) d
         ),
         existing_data AS (
-            SELECT symbol, ts FROM daily_bars 
+            SELECT symbol, ts FROM daily_bars
             WHERE symbol = ANY(%(symbols)s)
-            AND ts >= CURRENT_DATE - INTERVAL '30 days'
+              AND ts = ANY(%(dates)s)
         )
         SELECT sd.symbol, sd.ts
         FROM symbol_dates sd
@@ -196,11 +199,11 @@ def check_data_completeness(symbols: List[str] = None) -> ValidationResult:
         WHERE ed.symbol IS NULL
         ORDER BY sd.symbol, sd.ts
         """
-        
+
         missing_df = pd.read_sql_query(
-            missing_query, 
-            conn, 
-            params={'symbols': symbols}
+            missing_query,
+            conn,
+            params={'symbols': symbols, 'dates': trading_days}
         )
     
     if not missing_df.empty:
@@ -212,7 +215,7 @@ def check_data_completeness(symbols: List[str] = None) -> ValidationResult:
         )
     
     # Store completeness metrics
-    expected_records = len(symbols) * 20  # Rough estimate for 20 trading days
+    expected_records = len(symbols) * len(trading_days)
     actual_records = expected_records - len(missing_df)
     completeness_pct = (actual_records / expected_records) * 100 if expected_records > 0 else 0
     

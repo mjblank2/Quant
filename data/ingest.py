@@ -7,14 +7,20 @@ from sqlalchemy import text
 from db import engine, upsert_dataframe, DailyBar
 from config import APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL, ALPACA_DATA_FEED, TIINGO_API_KEY, POLYGON_API_KEY
 from utils_http import get_json, get_json_async
+import logging
+from tenacity import Retrying, AsyncRetrying, stop_after_attempt, wait_exponential
+
+log = logging.getLogger(__name__)
 
 
 def _bars_from_alpaca_batch(symbols: list[str], start: date, end: date) -> pd.DataFrame:
     try:
-        import alpaca_trade_api as tradeapi
-        from alpaca_trade_api.rest import TimeFrame
-        api = tradeapi.REST(key_id=APCA_API_KEY_ID, secret_key=APCA_API_SECRET_KEY, base_url=APCA_API_BASE_URL)
-        df = api.get_bars(symbols, TimeFrame.Day, start.isoformat(), end.isoformat(), adjustment='all', feed=ALPACA_DATA_FEED).df
+        for attempt in Retrying(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True):
+            with attempt:
+                import alpaca_trade_api as tradeapi
+                from alpaca_trade_api.rest import TimeFrame
+                api = tradeapi.REST(key_id=APCA_API_KEY_ID, secret_key=APCA_API_SECRET_KEY, base_url=APCA_API_BASE_URL)
+                df = api.get_bars(symbols, TimeFrame.Day, start.isoformat(), end.isoformat(), adjustment='all', feed=ALPACA_DATA_FEED).df
         if df is None or df.empty:
             return pd.DataFrame()
         df = df.reset_index().rename(columns={"timestamp": "ts"})
@@ -22,7 +28,8 @@ def _bars_from_alpaca_batch(symbols: list[str], start: date, end: date) -> pd.Da
         df["adj_close"] = df["close"]
         use = ["symbol", "ts", "open", "high", "low", "close", "adj_close", "volume", "vwap", "trade_count"]
         return df[use]
-    except Exception:
+    except Exception as e:
+        log.error(f"Failed to fetch Alpaca bars for {symbols}: {e}", exc_info=True)
         return pd.DataFrame()
 
 
@@ -30,25 +37,30 @@ async def _fetch_polygon_daily_one(symbol: str, start: date, end: date) -> pd.Da
     if not POLYGON_API_KEY:
         return pd.DataFrame()
     url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start.isoformat()}/{end.isoformat()}"
-    js = await get_json_async(url, params={"adjusted": "true", "sort": "asc", "apiKey": POLYGON_API_KEY})
     try:
+        for attempt in AsyncRetrying(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True):
+            with attempt:
+                js = await get_json_async(url, params={"adjusted": "true", "sort": "asc", "apiKey": POLYGON_API_KEY})
         res = js.get("results") or []
         if not res:
             return pd.DataFrame()
-        df = pd.DataFrame([{
-            "symbol": symbol,
-            "ts": pd.to_datetime(r["t"], unit="ms").date(),
-            "open": r.get("o"),
-            "high": r.get("h"),
-            "low":  r.get("l"),
-            "close": r.get("c"),
-            "adj_close": r.get("c"),
-            "volume": r.get("v"),
-            "vwap": r.get("vw"),
-            "trade_count": r.get("n"),
-        } for r in res])
+        df = pd.DataFrame([
+            {
+                "symbol": symbol,
+                "ts": pd.to_datetime(r["t"], unit="ms").date(),
+                "open": r.get("o"),
+                "high": r.get("h"),
+                "low":  r.get("l"),
+                "close": r.get("c"),
+                "adj_close": r.get("c"),
+                "volume": r.get("v"),
+                "vwap": r.get("vw"),
+                "trade_count": r.get("n"),
+            } for r in res
+        ])
         return df
-    except Exception:
+    except Exception as e:
+        log.error(f"Failed to fetch Polygon data for {symbol}: {e}", exc_info=True)
         return pd.DataFrame()
 
 
@@ -60,10 +72,15 @@ async def _fetch_polygon_daily(symbols: List[str], start: date, end: date) -> pd
     for i in range(0, len(symbols), batch_size):
         batch_symbols = symbols[i:i+batch_size]
         tasks = [_fetch_polygon_daily_one(s, start, end) for s in batch_symbols]
-        batch_results = await asyncio.gather(*tasks)
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process batch results immediately to reduce memory accumulation
-        batch_dfs = [d for d in batch_results if d is not None and not d.empty]
+        batch_dfs = []
+        for sym, d in zip(batch_symbols, batch_results):
+            if isinstance(d, Exception):
+                log.error(f"Failed to fetch Polygon data for {sym}: {d}", exc_info=True)
+                continue
+            if d is not None and not d.empty:
+                batch_dfs.append(d)
         if batch_dfs:
             batch_combined = pd.concat(batch_dfs, ignore_index=True)
             all_dfs.append(batch_combined)
@@ -77,8 +94,10 @@ def _fetch_tiingo_daily(symbol: str, start: date, end: date) -> pd.DataFrame:
     if not TIINGO_API_KEY:
         return pd.DataFrame()
     url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
-    js = get_json(url, params={'startDate': start.isoformat(), 'endDate': end.isoformat(), 'token': TIINGO_API_KEY})
     try:
+        for attempt in Retrying(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True):
+            with attempt:
+                js = get_json(url, params={'startDate': start.isoformat(), 'endDate': end.isoformat(), 'token': TIINGO_API_KEY})
         if not js:
             return pd.DataFrame()
         df = pd.DataFrame(js)
@@ -90,7 +109,8 @@ def _fetch_tiingo_daily(symbol: str, start: date, end: date) -> pd.DataFrame:
         df = df[[c for c in keep if c in df.columns]].copy()
         df['symbol'] = symbol
         return df
-    except Exception:
+    except Exception as e:
+        log.error(f"Failed to fetch Tiingo data for {symbol}: {e}", exc_info=True)
         return pd.DataFrame()
 
 
