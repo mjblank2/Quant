@@ -80,9 +80,10 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    # Use the DATABASE_URL from the application's config
+    # Set the URL directly before calling get_section to avoid interpolation errors
+    config.set_main_option("sqlalchemy.url", DATABASE_URL)
+    
     alembic_config = config.get_section(config.config_ini_section)
-    alembic_config['sqlalchemy.url'] = DATABASE_URL
 
     connectable = engine_from_config(
         alembic_config,
