@@ -334,8 +334,3 @@ else:
             "service": os.getenv("SERVICE", "web"),
             "note": "FastAPI not available, basic health check only"
         }
-
-            "timestamp": datetime.utcnow().isoformat(),
-            "service": os.getenv("SERVICE", "web"),
-            "note": "FastAPI not available, basic health check only"
-        }
