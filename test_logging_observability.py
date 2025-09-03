@@ -3,6 +3,7 @@
 Test script for logging and observability improvements
 """
 import asyncio
+import pytest
 from utils_logging import generate_request_id, structured_logger
 from utils_http import get_json
 from utils_http_async import get_json_async
@@ -84,6 +85,7 @@ def test_http_utilities():
     
     print("✅ HTTP utilities logging works")
 
+@pytest.mark.asyncio
 async def test_async_http_utilities():
     """Test async HTTP utilities with logging."""
     print("\n=== Testing Async HTTP Utilities with Logging ===")

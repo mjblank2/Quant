@@ -21,3 +21,6 @@ great-expectations>=0.18.0
 mlflow
 arch
 matplotlib
+
+# Development dependencies
+pytest-asyncio
