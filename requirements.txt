@@ -18,3 +18,6 @@ uvicorn>=0.20.0
 # TimescaleDB support (PostgreSQL extension)
 # Data validation and quality
 great-expectations>=0.18.0
+mlflow
+arch
+matplotlib
