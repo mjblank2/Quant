@@ -120,7 +120,7 @@ def test_cli_structure():
 def test_migration_file():
     """Test migration file exists and has correct structure."""
     try:
-        migration_file = 'alembic/versions/20250827_10_bitemporal_timescale.py'
+        migration_file = 'alembic/versions/20250827_10_resilient_bitemporal_timescale_setup.py'
         if os.path.exists(migration_file):
             print("✅ Migration file exists")
             
