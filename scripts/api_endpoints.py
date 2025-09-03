@@ -63,8 +63,8 @@ def test_endpoint(base_url: str, endpoint: str, method: str = "GET", data: Dict[
 def main():
     """Test all API endpoints."""
     if len(sys.argv) != 2:
-        print("Usage: python test_api_endpoints.py <base_url>")
-        print("Example: python test_api_endpoints.py https://data-ingestion-service-abcd.onrender.com")
+        print("Usage: python api_endpoints.py <base_url>")
+        print("Example: python api_endpoints.py https://data-ingestion-service-abcd.onrender.com")
         sys.exit(1)
         
     base_url = sys.argv[1]
