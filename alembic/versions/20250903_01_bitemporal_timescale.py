@@ -155,9 +155,21 @@ def _backfill_fundamentals_knowledge_date(conn: Connection) -> None:
                 """
             )
     try:
-        conn.execute(sql)
-    except Exception:
+        # Use a savepoint to isolate this operation from the main transaction
+        # This prevents the entire migration from failing if this UPDATE has issues
+        if conn.dialect.name == "postgresql":
+            # PostgreSQL supports nested transactions (savepoints)
+            with conn.begin_nested():
+                conn.execute(sql)
+        else:
+            # For other databases, execute directly but with better error handling
+            conn.execute(sql)
+    except Exception as e:
         # Soft-fail; better to have nullable knowledge_date than block migration
+        # Log the specific error for debugging but don't re-raise
+        print(f"Warning: knowledge_date backfill failed: {e}")
+        # For PostgreSQL, if we're in a failed transaction state, we need to rollback to savepoint
+        # This is handled automatically by the savepoint context manager above
         pass
 
 
@@ -226,16 +238,18 @@ def _maybe_enable_timescale(conn: Connection) -> None:
 
     # Try to create extension; ignore if not installed
     try:
-        conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
+        with conn.begin_nested():
+            conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
     except Exception:
         return  # timescaledb not available
 
     # Create hypertable for daily_bars(ts) if not already hypertable
     # Guard with catalog check; wrap to tolerate missing catalog on old PG
     try:
-        conn.execute(
-            sa.text(
-                """
+        with conn.begin_nested():
+            conn.execute(
+                sa.text(
+                    """
 DO $$
 BEGIN
   IF EXISTS (
@@ -270,10 +284,13 @@ EXCEPTION WHEN undefined_table OR undefined_function THEN
   -- timescaledb catalog or function not available
   NULL;
 END$$;
-                """
+                    """
+                )
             )
-        )
-    except Exception:
+    except Exception as e:
+        # Log but don't fail the migration
+        print(f"Warning: TimescaleDB hypertable creation failed: {e}")
+        # The savepoint will automatically rollback this operation
         pass
 
 
