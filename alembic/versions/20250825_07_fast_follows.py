@@ -6,7 +6,6 @@ Create Date: 2025-08-25
 """
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import inspect
 
 revision = '20250825_07'
 down_revision = '20250825_06'
@@ -15,7 +14,7 @@ depends_on = None
 
 def upgrade():
     bind = op.get_bind()
-    insp = inspect(bind)
+    insp = sa.inspect(bind)
     try:
         tables = set(insp.get_table_names())
     except Exception:
@@ -98,7 +97,7 @@ def upgrade():
 
 def downgrade():
     bind = op.get_bind()
-    insp = inspect(bind)
+    insp = sa.inspect(bind)
     try:
         tables = set(insp.get_table_names())
     except Exception:
