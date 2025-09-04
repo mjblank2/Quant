@@ -6,7 +6,7 @@ Create Date: 2025-08-25
 """
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.engine.reflection import Inspector
+from sqlalchemy import inspect
 
 revision = '20250825_07'
 down_revision = '20250825_06'
@@ -15,8 +15,11 @@ depends_on = None
 
 def upgrade():
     bind = op.get_bind()
-    insp = Inspector.from_engine(bind)
-    tables = insp.get_table_names()
+    insp = inspect(bind)
+    try:
+        tables = set(insp.get_table_names())
+    except Exception:
+        tables = set()
 
     if 'universe_history' not in tables:
         op.create_table('universe_history',
@@ -24,8 +27,14 @@ def upgrade():
             sa.Column('symbol', sa.String(length=20), nullable=False),
             sa.PrimaryKeyConstraint('as_of', 'symbol')
         )
-        op.create_index('ix_universe_hist_asof', 'universe_history', ['as_of'], unique=False)
-        op.create_index('ix_universe_hist_symbol', 'universe_history', ['symbol'], unique=False)
+        try:
+            op.create_index('ix_universe_hist_asof', 'universe_history', ['as_of'], unique=False)
+        except Exception:
+            pass
+        try:
+            op.create_index('ix_universe_hist_symbol', 'universe_history', ['symbol'], unique=False)
+        except Exception:
+            pass
 
     if 'russell_membership' not in tables:
         op.create_table('russell_membership',
@@ -34,7 +43,10 @@ def upgrade():
             sa.Column('action', sa.String(length=8), nullable=False),
             sa.PrimaryKeyConstraint('symbol','ts')
         )
-        op.create_index('ix_russell_ts', 'russell_membership', ['ts'], unique=False)
+        try:
+            op.create_index('ix_russell_ts', 'russell_membership', ['ts'], unique=False)
+        except Exception:
+            pass
 
     if 'short_borrow' not in tables:
         op.create_table('short_borrow',
@@ -46,7 +58,10 @@ def upgrade():
             sa.Column('source', sa.String(length=32), nullable=True),
             sa.PrimaryKeyConstraint('symbol','ts')
         )
-        op.create_index('ix_borrow_symbol_ts', 'short_borrow', ['symbol','ts'], unique=False)
+        try:
+            op.create_index('ix_borrow_symbol_ts', 'short_borrow', ['symbol','ts'], unique=False)
+        except Exception:
+            pass
 
     if 'option_overlays' not in tables:
         op.create_table('option_overlays',
@@ -60,21 +75,108 @@ def upgrade():
             sa.Column('est_premium_pct', sa.Float(), nullable=True),
             sa.Column('notes', sa.String(length=256), nullable=True),
         )
-        op.create_index('ix_option_overlays_asof', 'option_overlays', ['as_of'], unique=False)
+        try:
+            op.create_index('ix_option_overlays_asof', 'option_overlays', ['as_of'], unique=False)
+        except Exception:
+            pass
 
     # Add order_metadata JSON to trades if missing
-    cols = [c['name'] for c in insp.get_columns('trades')]
-    if 'order_metadata' not in cols:
-        op.add_column('trades', sa.Column('order_metadata', sa.JSON(), nullable=True))
+    if 'trades' in tables:
+        try:
+            cols = {c['name'] for c in insp.get_columns('trades')}
+        except Exception:
+            cols = set()
+        if 'order_metadata' not in cols:
+            try:
+                with op.batch_alter_table('trades') as batch_op:
+                    batch_op.add_column(sa.Column('order_metadata', sa.JSON(), nullable=True))
+            except Exception:
+                try:
+                    op.add_column('trades', sa.Column('order_metadata', sa.JSON(), nullable=True))
+                except Exception:
+                    pass
 
 def downgrade():
-    op.drop_column('trades', 'order_metadata')
-    op.drop_index('ix_option_overlays_asof', table_name='option_overlays')
-    op.drop_table('option_overlays')
-    op.drop_index('ix_borrow_symbol_ts', table_name='short_borrow')
-    op.drop_table('short_borrow')
-    op.drop_index('ix_russell_ts', table_name='russell_membership')
-    op.drop_table('russell_membership')
-    op.drop_index('ix_universe_hist_symbol', table_name='universe_history')
-    op.drop_index('ix_universe_hist_asof', table_name='universe_history')
-    op.drop_table('universe_history')
+    bind = op.get_bind()
+    insp = inspect(bind)
+    try:
+        tables = set(insp.get_table_names())
+    except Exception:
+        tables = set()
+
+    if 'trades' in tables:
+        try:
+            cols = {c['name'] for c in insp.get_columns('trades')}
+        except Exception:
+            cols = set()
+        if 'order_metadata' in cols:
+            try:
+                with op.batch_alter_table('trades') as batch_op:
+                    batch_op.drop_column('order_metadata')
+            except Exception:
+                pass
+
+    if 'option_overlays' in tables:
+        try:
+            idxs = {i.get('name') for i in insp.get_indexes('option_overlays')}
+        except Exception:
+            idxs = set()
+        if 'ix_option_overlays_asof' in idxs:
+            try:
+                op.drop_index('ix_option_overlays_asof', table_name='option_overlays')
+            except Exception:
+                pass
+        try:
+            op.drop_table('option_overlays')
+        except Exception:
+            pass
+
+    if 'short_borrow' in tables:
+        try:
+            idxs = {i.get('name') for i in insp.get_indexes('short_borrow')}
+        except Exception:
+            idxs = set()
+        if 'ix_borrow_symbol_ts' in idxs:
+            try:
+                op.drop_index('ix_borrow_symbol_ts', table_name='short_borrow')
+            except Exception:
+                pass
+        try:
+            op.drop_table('short_borrow')
+        except Exception:
+            pass
+
+    if 'russell_membership' in tables:
+        try:
+            idxs = {i.get('name') for i in insp.get_indexes('russell_membership')}
+        except Exception:
+            idxs = set()
+        if 'ix_russell_ts' in idxs:
+            try:
+                op.drop_index('ix_russell_ts', table_name='russell_membership')
+            except Exception:
+                pass
+        try:
+            op.drop_table('russell_membership')
+        except Exception:
+            pass
+
+    if 'universe_history' in tables:
+        try:
+            idxs = {i.get('name') for i in insp.get_indexes('universe_history')}
+        except Exception:
+            idxs = set()
+        if 'ix_universe_hist_symbol' in idxs:
+            try:
+                op.drop_index('ix_universe_hist_symbol', table_name='universe_history')
+            except Exception:
+                pass
+        if 'ix_universe_hist_asof' in idxs:
+            try:
+                op.drop_index('ix_universe_hist_asof', table_name='universe_history')
+            except Exception:
+                pass
+        try:
+            op.drop_table('universe_history')
+        except Exception:
+            pass
