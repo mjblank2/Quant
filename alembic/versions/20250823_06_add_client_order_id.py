@@ -13,15 +13,29 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
     try:
-        with op.batch_alter_table('trades') as batch_op:
-            batch_op.add_column(sa.Column('client_order_id', sa.String(length=64), nullable=True))
+        cols = {c['name'] for c in insp.get_columns('trades')}
     except Exception:
-        pass
+        cols = set()
+    if 'client_order_id' not in cols:
+        try:
+            with op.batch_alter_table('trades') as batch_op:
+                batch_op.add_column(sa.Column('client_order_id', sa.String(length=64), nullable=True))
+        except Exception:
+            pass
 
 def downgrade():
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
     try:
-        with op.batch_alter_table('trades') as batch_op:
-            batch_op.drop_column('client_order_id')
+        cols = {c['name'] for c in insp.get_columns('trades')}
     except Exception:
-        pass
+        cols = set()
+    if 'client_order_id' in cols:
+        try:
+            with op.batch_alter_table('trades') as batch_op:
+                batch_op.drop_column('client_order_id')
+        except Exception:
+            pass
