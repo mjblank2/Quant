@@ -56,3 +56,34 @@ async def _poly_adv(symbol: str, start: date, end: date) -> float | None:
     except Exception as e:
         log_universe.error(f"Error calculating Polygon ADV for {symbol}: {e}", exc_info=True)
         return None
+
+def rebuild_universe() -> pd.DataFrame:
+    """
+    Build the investable universe and persist it if DB utilities are available.
+    Returns a DataFrame with at least: symbol, name, exchange, included.
+    """
+    log = log_universe
+    df = _list_alpaca_assets()
+    if df.empty:
+        log.warning("No assets retrieved from Alpaca; returning empty universe.")
+        return df
+
+    # Normalize and default flags
+    try:
+        df["symbol"] = df["symbol"].astype(str).str.upper()
+    except Exception:
+        pass
+    if "included" not in df.columns:
+        df["included"] = True  # default include; downstream filters can refine this
+
+    # Attempt to persist to DB if helpers/models exist
+    try:
+        from db import upsert_dataframe, Universe  # type: ignore
+        cols = [c for c in ["symbol", "name", "exchange", "included"] if c in df.columns]
+        upsert_dataframe(df[cols], Universe, ["symbol"])
+        log.info("Universe upserted to DB with %d symbols.", len(df))
+    except Exception as e:
+        # Non-fatal: still return the DataFrame so callers can proceed
+        log.warning(f"DB upsert skipped or failed: {e}")
+
+    return df
