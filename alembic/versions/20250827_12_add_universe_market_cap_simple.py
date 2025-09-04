@@ -33,16 +33,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove market_cap column from universe table."""
-    bind = op.get_bind()
-    insp = sa.inspect(bind)
-    try:
-        cols = {c["name"] for c in insp.get_columns("universe")}
-    except Exception:
-        cols = set()
-    if "market_cap" in cols:
-        try:
-            with op.batch_alter_table("universe") as batch:
-                batch.drop_column("market_cap")
-        except Exception:
-            pass
+    """No-op: market_cap exists in the base schema; do not drop."""
+    pass
