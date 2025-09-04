@@ -2,7 +2,7 @@
 
 Revision ID: 20250827_add_task_status_table
 Revises: 20250827_10
-Create Date: 2025-01-27 16:30:00.000000
+Create Date: 2025-08-27 16:30:00.000000
 
 """
 
@@ -11,7 +11,6 @@ import sqlalchemy as sa
 from sqlalchemy import inspect
 
 
-# revision identifiers, used by Alembic.
 revision = "20250827_add_task_status_table"
 down_revision = "20250827_10"
 branch_labels = None
@@ -23,7 +22,12 @@ def upgrade():
     bind = op.get_bind()
     inspector = inspect(bind)
 
-    if not inspector.has_table("task_status"):
+    try:
+        has_table = inspector.has_table("task_status")
+    except Exception:
+        has_table = False
+
+    if not has_table:
         op.create_table(
             "task_status",
             sa.Column("task_id", sa.String(length=128), nullable=False),
@@ -34,23 +38,47 @@ def upgrade():
             sa.Column("completed_at", sa.DateTime(), nullable=True),
             sa.Column("result", sa.JSON(), nullable=True),
             sa.Column("error_message", sa.String(length=1024), nullable=True),
-            sa.Column("progress", sa.Integer(), nullable=False),
+            sa.Column("progress", sa.Integer(), nullable=False, server_default="0"),
             sa.PrimaryKeyConstraint("task_id"),
         )
 
-    if inspector.has_table("task_status"):
-        indexes = {idx["name"] for idx in inspector.get_indexes("task_status")}
-        if "ix_task_status_created_at" not in indexes:
+    try:
+        indexes = {idx.get("name") for idx in inspector.get_indexes("task_status")}
+    except Exception:
+        indexes = set()
+    if "ix_task_status_created_at" not in indexes:
+        try:
             op.create_index(
                 "ix_task_status_created_at",
                 "task_status",
                 ["created_at"],
                 unique=False,
             )
+        except Exception:
+            pass
 
 
 def downgrade():
-    """Drop task_status table and related index."""
-    op.drop_index("ix_task_status_created_at", table_name="task_status")
-    op.drop_table("task_status")
+    """Drop task_status table and related index if they exist."""
+    bind = op.get_bind()
+    inspector = inspect(bind)
 
+    try:
+        has_table = inspector.has_table("task_status")
+    except Exception:
+        has_table = False
+
+    if has_table:
+        try:
+            indexes = {idx.get("name") for idx in inspector.get_indexes("task_status")}
+        except Exception:
+            indexes = set()
+        if "ix_task_status_created_at" in indexes:
+            try:
+                op.drop_index("ix_task_status_created_at", table_name="task_status")
+            except Exception:
+                pass
+        try:
+            op.drop_table("task_status")
+        except Exception:
+            pass
