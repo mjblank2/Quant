@@ -33,7 +33,19 @@ async def _fetch_polygon_daily_one(symbol: str, start: date, end: date) -> pd.Da
     url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start.isoformat()}/{end.isoformat()}"
     try:
         js = await get_json_async(url, params={"adjusted": "true", "sort": "asc", "apiKey": POLYGON_API_KEY})
-        return pd.DataFrame(js or {})
+
+        # Handle empty or invalid response
+        if not js:
+            return pd.DataFrame()
+
+        # Check if there's a 'results' field with list data (expected Polygon format)
+        if 'results' in js and isinstance(js['results'], list) and len(js['results']) > 0:
+            return pd.DataFrame(js['results'])
+
+        # If no results or empty results, return empty DataFrame
+        # This handles cases where Polygon returns scalar values like {"status": "OK", "count": 0}
+        return pd.DataFrame()
+
     except Exception as e:
         log.error(f"Error fetching/processing Polygon data for {symbol}: {e}", exc_info=True)
         return pd.DataFrame()
