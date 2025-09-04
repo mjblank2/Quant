@@ -17,7 +17,7 @@ def upgrade():
     inspector = sa.inspect(bind)
     try:
         pk_constraint = inspector.get_pk_constraint("predictions")
-        current_pk_columns = pk_constraint.get("constrained_columns", [])
+        current_pk_columns = pk_constraint.get("constrained_columns", []) or []
     except Exception:
         current_pk_columns = []
 
@@ -29,7 +29,7 @@ def upgrade():
                 y_pred FLOAT NOT NULL,
                 model_version VARCHAR(32) NOT NULL DEFAULT 'xgb_v1',
                 horizon INTEGER NOT NULL DEFAULT 5,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (symbol, ts, model_version)
             )
         """)
@@ -67,7 +67,7 @@ def downgrade():
             y_pred FLOAT NOT NULL,
             model_version VARCHAR(32) NOT NULL DEFAULT 'xgb_v1',
             horizon INTEGER NOT NULL DEFAULT 5,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (symbol, ts)
         )
     """)
