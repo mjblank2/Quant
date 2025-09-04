@@ -244,22 +244,6 @@ class DataValidationLog(Base):
         Index("ix_validation_log_type_status", "validation_type", "status"),
     )
 
-class DataLineage(Base):
-    __tablename__ = "data_lineage"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    table_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    data_date: Mapped[date] = mapped_column(Date, nullable=False)
-    ingestion_timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    source: Mapped[str] = mapped_column(String(32), nullable=False)
-    source_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    lineage_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    __table_args__ = (
-        Index("ix_lineage_table_symbol_date", "table_name", "symbol", "data_date"),
-        Index("ix_lineage_ingestion_time", "ingestion_timestamp"),
-    )
-
 def create_tables():
     Base.metadata.create_all(engine)
     from config import STARTING_CAPITAL
@@ -411,6 +395,17 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         return
     df = df.replace({pd.NA: None, np.nan: None})
 
+    # Proactively drop duplicates on the conflict key within this batch to avoid
+    # Postgres "ON CONFLICT DO UPDATE command cannot affect row a second time".
+    # Only do this if all conflict columns are present in the DataFrame.
+    if conflict_cols and set(conflict_cols).issubset(df.columns):
+        before = len(df)
+        # Keep the last occurrence so the most recent values win
+        df = df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
+        removed = before - len(df)
+        if removed > 0:
+            log.debug(f"Removed {removed} duplicate rows based on conflict columns {conflict_cols} before UPSERT")
+
     # Safety: PostgreSQL's parameter limit varies by configuration.
     # Use a very conservative limit to ensure compatibility across different PostgreSQL setups.
     # Some configurations may have limits as low as 16,000 parameters.
@@ -509,29 +504,37 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                     stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
                 connection.execute(stmt)
             except Exception as e:
-                # If we still hit parameter limits, retry with smaller batches
-                # Also handle PostgreSQL transaction abort errors
-                if (("parameter" in str(e).lower() or "InFailedSqlTransaction" in str(e)) and len(records) > 10):
-                    log.warning(f"Parameter limit or transaction abort error with {len(records)} records, retrying with smaller batches")
+                msg = str(e).lower()
+                is_param_or_txn = ("parameter" in msg) or ("infailedsqltransaction" in msg)
+                is_cardinality = ("cardinalityviolation" in msg) or ("on conflict do update command cannot affect row a second time" in msg)
+                if (is_param_or_txn or is_cardinality) and len(records) > 1:
+                    if is_param_or_txn:
+                        log.warning(f"Parameter limit or transaction abort error with {len(records)} records, retrying with smaller batches")
+                    if is_cardinality:
+                        log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and retrying in smaller batches")
+
                     # Rollback the current transaction to clear the aborted state
                     try:
                         connection.rollback()
                     except Exception:
                         pass  # Ignore rollback errors - transaction might already be rolled back
 
-                    # Recursively call with much smaller chunks and no connection (will create new transaction)
+                    # Rebuild smaller DataFrame from records for retry
                     smaller_df = pd.DataFrame(records)
 
-                    # CRITICAL FIX: Ensure no duplicates exist in retry data to prevent CardinalityViolation
                     # Remove any duplicate rows based on the conflict columns before retry
-                    if len(smaller_df) > 0 and conflict_cols:
+                    if len(smaller_df) > 0 and conflict_cols and set(conflict_cols).issubset(smaller_df.columns):
                         original_size = len(smaller_df)
                         smaller_df = smaller_df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
                         dedupe_size = len(smaller_df)
                         if dedupe_size < original_size:
                             log.warning(f"Removed {original_size - dedupe_size} duplicate rows during retry to prevent CardinalityViolation")
 
+                    # Recursively call with much smaller chunks and no connection (will create new transaction)
                     upsert_dataframe(smaller_df, table, conflict_cols, chunk_size=10, conn=None)
+                else:
+                    # Re-raise if it's not a handled issue or if we're already at minimum size
+                    raise
                 else:
                     # Re-raise if it's not a parameter limit issue or if we're already at minimum size
                     raise
