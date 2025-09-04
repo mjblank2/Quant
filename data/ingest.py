@@ -1,5 +1,6 @@
 from __future__ import annotations
-import logging, asyncio
+import logging
+import asyncio
 from datetime import date
 from typing import List
 import pandas as pd
@@ -63,7 +64,7 @@ def ingest_bars_for_universe(days: int = 30) -> None:
     import asyncio
     from datetime import datetime, timedelta
 
-    log = log_ingest
+    # Use the existing log variable from module level
     log.info(f"Starting market data ingestion for {days} days")
 
     # Calculate date range
@@ -178,7 +179,7 @@ def _normalize_bar_data(df: pd.DataFrame, source: str = 'unknown') -> pd.DataFra
                 if col == 'volume':
                     normalized[col] = 0
                 else:
-                    log_ingest.warning(f"Missing required column {col} in {source} data")
+                    log.warning(f"Missing required column {col} in {source} data")
                     return pd.DataFrame()
 
         # Add optional columns with defaults
@@ -205,5 +206,5 @@ def _normalize_bar_data(df: pd.DataFrame, source: str = 'unknown') -> pd.DataFra
         return normalized
 
     except Exception as e:
-        log_ingest.error(f"Error normalizing {source} data: {e}", exc_info=True)
+        log.error(f"Error normalizing {source} data: {e}", exc_info=True)
         return pd.DataFrame()
