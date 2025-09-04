@@ -47,7 +47,6 @@ def _indexes(conn: Connection, table: str) -> set[str]:
 
 
 def _ensure_fundamentals_schema(conn: Connection) -> None:
-    # Create fundamentals if completely missing (defensive; normally exists from 20250822_02)
     if "fundamentals" not in _tables(conn):
         op.create_table(
             "fundamentals",
@@ -69,7 +68,6 @@ def _ensure_fundamentals_schema(conn: Connection) -> None:
 
     cols = _columns(conn, "fundamentals")
 
-    # Add available_at if missing
     if "available_at" not in cols:
         try:
             with op.batch_alter_table("fundamentals") as batch:
@@ -77,7 +75,6 @@ def _ensure_fundamentals_schema(conn: Connection) -> None:
         except Exception:
             pass
 
-    # Add knowledge_date if missing
     cols = _columns(conn, "fundamentals")
     if "knowledge_date" not in cols:
         try:
@@ -86,7 +83,6 @@ def _ensure_fundamentals_schema(conn: Connection) -> None:
         except Exception:
             pass
 
-    # Indexes
     idxs = _indexes(conn, "fundamentals")
     if "ix_fundamentals_symbol_available_at" not in idxs and "available_at" in _columns(conn, "fundamentals"):
         try:
@@ -112,12 +108,10 @@ def _ensure_fundamentals_schema(conn: Connection) -> None:
 
 
 def _backfill_fundamentals_knowledge_date(conn: Connection) -> None:
-    # Only attempt if table/columns exist
     cols = _columns(conn, "fundamentals")
     if not {"as_of", "knowledge_date"}.issubset(cols):
         return
 
-    # Build COALESCE safely: if available_at exists, use it; else fallback to as_of + 1 day
     uses_available = "available_at" in cols
     if conn.dialect.name == "postgresql":
         if uses_available:
@@ -137,7 +131,6 @@ def _backfill_fundamentals_knowledge_date(conn: Connection) -> None:
                 """
             )
     else:
-        # SQLite syntax
         if uses_available:
             sql = sa.text(
                 """
@@ -155,26 +148,17 @@ def _backfill_fundamentals_knowledge_date(conn: Connection) -> None:
                 """
             )
     try:
-        # Use a savepoint to isolate this operation from the main transaction
-        # This prevents the entire migration from failing if this UPDATE has issues
         if conn.dialect.name == "postgresql":
-            # PostgreSQL supports nested transactions (savepoints)
             with conn.begin_nested():
                 conn.execute(sql)
         else:
-            # For other databases, execute directly but with better error handling
             conn.execute(sql)
     except Exception as e:
-        # Soft-fail; better to have nullable knowledge_date than block migration
-        # Log the specific error for debugging but don't re-raise
         print(f"Warning: knowledge_date backfill failed: {e}")
-        # For PostgreSQL, if we're in a failed transaction state, we need to rollback to savepoint
-        # This is handled automatically by the savepoint context manager above
         pass
 
 
 def _ensure_shares_outstanding(conn: Connection) -> None:
-    # Create table if missing (align with ORM)
     if "shares_outstanding" not in _tables(conn):
         op.create_table(
             "shares_outstanding",
@@ -198,7 +182,6 @@ def _ensure_shares_outstanding(conn: Connection) -> None:
             pass
         return
 
-    # If exists, ensure knowledge_date + indexes
     cols = _columns(conn, "shares_outstanding")
     if "knowledge_date" not in cols:
         try:
@@ -228,7 +211,6 @@ def _ensure_shares_outstanding(conn: Connection) -> None:
 
 
 def _maybe_enable_timescale(conn: Connection) -> None:
-    # Only attempt on PostgreSQL
     if conn.dialect.name != "postgresql":
         return
 
@@ -236,15 +218,12 @@ def _maybe_enable_timescale(conn: Connection) -> None:
     if not enable_ts:
         return
 
-    # Try to create extension; ignore if not installed
     try:
         with conn.begin_nested():
             conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
     except Exception:
-        return  # timescaledb not available
+        return
 
-    # Create hypertable for daily_bars(ts) if not already hypertable
-    # Guard with catalog check; wrap to tolerate missing catalog on old PG
     try:
         with conn.begin_nested():
             conn.execute(
@@ -266,7 +245,6 @@ BEGIN
            AND c.relname = 'daily_bars'
        )
     THEN
-      -- Only convert if not already a hypertable
       IF NOT EXISTS (
            SELECT 1
            FROM _timescaledb_catalog.hypertable ht
@@ -281,38 +259,25 @@ BEGIN
     END IF;
   END IF;
 EXCEPTION WHEN undefined_table OR undefined_function THEN
-  -- timescaledb catalog or function not available
   NULL;
 END$$;
                     """
                 )
             )
     except Exception as e:
-        # Log but don't fail the migration
         print(f"Warning: TimescaleDB hypertable creation failed: {e}")
-        # The savepoint will automatically rollback this operation
         pass
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-
-    # 1) Fundamentals: ensure columns/indexes exist before any UPDATE referencing them
     _ensure_fundamentals_schema(bind)
-
-    # 2) Backfill knowledge_date (safe COALESCE of available_at or as_of+1day)
     _backfill_fundamentals_knowledge_date(bind)
-
-    # 3) Shares Outstanding: ensure table/columns/indexes (aligns with ORM expectations)
     _ensure_shares_outstanding(bind)
-
-    # 4) Optional: TimescaleDB hypertable for daily_bars
     _maybe_enable_timescale(bind)
 
 
 def downgrade() -> None:
-    # Best-effort clean-up. We do NOT drop available_at on fundamentals because
-    # it may have been added by earlier migrations (and is used by code).
     try:
         op.drop_index("ix_fundamentals_bitemporal", table_name="fundamentals")
     except Exception:
@@ -327,7 +292,6 @@ def downgrade() -> None:
     except Exception:
         pass
 
-    # Shares outstanding indexes/column (keep table)
     try:
         op.drop_index("ix_shares_outstanding_bitemporal", table_name="shares_outstanding")
     except Exception:
