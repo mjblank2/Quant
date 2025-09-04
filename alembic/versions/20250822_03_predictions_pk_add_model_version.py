@@ -15,28 +15,17 @@ branch_labels = None
 depends_on = None
 
 def upgrade() -> None:
-    """Ensure ``model_version`` column exists and update PK."""
-    # For SQLite, the safest way to change a primary key is to recreate the table
-    # Since batch mode in Alembic handles this automatically, we just need to 
-    # define the new structure
-    
-    with op.batch_alter_table("predictions", recreate="always") as batch_op:
-        # The table will be recreated with model_version as part of the primary key
-        # We need to ensure the primary key structure is correct
-        pass
-    
-    # After recreating the table, make sure the primary key is correctly set
-    # We'll do this by checking the table structure and recreating if needed
+    """Ensure ``model_version`` is part of the PK in a safe, idempotent way."""
     bind = op.get_bind()
     inspector = sa.inspect(bind)
-    
-    # Check current primary key
-    pk_constraint = inspector.get_pk_constraint("predictions")
-    current_pk_columns = pk_constraint.get("constrained_columns", [])
-    
-    # If the primary key doesn't include model_version, we need to fix it
+
+    try:
+        pk_constraint = inspector.get_pk_constraint("predictions")
+        current_pk_columns = pk_constraint.get("constrained_columns", []) or []
+    except Exception:
+        current_pk_columns = []
+
     if "model_version" not in current_pk_columns:
-        # Create a new table with the correct primary key
         op.execute("""
             CREATE TABLE predictions_new (
                 symbol VARCHAR(20) NOT NULL,
@@ -48,32 +37,39 @@ def upgrade() -> None:
                 PRIMARY KEY (symbol, ts, model_version)
             )
         """)
-        
-        # Copy data from old table to new table
         op.execute("""
             INSERT INTO predictions_new (symbol, ts, y_pred, model_version, horizon, created_at)
             SELECT symbol, ts, y_pred, model_version, horizon, created_at FROM predictions
         """)
-        
-        # Drop old table and rename new table
         op.drop_table("predictions")
         op.execute("ALTER TABLE predictions_new RENAME TO predictions")
-        
-        # Recreate indexes
-        op.create_index("ix_predictions_ts", "predictions", ["ts"])
-        op.create_index("ix_predictions_symbol_ts", "predictions", ["symbol", "ts"])
-        op.create_index("ix_predictions_ts_model", "predictions", ["ts", "model_version"])
+
+        # Recreate helpful indexes (ignore if already present)
+        try:
+            op.create_index("ix_predictions_ts", "predictions", ["ts"])
+        except Exception:
+            pass
+        try:
+            op.create_index("ix_predictions_symbol_ts", "predictions", ["symbol", "ts"])
+        except Exception:
+            pass
+        try:
+            op.create_index("ix_predictions_ts_model", "predictions", ["ts", "model_version"])
+        except Exception:
+            pass
+    else:
+        try:
+            op.create_index("ix_predictions_ts_model", "predictions", ["ts", "model_version"])
+        except Exception:
+            pass
 
 def downgrade() -> None:
     """Revert predictions primary key to (symbol, ts)."""
-    # For SQLite, recreate the table with the original primary key structure
-    # Drop the index first
     try:
         op.drop_index("ix_predictions_ts_model", table_name="predictions")
     except Exception:
         pass
-    
-    # Create a new table with the original primary key (symbol, ts)
+
     op.execute("""
         CREATE TABLE predictions_new (
             symbol VARCHAR(20) NOT NULL,
@@ -85,17 +81,18 @@ def downgrade() -> None:
             PRIMARY KEY (symbol, ts)
         )
     """)
-    
-    # Copy data from current table to new table
     op.execute("""
         INSERT INTO predictions_new (symbol, ts, y_pred, model_version, horizon, created_at)
         SELECT symbol, ts, y_pred, model_version, horizon, created_at FROM predictions
     """)
-    
-    # Drop old table and rename new table
     op.drop_table("predictions")
     op.execute("ALTER TABLE predictions_new RENAME TO predictions")
-    
-    # Recreate the original indexes
-    op.create_index("ix_predictions_ts", "predictions", ["ts"])
-    op.create_index("ix_predictions_symbol_ts", "predictions", ["symbol", "ts"])
+
+    try:
+        op.create_index("ix_predictions_ts", "predictions", ["ts"])
+    except Exception:
+        pass
+    try:
+        op.create_index("ix_predictions_symbol_ts", "predictions", ["symbol", "ts"])
+    except Exception:
+        pass
