@@ -18,19 +18,31 @@ depends_on = None
 
 def upgrade() -> None:
     """Add market_cap column to universe table if it doesn't exist."""
-    # Use a simple approach: try to add the column, ignore if it already exists
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
     try:
-        op.add_column('universe', sa.Column('market_cap', sa.Float(), nullable=True))
+        cols = {c["name"] for c in insp.get_columns("universe")}
     except Exception:
-        # Column likely already exists, which is fine
-        pass
+        cols = set()
+    if "market_cap" not in cols:
+        try:
+            with op.batch_alter_table("universe") as batch:
+                batch.add_column(sa.Column("market_cap", sa.Float(), nullable=True))
+        except Exception:
+            pass
 
 
 def downgrade() -> None:
     """Remove market_cap column from universe table."""
-    # Use a simple approach: try to drop the column, ignore if it doesn't exist
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
     try:
-        op.drop_column('universe', 'market_cap')
+        cols = {c["name"] for c in insp.get_columns("universe")}
     except Exception:
-        # Column likely doesn't exist, which is fine
-        pass
+        cols = set()
+    if "market_cap" in cols:
+        try:
+            with op.batch_alter_table("universe") as batch:
+                batch.drop_column("market_cap")
+        except Exception:
+            pass
