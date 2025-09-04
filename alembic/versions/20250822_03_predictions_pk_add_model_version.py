@@ -15,7 +15,7 @@ branch_labels = None
 depends_on = None
 
 def upgrade() -> None:
-    """Ensure ``model_version`` is part of the PK in a safe, idempotent way."""
+    """Ensure model_version is part of the PK in a safe, idempotent way."""
     bind = op.get_bind()
     inspector = sa.inspect(bind)
 
@@ -33,7 +33,7 @@ def upgrade() -> None:
                 y_pred FLOAT NOT NULL,
                 model_version VARCHAR(32) NOT NULL DEFAULT 'xgb_v1',
                 horizon INTEGER NOT NULL DEFAULT 5,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (symbol, ts, model_version)
             )
         """)
@@ -58,6 +58,7 @@ def upgrade() -> None:
         except Exception:
             pass
     else:
+        # Ensure ts+model_version index exists
         try:
             op.create_index("ix_predictions_ts_model", "predictions", ["ts", "model_version"])
         except Exception:
@@ -77,7 +78,7 @@ def downgrade() -> None:
             y_pred FLOAT NOT NULL,
             model_version VARCHAR(32) NOT NULL DEFAULT 'xgb_v1',
             horizon INTEGER NOT NULL DEFAULT 5,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (symbol, ts)
         )
     """)
