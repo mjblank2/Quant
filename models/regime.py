@@ -6,10 +6,10 @@ from db import engine
 
 def _load_series(symbol: str, end_ts: pd.Timestamp, lookback: int = 252) -> pd.Series:
     with engine.connect() as con:
-        df = pd.read_sql_query(text(\"\"
+        df = pd.read_sql_query(text("""
             SELECT ts, COALESCE(adj_close, close) AS px FROM daily_bars
             WHERE symbol=:s AND ts<=:e ORDER BY ts DESC LIMIT :lim
-        \"\"), con, params={'s': symbol, 'e': end_ts.date(), 'lim': lookback+5}, parse_dates=['ts']).sort_values('ts')
+        """), con, params={'s': symbol, 'e': end_ts.date(), 'lim': lookback+5}, parse_dates=['ts']).sort_values('ts')
     if df.empty:
         return pd.Series(dtype=float)
     return df.set_index('ts')['px'].pct_change().dropna()
@@ -21,7 +21,7 @@ def classify_regime(as_of, market_symbol: str = "IWM") -> str:
         return "normal"
     vol21 = float(r.rolling(21).std().iloc[-1] or 0.0)
     with engine.connect() as con:
-        df = pd.read_sql_query(text(\"SELECT vol_21 FROM features WHERE ts=(SELECT MAX(ts) FROM features WHERE ts<=:asof)\"),
+        df = pd.read_sql_query(text("SELECT vol_21 FROM features WHERE ts=(SELECT MAX(ts) FROM features WHERE ts<=:asof)"),
                                con, params={'asof': as_of.date()})
     breadth = float(df['vol_21'].median()) if not df.empty else 0.02
     if vol21 > 0.03 or breadth > 0.03:
