@@ -195,8 +195,9 @@ python run_pipeline.py
 
 ### Individual Steps (from UI or CLI)
 ```bash
-# Universe + data
-ython -c "from data.universe import rebuild_universe; print(rebuild_universe()[:5])"
+# Note: Some import functions may be missing from current implementation
+# Universe + data (may have import issues)
+# python -c "from data.universe import rebuild_universe; print(rebuild_universe()[:5])"
 python -c "from data.ingest import ingest_bars_for_universe; ingest_bars_for_universe(730)"  # ~2y backfill
 python -c "from data.fundamentals import fetch_fundamentals_for_universe; print(fetch_fundamentals_for_universe().shape)"
 
@@ -217,8 +218,8 @@ ALWAYS run these after meaningful changes.
 ### Scenario 1: Basic App Startup
 1. Set DATABASE_URL
 2. Run Alembic migrations: `alembic upgrade heads` (or `PYTHONPATH="" alembic upgrade heads`)
-3. Start Streamlit: `streamlit run app.py`
-4. Confirm UI loads at http://localhost:8501 and top metrics show timestamps
+3. Start Streamlit dashboard: `streamlit run data_ingestion/dashboard.py` (app.py has import issues)
+4. Confirm UI loads at http://localhost:8501 and shows "Blank Capital Quant" dashboard
 
 ### Scenario 2: Async Task Queue
 1. Start Redis and a Celery worker
@@ -322,14 +323,19 @@ Working commands (verified):
 - `python test_alpha_factory.py` (~1.2s)
 - `python test_phase4_optimization.py` (~1.1s)
 - `python -m pytest test_phase2_infrastructure.py -v` (~1.1s)
-- `streamlit run app.py` (starts successfully)
-- `streamlit run data_ingestion/dashboard.py` (connects when DATABASE_URL set)
+- `python -m pytest test_integration_phase2.py -v` (~1.1s, with DATABASE_URL)
+- `streamlit run data_ingestion/dashboard.py` (starts successfully, connects when DATABASE_URL set)
+- `uvicorn health_api:app --host 0.0.0.0 --port 8000` (API server starts successfully)
 - `celery -A tasks worker --loglevel=info` (task queue ready with Redis)
 - `python scripts/verify_render_setup.py` (~0.06s, passes checks)
+- `alembic upgrade heads` (~2s, multi-head migration system)
 
 Known issues to document:
 - Multi-head Alembic history – use `alembic upgrade heads`
 - CI Docker builds may fail early due to SSL certificate verification
 - Some features require provider entitlements and may rate-limit in free tiers
+- app.py has import issues: missing `rebuild_universe` function in data.universe module
+- Some pipeline components have syntax errors (e.g., models/regime.py)
+- Use data_ingestion/dashboard.py instead of app.py for testing UI functionality
 
 ⚠️ Trading is risky; paper trade first. Ensure API entitlements/quotas match your use case.
