@@ -1,7 +1,7 @@
 """Add ``adj_close`` column to ``daily_bars``.
 
 Revision ID: 20250822_01
-Revises:
+Revises: 20250820_00
 Create Date: 2025-08-22
 """
 
