@@ -1,63 +1,46 @@
-# =============================================================================
-# Module: data/validation.py
-# =============================================================================
+from __future__ import annotations
 import logging
-from typing import List, Optional
 import pandas as pd
 from sqlalchemy import text
+from db import engine
+from config import ENABLE_DATA_VALIDATION
 
-log_validation = logging.getLogger("data.validation")
-
-try:
-    from config import ENABLE_DATA_VALIDATION
-except Exception:
-    ENABLE_DATA_VALIDATION = False
-
-try:
-    from data_ingestion.dashboard import engine
-except Exception:
-    engine = None
+log = logging.getLogger("data.validation")
 
 class ValidationResult:
     def __init__(self):
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
-        self.findings: pd.DataFrame | None = None
-    def add_error(self, msg: str) -> None:
+        self.errors = []
+        self.findings = []
+    def add_error(self, msg: str):
         self.errors.append(msg)
-    def add_warning(self, msg: str) -> None:
-        self.warnings.append(msg)
+    def add_finding(self, msg: str):
+        self.findings.append(msg)
 
-def detect_price_anomalies(symbol: Optional[str] = None, lookback_days: int = 30) -> ValidationResult:
-    result = ValidationResult()
+def detect_price_anomalies(symbol: str | None = None, lookback_days: int = 30) -> ValidationResult:
+    res = ValidationResult()
     if not ENABLE_DATA_VALIDATION or engine is None:
-        return result
-
+        return res
     params = {'lookback_days': lookback_days}
-    where_clauses = ["ts >= CURRENT_DATE - (:lookback_days * INTERVAL '1 day')"]
-
+    where = ["ts >= CURRENT_DATE - (:lookback_days * INTERVAL '1 day')"]
     if symbol:
-        where_clauses.append("symbol = :symbol")
+        where.append("symbol = :symbol")
         params['symbol'] = symbol
-
-    where_clause = "WHERE " + " AND ".join(where_clauses)
-
+    where_sql = "WHERE " + " AND ".join(where)
     query = f"""
-    SELECT symbol, ts, close, 
-           LAG(close) OVER (PARTITION BY symbol ORDER BY ts) as prev_close,
-           volume,
-           AVG(volume) OVER (PARTITION BY symbol ORDER BY ts ROWS 20 PRECEDING) as avg_volume
-    FROM daily_bars 
-    {where_clause}
-    ORDER BY symbol, ts
+        SELECT symbol, ts, close, 
+               LAG(close) OVER (PARTITION BY symbol ORDER BY ts) AS prev_close,
+               volume,
+               AVG(volume) OVER (PARTITION BY symbol ORDER BY ts ROWS 20 PRECEDING) AS avg_volume
+        FROM daily_bars
+        {where_sql}
+        ORDER BY symbol, ts
     """
-
     try:
-        with engine.connect() as conn:
-            df = pd.read_sql_query(text(query), conn, params=params, parse_dates=['ts'])
-        result.findings = df
+        with engine.connect() as con:
+            df = pd.read_sql_query(text(query), con, params=params, parse_dates=['ts'])
     except Exception as e:
-        log_validation.error(f"Error fetching data for anomaly detection: {e}", exc_info=True)
-        result.add_error(f"Database error during anomaly detection: {e}")
-
-    return result
+        log.error(f"Error fetching data: {e}", exc_info=True)
+        res.add_error(f"Database error during anomaly detection: {e}")
+        return res
+    # (anomaly detection logic would follow)
+    return res

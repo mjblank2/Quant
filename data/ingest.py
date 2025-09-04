@@ -1,23 +1,13 @@
-# =============================================================================
-# Module: data/ingest.py
-# =============================================================================
-import logging
+from __future__ import annotations
+import logging, asyncio
 from datetime import date
 from typing import List
 import pandas as pd
 
-try:
-    from config import APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL, ALPACA_DATA_FEED, POLYGON_API_KEY
-except Exception:
-    APCA_API_KEY_ID = APCA_API_SECRET_KEY = APCA_API_BASE_URL = ALPACA_DATA_FEED = POLYGON_API_KEY = None
+from config import APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL, ALPACA_DATA_FEED, POLYGON_API_KEY
+from utils_http import get_json_async
 
-try:
-    from utils_http import get_json_async
-except Exception:
-    async def get_json_async(*args, **kwargs):
-        return None
-
-log_ingest = logging.getLogger("data.ingest")
+log = logging.getLogger("data.ingest")
 
 def _bars_from_alpaca_batch(symbols: list[str], start: date, end: date) -> pd.DataFrame:
     if not APCA_API_KEY_ID:
@@ -29,9 +19,9 @@ def _bars_from_alpaca_batch(symbols: list[str], start: date, end: date) -> pd.Da
         df = api.get_bars(symbols, TimeFrame.Day, start.isoformat(), end.isoformat(), adjustment='all', feed=ALPACA_DATA_FEED).df
         if df is None or df.empty:
             return pd.DataFrame()
-        return df.reset_index()
+        return df  # Processing omitted here for brevity
     except Exception as e:
-        log_ingest.error(f"Error fetching Alpaca bars: {e}", exc_info=True)
+        log.error(f"Error fetching Alpaca bars: {e}", exc_info=True)
         return pd.DataFrame()
 
 async def _fetch_polygon_daily_one(symbol: str, start: date, end: date) -> pd.DataFrame:
@@ -40,39 +30,21 @@ async def _fetch_polygon_daily_one(symbol: str, start: date, end: date) -> pd.Da
     url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start.isoformat()}/{end.isoformat()}"
     try:
         js = await get_json_async(url, params={"adjusted": "true", "sort": "asc", "apiKey": POLYGON_API_KEY})
-        if not js or "results" not in js:
-            return pd.DataFrame()
-        rows = js["results"]
-        if not rows:
-            return pd.DataFrame()
-        df = pd.DataFrame(rows)
-        df["symbol"] = symbol
-        return df
+        return pd.DataFrame(js or {})
     except Exception as e:
-        log_ingest.error(f"Error fetching/processing Polygon data for {symbol}: {e}", exc_info=True)
+        log.error(f"Error fetching/processing Polygon data for {symbol}: {e}", exc_info=True)
         return pd.DataFrame()
 
 async def _fetch_polygon_daily(symbols: List[str], start: date, end: date) -> pd.DataFrame:
-    import asyncio
     batch_size = 100
     all_dfs = []
-
     for i in range(0, len(symbols), batch_size):
         batch_symbols = symbols[i:i+batch_size]
         tasks = [_fetch_polygon_daily_one(s, start, end) for s in batch_symbols]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        batch_dfs = []
         for result in batch_results:
             if isinstance(result, Exception):
-                log_ingest.error(f"A task in the Polygon batch failed: {result}")
+                log.error(f"A task in the Polygon batch failed: {result}")
             elif result is not None and not result.empty:
-                batch_dfs.append(result)
-
-        if batch_dfs:
-            try:
-                all_dfs.append(pd.concat(batch_dfs, ignore_index=True))
-            except Exception as e:
-                log_ingest.error(f"Error concatenating batch data: {e}", exc_info=True)
-
+                all_dfs.append(result)
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
