@@ -1,11 +1,18 @@
+
 from __future__ import annotations
+
 import logging
 from sqlalchemy import text, exc
 from sqlalchemy.engine import Connection
-from db import engine
-from config import ENABLE_TIMESCALEDB, TIMESCALEDB_CHUNK_TIME_INTERVAL
+from typing import Optional
 
-log = logging.getLogger(__name__)
+try:
+    from config import ENABLE_TIMESCALEDB, TIMESCALEDB_CHUNK_TIME_INTERVAL
+except Exception:
+    ENABLE_TIMESCALEDB = False
+    TIMESCALEDB_CHUNK_TIME_INTERVAL = "1 month"
+
+log = logging.getLogger("data.timescale")
 
 def is_timescaledb_available(conn: Connection) -> bool:
     try:
@@ -37,22 +44,26 @@ def convert_daily_bars_to_hypertable(conn: Connection) -> bool:
     if not ENABLE_TIMESCALEDB or not is_timescaledb_available(conn):
         return False
     try:
-        chk = conn.execute(text("SELECT 1 FROM timescaledb_information.hypertables WHERE table_name = 'daily_bars'")).scalar()
-        if chk: return True
+        check = conn.execute(text("SELECT 1 FROM timescaledb_information.hypertables WHERE table_name = 'daily_bars'")).scalar()
+        if check: return True
     except Exception:
         pass
     sql = f"""
-        SELECT create_hypertable('daily_bars', 'ts', chunk_time_interval => INTERVAL '{TIMESCALEDB_CHUNK_TIME_INTERVAL}', if_not_exists => TRUE)
+        SELECT create_hypertable(
+            'daily_bars', 'ts',
+            chunk_time_interval => INTERVAL '{TIMESCALEDB_CHUNK_TIME_INTERVAL}',
+            if_not_exists => TRUE
+        )
     """
     return _execute_optional_sql(conn, sql, "Convert daily_bars to hypertable")
 
 def setup_timescaledb_policies(conn: Connection) -> bool:
     if not ENABLE_TIMESCALEDB or not is_timescaledb_available(conn):
         return False
-    ok = True
+    success = True
     sql_comp = "SELECT add_compression_policy('daily_bars', INTERVAL '30 days', if_not_exists => TRUE)"
     if not _execute_optional_sql(conn, sql_comp, "Add compression policy"):
-        ok = False
+        success = False
     sql_cagg = """
         CREATE MATERIALIZED VIEW IF NOT EXISTS daily_bars_monthly
         WITH (timescaledb.continuous) AS
@@ -62,21 +73,25 @@ def setup_timescaledb_policies(conn: Connection) -> bool:
                avg(volume) as avg_volume, sum(volume) as total_volume
         FROM daily_bars GROUP BY symbol, month
     """
-    cagg_ok = _execute_optional_sql(conn, sql_cagg, "Create continuous aggregate")
-    if not cagg_ok:
-        ok = False
-    if cagg_ok:
+    cagg_success = _execute_optional_sql(conn, sql_cagg, "Create continuous aggregate")
+    if not cagg_success: success = False
+    if cagg_success:
         sql_refresh = """
-            SELECT add_continuous_aggregate_policy('daily_bars_monthly',
-                start_offset => INTERVAL '3 months', end_offset => INTERVAL '1 day',
-                schedule_interval => INTERVAL '1 day', if_not_exists => TRUE)
+            SELECT add_continuous_aggregate_policy(
+                'daily_bars_monthly', start_offset => INTERVAL '3 months', end_offset => INTERVAL '1 day',
+                schedule_interval => INTERVAL '1 day', if_not_exists => TRUE
+            )
         """
         if not _execute_optional_sql(conn, sql_refresh, "Add refresh policy"):
-            ok = False
-    return ok
+            success = False
+    return success
 
-def setup_timescaledb() -> bool:
-    if not ENABLE_TIMESCALEDB or not engine:
+def optimize_timescaledb_indexes(conn: Connection) -> bool:
+    # Add any optional index/comment statements here.
+    return True
+
+def setup_timescaledb(engine) -> bool:
+    if not ENABLE_TIMESCALEDB or engine is None:
         return False
     success = True
     try:
@@ -87,11 +102,13 @@ def setup_timescaledb() -> bool:
                 success = False
             if not setup_timescaledb_policies(conn):
                 success = False
+            if not optimize_timescaledb_indexes(conn):
+                success = False
     except Exception as e:
-        log.error(f"TimescaleDB setup error: {e}", exc_info=True)
+        log.error(f"An unexpected error occurred during TimescaleDB setup: {e}", exc_info=True)
         success = False
     if success:
         log.info("TimescaleDB setup completed successfully")
     else:
-        log.warning("TimescaleDB setup completed with errors")
+        log.warning("TimescaleDB setup completed with errors. System will operate without full optimization.")
     return success

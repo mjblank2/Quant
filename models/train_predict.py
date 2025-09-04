@@ -1,25 +1,36 @@
+
 from __future__ import annotations
+
 import copy
 import logging
 import numpy as np
 import pandas as pd
 from os import cpu_count
-from typing import Any, Dict
-from sqlalchemy import text
+from typing import Dict, Any
 
-from db import engine, upsert_dataframe, Prediction, BacktestEquity
-from models.transformers import CrossSectionalNormalizer
+from sqlalchemy import text
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestRegressor
-from xgboost import XGBRegressor
+try:
+    from xgboost import XGBRegressor  # type: ignore
+except Exception:
+    XGBRegressor = None
 
-from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS, REGIME_GATING,
-                    SECTOR_NEUTRALIZE, PREFERRED_MODEL)
+from db import engine, upsert_dataframe, Prediction, BacktestEquity  # type: ignore
+from models.transformers import CrossSectionalNormalizer
 from models.regime import classify_regime, gate_blend_weights
-from risk.risk_model import neutralize_with_sectors
-from risk.sector import build_sector_dummies
-from data.universe_history import gate_training_with_universe
+
+try:
+    from config import (BACKTEST_START, TARGET_HORIZON_DAYS, PREFERRED_MODEL,
+                        BLEND_WEIGHTS, REGIME_GATING, SECTOR_NEUTRALIZE)
+except Exception:
+    BACKTEST_START = "2018-01-01"
+    TARGET_HORIZON_DAYS = 5
+    PREFERRED_MODEL = "blend_v1"
+    BLEND_WEIGHTS = "xgb:0.5,rf:0.3,ridge:0.2"
+    REGIME_GATING = True
+    SECTOR_NEUTRALIZE = True
 
 log = logging.getLogger(__name__)
 
@@ -27,35 +38,9 @@ FEATURE_COLS = [
     "ret_1d","ret_5d","ret_21d","mom_21","mom_63","vol_21","rsi_14",
     "turnover_21","size_ln","overnight_gap","illiq_21","beta_63",
     "f_pe_ttm","f_pb","f_ps_ttm","f_debt_to_equity","f_roa","f_gm","f_profit_margin","f_current_ratio",
-    "pead_event","pead_surprise_eps","pead_surprise_rev","russell_inout",
+    "pead_event","pead_surprise_eps","pead_surprise_rev","russell_inout"
 ]
-TCA_COLS = ["vol_21","adv_usd_21"]
-
-def _xgb_threads() -> int:
-    c = cpu_count() or 2
-    return max(1, c-1)
-
-def _define_pipeline(estimator: Any) -> Pipeline:
-    return Pipeline([("normalizer", CrossSectionalNormalizer(winsorize_tails=0.05)), ("model", estimator)])
-
-def _model_specs() -> Dict[str, Pipeline]:
-    return {
-        "xgb": _define_pipeline(XGBRegressor(n_estimators=500, max_depth=4, learning_rate=0.05,
-                                             subsample=0.8, colsample_bytree=0.8,
-                                             random_state=42, n_jobs=_xgb_threads(), tree_method="hist")),
-        "rf": _define_pipeline(RandomForestRegressor(n_estimators=350, max_depth=10, random_state=42, n_jobs=_xgb_threads())),
-        "ridge": _define_pipeline(Ridge(alpha=1.0)),
-    }
-
-def _parse_blend_weights(s: str) -> Dict[str, float]:
-    out = {}
-    for part in s.split(","):
-        if ":" in part:
-            k,v = part.split(":",1)
-            try: out[k.strip()] = float(v)
-            except: pass
-    t = sum(out.values()) or 1.0
-    return {k: v/t for k,v in out.items()}
+TCA_COLS = ["vol_21", "adv_usd_21"]
 
 def _latest_feature_date():
     try:
@@ -76,10 +61,8 @@ def _load_features_window(start_ts, end_ts):
 
 def _load_prices_window(start_ts, end_ts):
     try:
-        return pd.read_sql_query(
-            text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
-            engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']
-        ).sort_values(['symbol','ts'])
+        return pd.read_sql_query(text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
+                                 engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['symbol','ts'])
     except Exception:
         return pd.DataFrame(columns=['symbol','ts','px'])
 
@@ -92,6 +75,35 @@ def _load_altsignals(start_ts, end_ts):
     if df.empty: return df
     piv = df.pivot_table(index=['symbol','ts'], columns='name', values='value', aggfunc='last').reset_index()
     return piv
+
+def _xgb_threads() -> int:
+    c = cpu_count() or 2
+    return max(1, c-1)
+
+def _define_pipeline(estimator: Any) -> Pipeline:
+    return Pipeline([("normalizer", CrossSectionalNormalizer(winsorize_tails=0.05)),
+                    ("model", estimator)])
+
+def _model_specs() -> Dict[str, Pipeline]:
+    specs = {
+        "rf": _define_pipeline(RandomForestRegressor(n_estimators=350, max_depth=10, random_state=42, n_jobs=_xgb_threads())),
+        "ridge": _define_pipeline(Ridge(alpha=1.0)),
+    }
+    if XGBRegressor is not None:
+        specs["xgb"] = _define_pipeline(XGBRegressor(n_estimators=500, max_depth=4, learning_rate=0.05,
+                                         subsample=0.8, colsample_bytree=0.8,
+                                         random_state=42, n_jobs=_xgb_threads(), tree_method="hist"))
+    return specs
+
+def _parse_blend_weights(s: str) -> Dict[str, float]:
+    out = {}
+    for part in s.split(","):
+        if ":" in part:
+            k,v = part.split(":",1)
+            try: out[k.strip()] = float(v)
+            except: pass
+    t = sum(out.values()) or 1.0
+    return {k: v/t for k,v in out.items()}
 
 def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,float]:
     models = _model_specs()
@@ -106,7 +118,7 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,fl
             p2 = copy.deepcopy(pipe)
             p2.fit(train_df[feature_cols], train_df['fwd_ret'].values)
             preds = pd.Series(p2.predict(Xr), index=Xr.index)
-            tmp = train_df.loc[Xr.index, ['ts']].copy()
+            tmp = train_df.loc[recent_mask, ['ts']].copy()
             tmp['pred'] = preds.values; tmp['y'] = yr.values
             ic_by_date = tmp.groupby('ts').apply(lambda d: d['pred'].corr(d['y'], method='spearman'))
             ics[name] = float(ic_by_date.mean())
@@ -117,7 +129,7 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,fl
     return {k: v/s for k,v in pos.items()}
 
 def train_and_predict_all_models(window_years: int = 4):
-    log.info("Starting live training and prediction (consolidated).")
+    log.info("Starting live training and prediction (v17).")
     latest_ts = _latest_feature_date()
     if latest_ts is None or pd.isna(latest_ts):
         log.warning("No features available. Cannot train models.")
@@ -125,27 +137,25 @@ def train_and_predict_all_models(window_years: int = 4):
 
     start_ts = max(pd.Timestamp(BACKTEST_START), latest_ts - pd.DateOffset(years=window_years))
     feats = _load_features_window(start_ts, latest_ts)
-    if feats.empty:
-        return {}
+    if feats.empty: return {}
 
     alts = _load_altsignals(start_ts, latest_ts)
     if not alts.empty:
         feats = feats.merge(alts, on=['symbol','ts'], how='left')
 
     try:
+        from data.universe_history import gate_training_with_universe
         feats = gate_training_with_universe(feats)
     except Exception as e:
         log.info(f"Universe gating skipped: {e}")
 
     px = _load_prices_window(start_ts, latest_ts + pd.Timedelta(days=TARGET_HORIZON_DAYS+5))
-    if px.empty:
-        return {}
+    if px.empty: return {}
 
     px = px.sort_values(['symbol','ts']).copy()
     px['px_fwd'] = px.groupby('symbol')['px'].shift(-TARGET_HORIZON_DAYS)
     px['fwd_ret'] = (px['px_fwd'] / px['px']) - 1.0
     df = feats.merge(px[['symbol','ts','fwd_ret']], on=['symbol','ts'], how='left')
-
     train_df = df.dropna(subset=['fwd_ret']).copy()
     latest_df = feats[feats['ts'] == latest_ts].copy()
     if train_df.empty or latest_df.empty:
@@ -191,14 +201,22 @@ def train_and_predict_all_models(window_years: int = 4):
                 series = preds_dict[name].reindex(sym_index).fillna(0.0).values
                 blend += w * series
         out = latest_df[['symbol']].copy()
-        out['ts'] = latest_ts; out['y_pred'] = blend.astype(float); out['model_version'] = 'blend_raw_v1'
+        out['ts'] = latest_ts; out['y_pred'] = blend.astype(float); out['model_version'] = 'blend_raw_v17'
         outputs['blend_raw'] = out.copy()
         upsert_dataframe(out[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
         try:
-            fac = latest_df.set_index('symbol')[['size_ln','mom_21','turnover_21','beta_63'] if 'beta_63' in latest_df.columns else ['size_ln','mom_21','turnover_21']]
+            fac = latest_df.set_index('symbol')[['size_ln','mom_21','turnover_21'] + (['beta_63'] if 'beta_63' in latest_df.columns else [])]
             pred_series = pd.Series(blend, index=sym_index)
-            sd = build_sector_dummies(sym_index.tolist(), latest_ts)
-            resid = neutralize_with_sectors(pred_series, fac, sd) if SECTOR_NEUTRALIZE else pred_series
+            try:
+                from risk.sector import build_sector_dummies  # type: ignore
+            except Exception:
+                build_sector_dummies = lambda syms, ts: None
+            try:
+                from risk.risk_model import neutralize_with_sectors  # type: ignore
+            except Exception:
+                def neutralize_with_sectors(pred, fac, sd): return pred - np.nanmean(pred.values)
+            sd = build_sector_dummies(sym_index.tolist(), latest_ts) if True else None
+            resid = neutralize_with_sectors(pred_series, fac, sd)
             out2 = latest_df[['symbol']].copy()
             out2['ts'] = latest_ts; out2['y_pred'] = resid.values; out2['model_version'] = 'blend_v1'
             outputs['blend'] = out2.copy()
@@ -207,7 +225,7 @@ def train_and_predict_all_models(window_years: int = 4):
             log.warning(f"Neutralization failed: {e}; fallback to raw blend.")
             out_fallback = out.copy(); out_fallback['model_version']='blend_v1'
             upsert_dataframe(out_fallback[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
-    log.info("Live training and prediction complete.")
+    log.info("Live training and prediction complete (v17).")
     return outputs
 
 def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) -> pd.DataFrame:

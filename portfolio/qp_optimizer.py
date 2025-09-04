@@ -1,7 +1,10 @@
+
 from __future__ import annotations
-import numpy as np, pandas as pd
+
+import numpy as np
+import pandas as pd
 try:
-    import cvxpy as cp
+    import cvxpy as cp  # type: ignore
 except Exception:
     cp = None
 
@@ -11,7 +14,7 @@ def solve_qp(expected: pd.Series, C: np.ndarray, gross: float, w_cap: float) -> 
     n = len(expected)
     w = cp.Variable(n)
     mu = expected.values
-    lam = 1.0  # will be scaled outside
+    lam = 1.0
     obj = cp.Maximize(mu @ w - lam * cp.quad_form(w, C))
     cons = [
         cp.norm1(w) <= gross,

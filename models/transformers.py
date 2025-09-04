@@ -1,15 +1,14 @@
+
 from __future__ import annotations
+
 import numpy as np
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
 class CrossSectionalNormalizer(BaseEstimator, TransformerMixin):
-    """Cross-sectional winsorization + standardization (sklearn-compatible).
-
-    - Stateless across fits to avoid lookahead in cross-sectional usage.
-    - Works with numpy arrays; callers using pandas should pass ``df.values``.
-    """
+    """Winsorize + standardize features cross-sectionally. Stateless."""
     def __init__(self, winsorize_tails: float = 0.05):
-        self.winsorize_tails = float(winsorize_tails)
+        self.winsorize_tails = winsorize_tails
 
     def fit(self, X, y=None):
         return self
@@ -21,16 +20,14 @@ class CrossSectionalNormalizer(BaseEstimator, TransformerMixin):
             return np.nanquantile(X, q, axis=0, interpolation='linear')
 
     def transform(self, X):
-        import numpy as _np  # local import to ensure numpy exists where used
-        if hasattr(X, "values"):
+        if isinstance(X, pd.DataFrame):
             X = X.values
-        X = _np.asarray(X, dtype=float)
         if self.winsorize_tails > 0:
             lower = self._quantile(X, self.winsorize_tails)
             upper = self._quantile(X, 1.0 - self.winsorize_tails)
-            X = _np.clip(X, lower, upper)
-        mean = _np.nanmean(X, axis=0)
-        std = _np.nanstd(X, axis=0)
-        std = _np.where(std == 0, 1.0, std)
+            X = np.clip(X, lower, upper)
+        mean = np.nanmean(X, axis=0)
+        std = np.nanstd(X, axis=0)
+        std = np.where(std == 0, 1.0, std)
         X = (X - mean) / std
-        return _np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)

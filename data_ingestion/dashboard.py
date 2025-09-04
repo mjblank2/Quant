@@ -1,27 +1,35 @@
+
 from __future__ import annotations
-import sys, os, logging
+
+import sys
+import os
+import logging
 from typing import List
 import pandas as pd
 import sqlalchemy
 from sqlalchemy import text, inspect
-import streamlit as st
+from sqlalchemy.engine import Connection
+
+try:
+    import streamlit as st
+    IS_STREAMLIT = getattr(getattr(st, "runtime", None), "exists", lambda: False)()
+except Exception:
+    st = None
+    IS_STREAMLIT = False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 log = logging.getLogger("dashboard")
 
+# Ensure repo root on sys.path (Fallback; packaging the project is preferred)
 try:
     if '__file__' in globals():
         sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 except Exception as e:
     log.warning(f"Could not modify sys.path: {e}")
 
-IS_STREAMLIT = st.runtime.exists()
-
-if IS_STREAMLIT:
-    st.set_page_config(page_title="Blank Capital Quant – Pro Dashboard", layout="wide")
-    st.title("Blank Capital Quant")
-    st.caption("Interactive dashboard for Trades, Positions, Predictions, and Prices.")
-
+# ----------------------------------------------------------------------------
+# DB connection helpers
+# ----------------------------------------------------------------------------
 def _normalize_dsn(url: str) -> str:
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg://", 1)
@@ -32,8 +40,9 @@ def _normalize_dsn(url: str) -> str:
 def _initialize_engine():
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
+        log.error("DATABASE_URL environment variable is not set.")
         if IS_STREAMLIT:
-            st.error("DATABASE_URL is not set.")
+            st.error("DATABASE_URL is not set. Set it and refresh.")
         return None
     db_url = _normalize_dsn(db_url)
     try:
@@ -48,6 +57,10 @@ def _initialize_engine():
         return None
 
 if IS_STREAMLIT:
+    st.set_page_config(page_title="Blank Capital Quant – Pro Dashboard", layout="wide")
+    st.title("Blank Capital Quant")
+    st.caption("Interactive dashboard for Trades, Positions, Predictions, and Prices (auto-adapts to your schema).")
+
     @st.cache_resource
     def get_engine():
         return _initialize_engine()
@@ -58,6 +71,24 @@ else:
 if engine is None and IS_STREAMLIT:
     st.stop()
 
+# ----------------------------------------------------------------------------
+# Basic schema init (optional)
+# ----------------------------------------------------------------------------
+try:
+    from db import create_tables  # type: ignore
+except Exception:
+    def create_tables(*args, **kwargs):
+        log.warning("create_tables called but db module not available.")
+
+try:
+    if engine:
+        create_tables(engine)
+except Exception as e:
+    log.warning(f"Schema init skipped or failed: {e}", exc_info=True)
+
+# ----------------------------------------------------------------------------
+# Dashboard helpers
+# ----------------------------------------------------------------------------
 def list_tables_data() -> List[str]:
     if engine is None: return []
     try:
@@ -86,3 +117,32 @@ else:
 
 def has_table(name: str) -> bool:
     return name in list_tables()
+
+def _read_df(sql: str, params: dict) -> pd.DataFrame:
+    if engine is None:
+        return pd.DataFrame()
+    try:
+        with engine.connect() as conn:
+            return pd.read_sql(text(sql), conn, params=params)
+    except Exception as e:
+        log.error(f"Failed to execute SQL query: {e}", exc_info=True)
+        if IS_STREAMLIT and st is not None:
+            st.error("An error occurred while fetching data.")
+        return pd.DataFrame()
+
+# Minimal example views (customize per your schema)
+def view_latest_predictions(limit: int = 500) -> pd.DataFrame:
+    if not has_table("predictions"):
+        return pd.DataFrame()
+    sql = '''
+        SELECT symbol, ts, y_pred, model_version
+        FROM predictions
+        WHERE ts = (SELECT MAX(ts) FROM predictions)
+        ORDER BY y_pred DESC
+        LIMIT :lim
+    '''
+    return _read_df(sql, {"lim": limit})
+
+if IS_STREAMLIT:
+    st.subheader("Latest Predictions")
+    st.dataframe(view_latest_predictions())
