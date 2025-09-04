@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy import inspect
 
 
+# revision identifiers, used by Alembic.
 revision = "20250827_add_task_status_table"
 down_revision = "20250827_10"
 branch_labels = None
@@ -43,6 +44,7 @@ def upgrade():
         )
 
     try:
+        inspector = inspect(bind)
         indexes = {idx.get("name") for idx in inspector.get_indexes("task_status")}
     except Exception:
         indexes = set()
