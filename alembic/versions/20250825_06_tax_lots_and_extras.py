@@ -17,7 +17,12 @@ def upgrade():
     bind = op.get_bind()
     insp = inspect(bind)
 
-    if 'tax_lots' not in insp.get_table_names():
+    try:
+        tables = set(insp.get_table_names())
+    except Exception:
+        tables = set()
+
+    if 'tax_lots' not in tables:
         op.create_table('tax_lots',
             sa.Column('symbol', sa.String(length=20), nullable=False),
             sa.Column('lot_id', sa.BigInteger(), primary_key=True, autoincrement=True),
@@ -25,8 +30,24 @@ def upgrade():
             sa.Column('shares', sa.Integer(), nullable=False),
             sa.Column('cost_basis', sa.Float(), nullable=False)
         )
-        op.create_index('ix_taxlots_symbol', 'tax_lots', ['symbol'], unique=False)
+        try:
+            op.create_index('ix_taxlots_symbol', 'tax_lots', ['symbol'], unique=False)
+        except Exception:
+            pass
 
 def downgrade():
-    op.drop_index('ix_taxlots_symbol', table_name='tax_lots')
-    op.drop_table('tax_lots')
+    bind = op.get_bind()
+    insp = inspect(bind)
+    try:
+        idxs = {i.get('name') for i in insp.get_indexes('tax_lots')}
+    except Exception:
+        idxs = set()
+    if 'ix_taxlots_symbol' in idxs:
+        try:
+            op.drop_index('ix_taxlots_symbol', table_name='tax_lots')
+        except Exception:
+            pass
+    try:
+        op.drop_table('tax_lots')
+    except Exception:
+        pass
