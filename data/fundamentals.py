@@ -13,10 +13,17 @@ def _as_date(x):
     except Exception:
         return None
 
-async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12) -> pd.DataFrame:
-    """Fetch up to N filings per symbol and compute available_at = acceptance_datetime + 1 day (UTC)."""
+async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
+                                 batch_size: int = 50) -> pd.DataFrame:
+    """Fetch up to N filings per symbol.
+
+    The Polygon API requests can be quite memory intensive when issued for the
+    entire universe at once.  To keep memory usage bounded we process the
+    symbol universe in smaller batches and only keep one batch of results in
+    memory at a time.
+    """
     if not POLYGON_API_KEY or not symbols:
-        return pd.DataFrame(columns=['symbol','as_of','available_at'])
+        return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
 
     async def fetch_one(s: str):
         url = "https://api.polygon.io/vX/reference/financials"
@@ -88,21 +95,36 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12) -
             rows = [{"symbol": s, "as_of": None, "available_at": None}]
         return rows
 
-    batches = await asyncio.gather(*(fetch_one(s) for s in symbols))
-    flat = [r for sub in batches for r in (sub if isinstance(sub, list) else [sub])]
+    all_rows: list[list[dict]] = []
+    for i in range(0, len(symbols), batch_size):
+        batch_symbols = symbols[i:i + batch_size]
+        batch = await asyncio.gather(*(fetch_one(s) for s in batch_symbols))
+        all_rows.extend(batch)
+
+    flat = [r for sub in all_rows for r in (sub if isinstance(sub, list) else [sub])]
     df = pd.DataFrame(flat)
     if not df.empty:
         df = df.dropna(subset=["as_of"])
     return df
 
-def fetch_fundamentals_for_universe() -> pd.DataFrame:
+def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
+    """Fetch financial fundamentals for all symbols in the universe.
+
+    Parameters
+    ----------
+    batch_size: int, optional
+        Number of symbols to request from the Polygon API concurrently.  A
+        smaller batch size keeps peak memory usage low at the cost of additional
+        HTTP round-trips.  Defaults to 50 which has been a safe value on the
+        limited-memory execution environment.
+    """
     with engine.connect() as con:
         syms = pd.read_sql_query(text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"), con)["symbol"].tolist()
     if not syms:
-        return pd.DataFrame(columns=['symbol','as_of','available_at'])
-    df = asyncio.run(_poly_financials_async(syms))
+        return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
+    df = asyncio.run(_poly_financials_async(syms, batch_size=batch_size))
     if not df.empty:
-        upsert_dataframe(df, Fundamentals, ["symbol","as_of"])
+        upsert_dataframe(df, Fundamentals, ["symbol", "as_of"])
     return df
 
 if __name__ == "__main__":
