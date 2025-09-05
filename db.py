@@ -535,6 +535,3 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 else:
                     # Re-raise if it's not a handled issue or if we're already at minimum size
                     raise
-                else:
-                    # Re-raise if it's not a parameter limit issue or if we're already at minimum size
-                    raise
