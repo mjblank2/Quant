@@ -531,7 +531,8 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                     if is_param_or_txn:
                         log.warning(f"Parameter limit or transaction abort error with {len(records)} records, retrying with smaller batches")
                     if is_cardinality:
-                        log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and retrying in smaller batches")
+                        log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and "
+                                    f"retrying in smaller batches")
 
                     # Rollback the current transaction to clear the aborted state
                     try:
