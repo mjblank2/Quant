@@ -222,24 +222,7 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            # If Celery/task queue is unavailable, run the pipeline synchronously.
-            try:
-                from run_pipeline import main as run_full_pipeline_main  # type: ignore
-            except Exception:
-                run_full_pipeline_main = None
-            if run_full_pipeline_main is None:
-                st.error("Pipeline module is unavailable. Ensure run_pipeline.py exists in your project.")
-            else:
-                with st.spinner("Running full pipeline (this may take several minutes)…"):
-                    try:
-                        # sync_broker=False avoids sending trades directly to broker
-                        success = run_full_pipeline_main(sync_broker=False)
-                        if success:
-                            st.success("Pipeline completed successfully.")
-                        else:
-                            st.error("Pipeline completed with errors. Check logs for details.")
-                    except Exception as e:
-                        st.error(f"Pipeline execution failed: {e}")
+            st.info("Full pipeline requires task queue mode.")
 
 st.subheader("Universe Summary")
 try:

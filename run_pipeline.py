@@ -140,9 +140,7 @@ def main(sync_broker: bool = False) -> bool:
         log.info("✅ Data ingestion completed.")
 
         log.info("🧮 Stage 2: Feature engineering")
-        # Use a small batch size to limit memory usage during feature building
-        # (default batch_size=200 helps avoid OOM errors on limited-memory plans)
-        modules['build_features'](batch_size=200)
+        modules['build_features']()
         log.info("✅ Feature engineering completed.")
         
         if modules.get('train_and_predict_all_models'):
