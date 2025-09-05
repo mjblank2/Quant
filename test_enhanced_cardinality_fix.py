@@ -35,7 +35,7 @@ def test_feature_engineering_deduplication():
         
         # Import after setting DATABASE_URL
         import sys
-        sys.path.append('/home/runner/work/Quant/Quant')
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
         from db import Base, Feature
         
         # Create tables
