@@ -547,9 +547,45 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                         log.warning(f"CardinalityViolation with {len(part)} records; splitting batch and retrying")
 
                     mid = len(part) // 2
-                    # Recursively retry using the same connection so we don't exhaust the pool
-                    upsert_dataframe(part.iloc[:mid], table, conflict_cols, chunk_size=max(1, mid), conn=connection)
-                    upsert_dataframe(part.iloc[mid:], table, conflict_cols, chunk_size=max(1, len(part) - mid), conn=connection)
+                    # Iteratively retry using a stack to avoid recursion
+                    stack = [
+                        (part.iloc[:mid], max(1, mid)),
+                        (part.iloc[mid:], max(1, len(part) - mid))
+                    ]
+                    while stack:
+                        sub_part, sub_chunk_size = stack.pop()
+                        try:
+                            # Re-run the upsert logic for this sub-batch
+                            cols = list(sub_part.columns)
+                            records = sub_part.to_dict(orient="records")
+                            if not records:
+                                continue
+                            stmt = insert(table).values(records)
+                            update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
+                            if update_cols:
+                                stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+                            else:
+                                stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
+                            if conn is None:
+                                with connection.begin():
+                                    connection.execute(stmt)
+                            else:
+                                connection.execute(stmt)
+                        except Exception as e2:
+                            msg2 = str(e2).lower()
+                            is_param_or_txn2 = ("parameter" in msg2) or ("infailedsqltransaction" in msg2)
+                            is_cardinality2 = ("cardinalityviolation" in msg2) or ("on conflict do update command cannot affect row a second time" in msg2)
+                            if conn is not None:
+                                try:
+                                    connection.rollback()
+                                except Exception:
+                                    pass
+                            if (is_param_or_txn2 or is_cardinality2) and len(sub_part) > 1:
+                                sub_mid = len(sub_part) // 2
+                                stack.append((sub_part.iloc[:sub_mid], max(1, sub_mid)))
+                                stack.append((sub_part.iloc[sub_mid:], max(1, len(sub_part) - sub_mid)))
+                            else:
+                                raise
                 else:
                     # Re-raise if it's not a handled issue or if we're already at minimum size
                     raise
