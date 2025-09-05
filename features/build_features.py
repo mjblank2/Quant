@@ -142,6 +142,13 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['vol_21'] = g['ret_1d'].rolling(21).std()
             g['rsi_14'] = _compute_rsi(p, 14)
 
+            # Robust short-term reversal (vol-adjusted) on 5-day returns
+            # Lagged volatility is used to avoid look-ahead bias.  Multiply by sqrt(5)
+            # so that the denominator is the volatility of a 5-day sum under independence.
+            lagged_vol = g['vol_21'].shift(1)
+            denom = (lagged_vol * np.sqrt(5)).replace(0, np.nan)
+            g['reversal_5d_z'] = -(g['ret_5d'] / denom)
+
             # Microstructure: overnight gap and Amihud illiquidity
             g['overnight_gap'] = (g['open'] / g['price_feat'].shift(1)) - 1.0
             dollar_volume = g['price_feat'] * g['volume']

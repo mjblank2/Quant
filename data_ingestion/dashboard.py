@@ -146,31 +146,3 @@ def view_latest_predictions(limit: int = 500) -> pd.DataFrame:
 if IS_STREAMLIT:
     st.subheader("Latest Predictions")
     st.dataframe(view_latest_predictions())
-
-    # ----------------------------------------------------------------------
-    # Pipeline Controls: Trigger the full end-of-day pipeline manually
-    # This allows a user to run the sequence: ingest data → build features →
-    # train models → generate trades, without relying on cron jobs or Celery.
-    # ----------------------------------------------------------------------
-    # Try to import the pipeline runner; if unavailable, this will be None.
-    try:
-        from run_pipeline import main as run_full_pipeline_main  # type: ignore
-    except Exception:
-        run_full_pipeline_main = None
-
-    st.divider()
-    st.subheader("Pipeline Controls")
-    run_btn = st.button("🚀 Run End‑of‑Day Pipeline")
-    if run_btn:
-        if run_full_pipeline_main is None:
-            st.error("Pipeline module is unavailable. Ensure run_pipeline.py exists in your project.")
-        else:
-            with st.spinner("Running end‑of‑day pipeline…"):
-                try:
-                    success = run_full_pipeline_main(sync_broker=False)
-                    if success:
-                        st.success("Pipeline completed successfully.")
-                    else:
-                        st.error("Pipeline completed with errors. Check logs for details.")
-                except Exception as e:
-                    st.error(f"Pipeline execution failed: {e}")

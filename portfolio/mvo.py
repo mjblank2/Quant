@@ -41,22 +41,79 @@ except Exception:
 
 log = logging.getLogger(__name__)
 
+# -----------------------------------------------------------------------------
+# Dynamic risk lambda helper
+# -----------------------------------------------------------------------------
+def _calculate_dynamic_risk_lambda(as_of: date, base_lambda: float, market_symbol: str = "IWM", target_vol: float = 0.15) -> float:
+    """
+    Adjust the risk aversion parameter based on recent market volatility.
+
+    Parameters
+    ----------
+    as_of : date
+        Date for which to calculate the risk aversion.  Typically the portfolio
+        date.  The lookback period is anchored off this date.
+    base_lambda : float
+        Baseline risk aversion parameter from configuration.
+    market_symbol : str, default "IWM"
+        The symbol used to estimate market volatility.
+    target_vol : float, default 0.15
+        Desired target volatility (annualized).  If realized volatility exceeds
+        this, risk aversion increases; if lower, risk aversion decreases.
+
+    Returns
+    -------
+    float
+        Adjusted risk aversion parameter.  The adjustment factor is constrained
+        between 0.5x and 3x of the base lambda.
+    """
+    lookback = 63  # use roughly 3 months of data
+    start_date = as_of - pd.Timedelta(days=int(lookback * 1.5))
+    # Query market prices
+    sql = text("""
+        SELECT ts, COALESCE(adj_close, close) AS px FROM daily_bars
+        WHERE symbol=:s AND ts>=:start AND ts<=:end ORDER BY ts
+    """)
+    try:
+        df = pd.read_sql_query(sql, engine, params={'s': market_symbol, 'start': start_date, 'end': as_of}, parse_dates=['ts'])
+    except Exception:
+        return base_lambda
+    if df.empty or len(df) < lookback:
+        return base_lambda
+    returns = df['px'].pct_change()
+    realized_vol = returns.rolling(window=lookback).std().iloc[-1] * np.sqrt(252)
+    if pd.isna(realized_vol) or realized_vol == 0:
+        return base_lambda
+    adj_factor = realized_vol / target_vol
+    dynamic_lambda = base_lambda * adj_factor
+    dynamic_lambda = max(base_lambda * 0.5, min(base_lambda * 3.0, dynamic_lambda))
+    log.info(f"Market Vol: {realized_vol:.2f}. Base Lambda: {base_lambda:.2f}. Dynamic Lambda: {dynamic_lambda:.2f}")
+    return dynamic_lambda
+
 def _latest_prices(symbols: list[str]) -> pd.Series:
+    """
+    Fetch the latest price for each symbol in the list.
+
+    The query uses a subquery to select the maximum timestamp per symbol and then
+    joins back to daily_bars.  Symbols are passed via an expanded bindparam to
+    support lists of arbitrary length without using ANY(), which may not be
+    portable across all SQL dialects.
+    """
     if not symbols:
         return pd.Series(dtype=float)
     stmt = text("""
         WITH latest AS (
-            SELECT symbol, MAX(ts) ts
+            SELECT symbol, MAX(ts) AS ts
             FROM daily_bars
-            WHERE symbol = ANY(:syms)
+            WHERE symbol IN :syms
             GROUP BY symbol
         )
         SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
         FROM daily_bars b
-        JOIN latest l ON b.symbol=l.symbol AND b.ts=l.ts
+        JOIN latest l ON b.symbol = l.symbol AND b.ts = l.ts
     """).bindparams(bindparam("syms", expanding=True))
     try:
-        df = pd.read_sql_query(stmt, engine, params={'syms': symbols})
+        df = pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)})
         return df.set_index("symbol")["px"] if not df.empty else pd.Series(dtype=float)
     except Exception as e:
         log.error(f"Error fetching prices: {e}")
@@ -65,86 +122,112 @@ def _latest_prices(symbols: list[str]) -> pd.Series:
 def _adv20(symbols: list[str]) -> pd.Series:
     if not symbols:
         return pd.Series(dtype=float)
-    stmt = text("SELECT symbol, adv_usd_20 FROM universe WHERE symbol = ANY(:syms)")
+    stmt = text("SELECT symbol, adv_usd_20 FROM universe WHERE symbol IN :syms")
+    stmt = stmt.bindparams(bindparam("syms", expanding=True))
     try:
-        df = pd.read_sql_query(stmt, engine, params={'syms': symbols})
+        df = pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)})
         return df.set_index("symbol")["adv_usd_20"] if not df.empty else pd.Series(dtype=float)
     except Exception as e:
         log.error(f"Error fetching ADV: {e}")
         return pd.Series(dtype=float)
 
 def _load_previous_weights(symbols: list[str]) -> pd.Series:
+    """
+    Load previous target weights for given symbols from the most recent timestamp.
+    Uses an IN-clause with expanded parameters to ensure portability.
+    """
     if not symbols:
         return pd.Series(dtype=float)
     stmt = text("""
         SELECT symbol, weight
         FROM target_positions
-        WHERE ts=(SELECT MAX(ts) FROM target_positions)
-        AND symbol = ANY(:syms)
+        WHERE ts = (SELECT MAX(ts) FROM target_positions)
+        AND symbol IN :syms
     """).bindparams(bindparam("syms", expanding=True))
     try:
-        df = pd.read_sql_query(stmt, engine, params={'syms': symbols})
+        df = pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)})
         return df.set_index('symbol')['weight'] if not df.empty else pd.Series(dtype=float)
     except Exception as e:
         log.warning(f"Error loading previous weights: {e}")
         return pd.Series(dtype=float)
 
 def build_portfolio_mvo(alpha: pd.Series, as_of: date, risk_lambda: float | None = None) -> pd.Series:
+    # Fall back to heuristic optimizer if CVXPY is not available
     if cp is None:
         log.warning("CVXPY not available, falling back to simple optimization")
         return _fallback_optimizer(alpha)
 
-    risk_lambda = risk_lambda if risk_lambda is not None else MVO_RISK_LAMBDA
+    # Determine effective risk aversion (dynamic based on market volatility)
+    base_lambda = risk_lambda if risk_lambda is not None else MVO_RISK_LAMBDA
+    effective_lambda = _calculate_dynamic_risk_lambda(as_of, base_lambda)
 
     syms = alpha.index.tolist()
     px = _latest_prices(syms)
     adv = _adv20(syms)
 
-    ok = (px >= MIN_PRICE) & (adv >= MIN_ADV_USD)
-    a = alpha[ok].fillna(0.0)
-
+    # Filter out symbols that fail price and liquidity screens
+    ok_mask = (px >= MIN_PRICE) & (adv >= MIN_ADV_USD)
+    a = alpha[ok_mask].fillna(0.0)
     if a.empty:
         log.warning("No symbols passed filters")
         return pd.Series(dtype=float)
-
     syms = a.index.tolist()
     px = px.reindex(syms)
     adv = adv.reindex(syms)
 
+    # Build risk model
     log.info(f"Building risk model for {len(syms)} symbols")
     Sigma, factor_exposures = synthesize_covariance(syms, as_of)
     if Sigma.empty:
         log.warning("Failed to build risk model, using diagonal covariance")
         Sigma = pd.DataFrame(np.eye(len(syms)) * 1e-4, index=syms, columns=syms)
 
+    # Ensure covariance matrix is positive definite; regularize if necessary
+    try:
+        # Attempt Cholesky decomposition
+        np.linalg.cholesky(Sigma.values)
+    except np.linalg.LinAlgError:
+        log.warning("Covariance matrix is not positive definite. Applying regularization.")
+        min_eig = np.min(np.linalg.eigvalsh(Sigma.values))
+        Sigma += np.eye(len(syms)) * (max(0, -min_eig) + 1e-8)
+
     w_prev = _load_previous_weights(syms).reindex(syms).fillna(0.0)
     nav = STARTING_CAPITAL
-    liq_cap = (LIQUIDITY_MAX_PCT_ADV * adv / nav).clip(upper=MAX_POSITION_WEIGHT).fillna(MAX_POSITION_WEIGHT)
+    # Liquidity cap: maximum percentage of ADV per name, clipped by per-name cap
+    liq_cap = (LIQUIDITY_MAX_PCT_ADV * adv / nav).fillna(MAX_POSITION_WEIGHT)
+    # Combine liquidity cap and global max position cap by taking the element-wise minimum
+    cap = np.minimum(liq_cap.values, MAX_POSITION_WEIGHT)
 
     n = len(syms)
     w = cp.Variable(n)
 
     mu = a.values
     S = Sigma.values
+    # Transaction cost term penalizes turnover
     tcost = MVO_COST_LAMBDA * cp.norm1(w - w_prev.values)
-    obj = cp.Maximize(mu @ w - risk_lambda * cp.quad_form(w, S) - tcost)
+    # Objective uses dynamic risk lambda
+    obj = cp.Maximize(mu @ w - effective_lambda * cp.quad_form(w, S) - tcost)
 
     cons = []
-    cons += [cp.sum(cp.abs(w)) <= GROSS_LEVERAGE + 1e-6]
-    cons += [cp.sum(w) == NET_EXPOSURE]
-    cons += [w >= 0.0, w <= liq_cap.values]
-    cons += [w <= MAX_POSITION_WEIGHT]
-
+    # Gross leverage constraint
+    cons.append(cp.sum(cp.abs(w)) <= GROSS_LEVERAGE + 1e-6)
+    # Net exposure constraint
+    cons.append(cp.sum(w) == NET_EXPOSURE)
+    # Long-only and per-name caps
+    cons.append(w >= 0.0)
+    cons.append(w <= cap)
+    # Beta constraints
     try:
         betas = est_beta_asof(syms, as_of, market_symbol="IWM", lookback=63)
         betas = betas.reindex(syms).fillna(0.0).values
-        cons += [betas @ w >= BETA_MIN, betas @ w <= BETA_MAX]
+        cons.append(betas @ w >= BETA_MIN)
+        cons.append(betas @ w <= BETA_MAX)
         log.info(f"Added beta constraints: [{BETA_MIN}, {BETA_MAX}]")
     except Exception as e:
         log.warning(f"Could not add beta constraints: {e}")
-
+    # Turnover constraint (annualized limit converted to per period)
     step_turnover = TURNOVER_LIMIT_ANNUAL / 252.0
-    cons += [cp.norm1(w - w_prev.values) <= step_turnover + 1e-6]
+    cons.append(cp.norm1(w - w_prev.values) <= step_turnover + 1e-6)
 
     prob = cp.Problem(obj, cons)
     try:
@@ -156,7 +239,8 @@ def build_portfolio_mvo(alpha: pd.Series, as_of: date, risk_lambda: float | None
         if w.value is None:
             log.warning("Optimization returned None")
             return _fallback_optimizer(a)
-        sol = pd.Series(np.array(w.value).flatten(), index=syms)
+        sol_values = np.array(w.value).flatten()
+        sol = pd.Series(sol_values, index=syms)
         sol = sol[sol.abs() > 1e-6]
         log.info(f"MVO optimization successful: {len(sol)} positions, gross: {sol.abs().sum():.3f}, net: {sol.sum():.3f}")
         return sol.sort_values(ascending=False)
