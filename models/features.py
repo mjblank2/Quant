@@ -226,7 +226,17 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             if dedupe_count < original_count:
                 log.warning(f"Removed {original_count - dedupe_count} duplicate (symbol, ts) pairs during feature engineering to prevent CardinalityViolation")
 
-            upsert_dataframe(feats, Feature, ['symbol', 'ts'])
+            # Final validation to ensure no duplicates remain
+            final_check = feats.groupby(['symbol', 'ts']).size()
+            if final_check.max() > 1:
+                log.error(f"CRITICAL: Duplicates still exist after deduplication! Max count: {final_check.max()}")
+                # Emergency deduplication
+                feats = feats.drop_duplicates(subset=['symbol', 'ts'], keep='last').reset_index(drop=True)
+                log.warning("Applied emergency deduplication")
+
+            # Use conservative chunk_size to prevent parameter limit errors in production
+            # This aligns with the batch_size approach used throughout the pipeline
+            upsert_dataframe(feats, Feature, ['symbol', 'ts'], chunk_size=1000)
             new_rows.append(feats)
             log.info(f"Batch completed. New rows: {len(feats)}")
 
