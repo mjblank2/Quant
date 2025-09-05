@@ -228,7 +228,10 @@ def build_features(batch_size: int = 100, warmup_days: int = 90) -> pd.DataFrame
             log.info(f"Batch completed. New rows upserted: {len(feats)}")
 
         # Explicitly free large temporary objects to keep memory usage in check
-        del px, fnd, shs, out_frames
+        try:
+            del px, fnd, shs, out_frames
+        except NameError:
+            pass
         gc.collect()
 
     return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
