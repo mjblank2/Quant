@@ -36,7 +36,7 @@ def test_complete_cardinality_fix():
         
         # Import after setting DATABASE_URL
         import sys
-        sys.path.append('/home/runner/work/Quant/Quant')
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
         from db import Base, Feature, upsert_dataframe
         
         # Create tables
