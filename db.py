@@ -539,8 +539,20 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                         if dedupe_size < original_size:
                             log.warning(f"Removed {original_size - dedupe_size} duplicate rows during retry to prevent CardinalityViolation")
 
-                    # Recursively call with much smaller chunks and no connection (will create new transaction)
-                    upsert_dataframe(smaller_df, table, conflict_cols, chunk_size=10, conn=None)
+                    # Iteratively retry the smaller dataframe using the SAME connection
+                    for retry_start in range(0, len(smaller_df), 10):
+                        retry_part = smaller_df.iloc[retry_start:retry_start + 10]
+                        retry_cols = list(retry_part.columns)
+                        retry_records = retry_part.to_dict(orient="records")
+                        if not retry_records:
+                            continue
+                        stmt_retry = insert(table).values(retry_records)
+                        retry_update_cols = {c: getattr(stmt_retry.excluded, c) for c in retry_cols if c not in conflict_cols}
+                        if retry_update_cols:
+                            stmt_retry = stmt_retry.on_conflict_do_update(index_elements=conflict_cols, set_=retry_update_cols)
+                        else:
+                            stmt_retry = stmt_retry.on_conflict_do_nothing(index_elements=conflict_cols)
+                        connection.execute(stmt_retry)
                 else:
                     # Re-raise if it's not a handled issue or if we're already at minimum size
                     raise
