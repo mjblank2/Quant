@@ -45,7 +45,7 @@ def test_cardinality_reproduction():
         # Import the upsert_dataframe function with DATABASE_URL set
         os.environ['DATABASE_URL'] = f'sqlite:///{temp_db_path}'
         import sys
-        sys.path.append('/home/runner/work/Quant/Quant')
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
         from db import upsert_dataframe
         
         # Create test data that simulates the actual feature engineering output
