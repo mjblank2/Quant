@@ -482,6 +482,15 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         if df.empty:
             return
 
+        # Proactive deduplication to prevent CardinalityViolation errors
+        # Remove any duplicate rows based on conflict columns before any INSERT attempt
+        if conflict_cols and set(conflict_cols).issubset(df.columns):
+            original_size = len(df)
+            df = df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
+            dedupe_size = len(df)
+            if dedupe_size < original_size:
+                log.warning(f"Proactively removed {original_size - dedupe_size} duplicate rows to prevent CardinalityViolation on conflict cols {conflict_cols}")
+
         cols_all = list(df.columns)
         # rows per statement bounded by MAX_BIND_PARAMS / num_columns
         # Add additional safety: ensure we don't exceed reasonable batch sizes
