@@ -217,26 +217,12 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
-
-            # Proactive deduplication to prevent CardinalityViolation errors
-            # Remove any duplicate (symbol, ts) pairs that might have been created during feature engineering
-            original_count = len(feats)
-            feats = feats.drop_duplicates(subset=['symbol', 'ts'], keep='last').reset_index(drop=True)
-            dedupe_count = len(feats)
-            if dedupe_count < original_count:
-                log.warning(f"Removed {original_count - dedupe_count} duplicate (symbol, ts) pairs during feature engineering to prevent CardinalityViolation")
-
-            # Final validation to ensure no duplicates remain
-            final_check = feats.groupby(['symbol', 'ts']).size()
-            if final_check.max() > 1:
-                log.error(f"CRITICAL: Duplicates still exist after deduplication! Max count: {final_check.max()}")
-                # Emergency deduplication
-                feats = feats.drop_duplicates(subset=['symbol', 'ts'], keep='last').reset_index(drop=True)
-                log.warning("Applied emergency deduplication")
-
-            # Use conservative chunk_size to prevent parameter limit errors in production
-            # This aligns with the batch_size approach used throughout the pipeline
-            upsert_dataframe(feats, Feature, ['symbol', 'ts'], chunk_size=1000)
+            feats = (
+                feats.sort_values('ts')
+                .drop_duplicates(['symbol', 'ts'], keep='last')
+                .reset_index(drop=True)
+            )
+            upsert_dataframe(feats, Feature, ['symbol', 'ts'], chunk_size=200)
             new_rows.append(feats)
             log.info(f"Batch completed. New rows: {len(feats)}")
 
