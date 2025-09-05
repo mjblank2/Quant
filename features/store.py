@@ -54,7 +54,12 @@ class FeatureStore:
         if features_df.empty:
             return
         from db import upsert_dataframe, Feature  # type: ignore
-        upsert_dataframe(features_df, Feature, ['symbol', 'ts'])
+        features_df = (
+            features_df.sort_values('ts')
+            .drop_duplicates(['symbol', 'ts'], keep='last')
+            .reset_index(drop=True)
+        )
+        upsert_dataframe(features_df, Feature, ['symbol', 'ts'], chunk_size=200)
         log.info(f"Stored {len(features_df)} feature records")
 
     def get_feature_metadata(self, feature_name: str) -> Dict[str, Any]:

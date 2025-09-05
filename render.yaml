@@ -209,7 +209,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "30 22 * * 1-5"
-    dockerCommand: "python run_pipeline.py"
+    dockerCommand: "alembic upgrade heads && python -m run_pipeline"
     envVars:
       - key: DATABASE_URL
         sync: false

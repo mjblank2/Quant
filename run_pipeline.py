@@ -116,64 +116,77 @@ def main(sync_broker: bool = False) -> bool:
         return False
     log.info("✅ Database connection verified.")
 
-    # 2. Database Migration
-    log.info("🔧 Attempting to run database migrations...")
-    migration_ok, migration_msg = _run_alembic_upgrade()
-    if not migration_ok:
-        log.error("❌ Database migration failed: %s", migration_msg)
-        log.error("💡 The database schema must be up-to-date before running the pipeline. Please fix the migration issue.")
-        return False
-    log.info("✅ Database schema is up to date.")
-
-    # 3. Import pipeline components
-    import_ok, modules, import_msg = _import_modules()
-    if not import_ok:
-        log.error("❌ Pipeline failed during module import: %s", import_msg)
-        return False
-    log.info("✅ All pipeline components imported successfully.")
-    
-    try:
-        # 4. Execute Pipeline Stages
-        log.info("📊 Stage 1: Data ingestion")
-        modules['ingest_bars_for_universe'](7)
-        modules['fetch_fundamentals_for_universe']()
-        log.info("✅ Data ingestion completed.")
-
-        log.info("🧮 Stage 2: Feature engineering")
-        # Use a small batch size to limit memory usage during feature building
-        # (default batch_size=200 helps avoid OOM errors on limited-memory plans)
-        modules['build_features'](batch_size=200)
-        log.info("✅ Feature engineering completed.")
-        
-        if modules.get('train_and_predict_all_models'):
-            log.info("🤖 Stage 3: Model training and prediction")
-            modules['train_and_predict_all_models']()
-            log.info("✅ Model training and prediction completed.")
-        else:
-            log.warning("⚠️ Stage 3: Skipping model training due to missing modules.")
-
-        if modules.get('generate_today_trades'):
-            log.info("💰 Stage 4: Trade generation")
-            trades = modules['generate_today_trades']()
-            log.info("✅ Trade generation completed.")
-
-            if sync_broker and modules.get('sync_trades_to_broker') and trades is not None and not trades.empty:
-                log.info("🔄 Stage 5: Syncing trades to broker")
-                ids = trades["id"].dropna().astype(int).tolist() if "id" in trades.columns else []
-                if ids:
-                    modules['sync_trades_to_broker'](ids)
-                    log.info("✅ Broker sync completed.")
-                else:
-                    log.info("ℹ️ No trades to sync to broker.")
-        else:
-            log.warning("⚠️ Stage 4/5: Skipping trade generation/sync due to missing modules.")
-
-        log.info("🎉 Pipeline completed successfully")
+    from sqlalchemy import create_engine, text
+    from config import DATABASE_URL
+    lock_engine = create_engine(DATABASE_URL)
+    lock_conn = lock_engine.connect()
+    got_lock = lock_conn.execute(text("SELECT pg_try_advisory_lock(987654321)")).scalar()
+    if not got_lock:
+        log.info("Another pipeline is running")
+        lock_conn.close()
         return True
-        
-    except Exception as e:
-        log.exception("💥 Pipeline failed with an unexpected error during execution.")
-        return False
+    try:
+        # 2. Database Migration
+        log.info("🔧 Attempting to run database migrations...")
+        migration_ok, migration_msg = _run_alembic_upgrade()
+        if not migration_ok:
+            log.error("❌ Database migration failed: %s", migration_msg)
+            log.error("💡 The database schema must be up-to-date before running the pipeline. Please fix the migration issue.")
+            return False
+        log.info("✅ Database schema is up to date.")
+
+        # 3. Import pipeline components
+        import_ok, modules, import_msg = _import_modules()
+        if not import_ok:
+            log.error("❌ Pipeline failed during module import: %s", import_msg)
+            return False
+        log.info("✅ All pipeline components imported successfully.")
+
+        try:
+            # 4. Execute Pipeline Stages
+            log.info("📊 Stage 1: Data ingestion")
+            modules['ingest_bars_for_universe'](7)
+            modules['fetch_fundamentals_for_universe']()
+            log.info("✅ Data ingestion completed.")
+
+            log.info("🧮 Stage 2: Feature engineering")
+            # Use a small batch size to limit memory usage during feature building
+            # (default batch_size=200 helps avoid OOM errors on limited-memory plans)
+            modules['build_features'](batch_size=200)
+            log.info("✅ Feature engineering completed.")
+
+            if modules.get('train_and_predict_all_models'):
+                log.info("🤖 Stage 3: Model training and prediction")
+                modules['train_and_predict_all_models']()
+                log.info("✅ Model training and prediction completed.")
+            else:
+                log.warning("⚠️ Stage 3: Skipping model training due to missing modules.")
+
+            if modules.get('generate_today_trades'):
+                log.info("💰 Stage 4: Trade generation")
+                trades = modules['generate_today_trades']()
+                log.info("✅ Trade generation completed.")
+
+                if sync_broker and modules.get('sync_trades_to_broker') and trades is not None and not trades.empty:
+                    log.info("🔄 Stage 5: Syncing trades to broker")
+                    ids = trades["id"].dropna().astype(int).tolist() if "id" in trades.columns else []
+                    if ids:
+                        modules['sync_trades_to_broker'](ids)
+                        log.info("✅ Broker sync completed.")
+                    else:
+                        log.info("ℹ️ No trades to sync to broker.")
+            else:
+                log.warning("⚠️ Stage 4/5: Skipping trade generation/sync due to missing modules.")
+
+            log.info("🎉 Pipeline completed successfully")
+            return True
+
+        except Exception as e:
+            log.exception("💥 Pipeline failed with an unexpected error during execution.")
+            return False
+    finally:
+        lock_conn.execute(text("SELECT pg_advisory_unlock(987654321)"))
+        lock_conn.close()
 
 
 if __name__ == "__main__":

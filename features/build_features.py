@@ -220,9 +220,12 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
-            # Extra defensive de-dupe at batch level
-            feats = feats.sort_values(['symbol','ts']).drop_duplicates(subset=['symbol','ts'], keep='last')
-            upsert_dataframe(feats, Feature, ['symbol','ts'])
+            feats = (
+                feats.sort_values('ts')
+                .drop_duplicates(['symbol','ts'], keep='last')
+                .reset_index(drop=True)
+            )
+            upsert_dataframe(feats, Feature, ['symbol','ts'], chunk_size=200)
             new_rows.append(feats)
             log.info(f"Batch completed. New rows upserted: {len(feats)}")
 
