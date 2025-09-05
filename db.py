@@ -489,7 +489,8 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
             df = df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
             dedupe_size = len(df)
             if dedupe_size < original_size:
-                log.warning(f"Proactively removed {original_size - dedupe_size} duplicate rows to prevent CardinalityViolation on conflict cols {conflict_cols}")
+                # Use DEBUG level since this is expected behavior during normal data processing
+                log.debug(f"Proactively removed {original_size - dedupe_size} duplicate rows to prevent CardinalityViolation on conflict cols {conflict_cols}")
 
         cols_all = list(df.columns)
         # rows per statement bounded by MAX_BIND_PARAMS / num_columns
@@ -499,6 +500,16 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
         for start in range(0, len(df), per_stmt_rows):
             part = df.iloc[start:start + per_stmt_rows]
+            
+            # Additional safety: deduplicate each chunk to prevent cardinality violations
+            # This handles edge cases where chunking might create duplicates
+            if conflict_cols and set(conflict_cols).issubset(part.columns):
+                chunk_original_size = len(part)
+                part = part.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
+                chunk_dedupe_size = len(part)
+                if chunk_dedupe_size < chunk_original_size:
+                    log.debug(f"Chunk deduplication: removed {chunk_original_size - chunk_dedupe_size} duplicates from batch")
+            
             cols = list(part.columns)
             records = part.to_dict(orient="records")
             if not records:
@@ -520,7 +531,8 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                     if is_param_or_txn:
                         log.warning(f"Parameter limit or transaction abort error with {len(records)} records, retrying with smaller batches")
                     if is_cardinality:
-                        log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and retrying in smaller batches")
+                        log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and "
+                                    f"retrying in smaller batches")
 
                     # Rollback the current transaction to clear the aborted state
                     try:
@@ -537,7 +549,13 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                         smaller_df = smaller_df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
                         dedupe_size = len(smaller_df)
                         if dedupe_size < original_size:
-                            log.warning(f"Removed {original_size - dedupe_size} duplicate rows during retry to prevent CardinalityViolation")
+                            # Use DEBUG level for retry deduplication since this is expected behavior
+                            # Only log as WARNING if we're removing a significant number of duplicates
+                            removed_count = original_size - dedupe_size
+                            if removed_count > original_size * 0.5:  # More than 50% are duplicates
+                                log.warning(f"Removed {removed_count} duplicate rows during retry (significant duplication detected)")
+                            else:
+                                log.debug(f"Removed {removed_count} duplicate rows during retry to prevent CardinalityViolation")
 
                     # Iteratively retry the smaller dataframe using the SAME connection
                     for retry_start in range(0, len(smaller_df), 10):
