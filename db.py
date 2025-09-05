@@ -423,7 +423,7 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
     # Use a single connection for the entire operation. When no connection
     # is provided, we manually commit each chunk so a failure later in the
     # batch doesn't roll back earlier successful inserts.
-    ctx = engine.connect() if conn is None else nullcontext(conn)
+    ctx = engine.begin() if conn is None else nullcontext(conn)
     with ctx as connection:
         # Filter DataFrame columns to only include columns that exist in the actual database table
         # This prevents errors when migrations haven't been applied yet
