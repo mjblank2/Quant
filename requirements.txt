@@ -21,6 +21,7 @@ great-expectations>=0.18.0
 mlflow
 arch
 matplotlib
+psycopg2-binary==2.9.9
 
 # Development dependencies
 pytest-asyncio
