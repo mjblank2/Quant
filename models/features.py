@@ -217,7 +217,16 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
-            upsert_dataframe(feats, Feature, ['symbol','ts'])
+
+            # Proactive deduplication to prevent CardinalityViolation errors
+            # Remove any duplicate (symbol, ts) pairs that might have been created during feature engineering
+            original_count = len(feats)
+            feats = feats.drop_duplicates(subset=['symbol', 'ts'], keep='last').reset_index(drop=True)
+            dedupe_count = len(feats)
+            if dedupe_count < original_count:
+                log.warning(f"Removed {original_count - dedupe_count} duplicate (symbol, ts) pairs during feature engineering to prevent CardinalityViolation")
+
+            upsert_dataframe(feats, Feature, ['symbol', 'ts'])
             new_rows.append(feats)
             log.info(f"Batch completed. New rows: {len(feats)}")
 
