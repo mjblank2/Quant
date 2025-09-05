@@ -6,6 +6,7 @@ from typing import List
 import numpy as np
 import pandas as pd
 from sqlalchemy import text, bindparam
+import gc
 
 from db import engine, upsert_dataframe, Feature  # type: ignore
 
@@ -92,7 +93,7 @@ def _load_shares_outstanding(symbols: List[str]) -> pd.DataFrame:
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
 
-def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame:
+def build_features(batch_size: int = 100, warmup_days: int = 90) -> pd.DataFrame:
     """Incremental, point-in-time feature building with duplicate-safe upsert."""
     log.info("Starting feature build process (Incremental, PIT).")
     syms = _symbols()
@@ -225,6 +226,10 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             upsert_dataframe(feats, Feature, ['symbol','ts'])
             new_rows.append(feats)
             log.info(f"Batch completed. New rows upserted: {len(feats)}")
+
+        # Explicitly free large temporary objects to keep memory usage in check
+        del px, fnd, shs, out_frames
+        gc.collect()
 
     return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
 

@@ -7,15 +7,24 @@ from sqlalchemy.types import JSON
 from datetime import datetime, date
 import pandas as pd
 import numpy as np
-from config import DATABASE_URL
+from config import DATABASE_URL as _DATABASE_URL
 import logging
 
 log = logging.getLogger(__name__)
 
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is required.")
+# Allow tests to run without DATABASE_URL by falling back to SQLite. Production
+# deployments should set the environment variable explicitly.
+DATABASE_URL = _DATABASE_URL or "sqlite://"
+if not _DATABASE_URL:
+    log.warning("DATABASE_URL not set. Defaulting to in-memory SQLite database.")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+# Allow a larger connection pool by default. For SQLite, the default pool is
+# usually fine and does not accept size arguments.
+engine_kwargs = dict(pool_pre_ping=True, future=True)
+if not DATABASE_URL.startswith("sqlite"):
+    engine_kwargs.update(pool_size=20, max_overflow=10)
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 class Base(DeclarativeBase):
@@ -411,7 +420,10 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
     # Some configurations may have limits as low as 16,000 parameters.
     MAX_BIND_PARAMS = 10000  # Very conservative to prevent parameter limit errors
 
-    ctx = engine.begin() if conn is None else nullcontext(conn)
+    # Use a single connection for the entire operation. When no connection
+    # is provided, we manually commit each chunk so a failure later in the
+    # batch doesn't roll back earlier successful inserts.
+    ctx = engine.connect() if conn is None else nullcontext(conn)
     with ctx as connection:
         # Filter DataFrame columns to only include columns that exist in the actual database table
         # This prevents errors when migrations haven't been applied yet
@@ -499,60 +511,45 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
         for start in range(0, len(df), per_stmt_rows):
             part = df.iloc[start:start + per_stmt_rows]
+            if conflict_cols and set(conflict_cols).issubset(part.columns):
+                part = part.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
             cols = list(part.columns)
             records = part.to_dict(orient="records")
             if not records:
                 continue
 
+            stmt = insert(table).values(records)
+            update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
+            if update_cols:
+                stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+            else:
+                stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
+
             try:
-                stmt = insert(table).values(records)
-                update_cols = {c: getattr(stmt.excluded, c) for c in cols if c not in conflict_cols}
-                if update_cols:
-                    stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+                if conn is None:
+                    with connection.begin():
+                        connection.execute(stmt)
                 else:
-                    stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
-                connection.execute(stmt)
+                    connection.execute(stmt)
             except Exception as e:
                 msg = str(e).lower()
                 is_param_or_txn = ("parameter" in msg) or ("infailedsqltransaction" in msg)
                 is_cardinality = ("cardinalityviolation" in msg) or ("on conflict do update command cannot affect row a second time" in msg)
-                if (is_param_or_txn or is_cardinality) and len(records) > 1:
-                    if is_param_or_txn:
-                        log.warning(f"Parameter limit or transaction abort error with {len(records)} records, retrying with smaller batches")
-                    if is_cardinality:
-                        log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and retrying in smaller batches")
-
-                    # Rollback the current transaction to clear the aborted state
+                if conn is not None:
                     try:
                         connection.rollback()
                     except Exception:
-                        pass  # Ignore rollback errors - transaction might already be rolled back
+                        pass
+                if (is_param_or_txn or is_cardinality) and len(part) > 1:
+                    if is_param_or_txn:
+                        log.warning(f"Parameter limit or transaction abort error with {len(part)} records, retrying with smaller batches")
+                    if is_cardinality:
+                        log.warning(f"CardinalityViolation with {len(part)} records; splitting batch and retrying")
 
-                    # Rebuild smaller DataFrame from records for retry
-                    smaller_df = pd.DataFrame(records)
-
-                    # Remove any duplicate rows based on the conflict columns before retry
-                    if len(smaller_df) > 0 and conflict_cols and set(conflict_cols).issubset(smaller_df.columns):
-                        original_size = len(smaller_df)
-                        smaller_df = smaller_df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
-                        dedupe_size = len(smaller_df)
-                        if dedupe_size < original_size:
-                            log.warning(f"Removed {original_size - dedupe_size} duplicate rows during retry to prevent CardinalityViolation")
-
-                    # Iteratively retry the smaller dataframe using the SAME connection
-                    for retry_start in range(0, len(smaller_df), 10):
-                        retry_part = smaller_df.iloc[retry_start:retry_start + 10]
-                        retry_cols = list(retry_part.columns)
-                        retry_records = retry_part.to_dict(orient="records")
-                        if not retry_records:
-                            continue
-                        stmt_retry = insert(table).values(retry_records)
-                        retry_update_cols = {c: getattr(stmt_retry.excluded, c) for c in retry_cols if c not in conflict_cols}
-                        if retry_update_cols:
-                            stmt_retry = stmt_retry.on_conflict_do_update(index_elements=conflict_cols, set_=retry_update_cols)
-                        else:
-                            stmt_retry = stmt_retry.on_conflict_do_nothing(index_elements=conflict_cols)
-                        connection.execute(stmt_retry)
+                    mid = len(part) // 2
+                    # Recursively retry using the same connection so we don't exhaust the pool
+                    upsert_dataframe(part.iloc[:mid], table, conflict_cols, chunk_size=max(1, mid), conn=connection)
+                    upsert_dataframe(part.iloc[mid:], table, conflict_cols, chunk_size=max(1, len(part) - mid), conn=connection)
                 else:
                     # Re-raise if it's not a handled issue or if we're already at minimum size
                     raise
