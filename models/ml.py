@@ -2,7 +2,7 @@ from __future__ import annotations
 import numpy as np, pandas as pd, copy, logging, os
 from os import cpu_count
 from typing import Dict, Any
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestRegressor
@@ -58,14 +58,33 @@ def _load_features_window(start_ts, end_ts):
     """
     # Always include identifier columns, the feature columns, TCA columns and the target
     cols = list(set(FEATURE_COLS + TCA_COLS + ["symbol", "ts", TARGET_VARIABLE, 'fwd_ret']))
-    cols_str = ", ".join(cols)
+    # Determine which columns actually exist in the database
+    inspector = inspect(engine)
+    existing_cols = {c['name'] for c in inspector.get_columns('features')}
+    missing = [c for c in cols if c not in existing_cols]
+    if missing:
+        log.warning("Missing feature columns: %s", missing)
+    cols_to_query = [c for c in cols if c in existing_cols]
+    if cols_to_query:
+        cols_str = ", ".join(cols_to_query)
+    else:
+        # Fallback: only use identifier columns if they exist
+        fallback_cols = [c for c in ["symbol", "ts"] if c in existing_cols]
+        if fallback_cols:
+            cols_str = ", ".join(fallback_cols)
+        else:
+            log.error("No columns found in 'features' table to query.")
+            return pd.DataFrame(columns=cols)
     sql = f"SELECT {cols_str} FROM features WHERE ts >= :start AND ts <= :end"
     try:
         df = pd.read_sql_query(text(sql), engine,
                                params={"start": start_ts.date(), "end": end_ts.date()},
                                parse_dates=["ts"])
-        # ensure deterministic order
-        return df.sort_values(["ts", "symbol"]) if not df.empty else pd.DataFrame(columns=cols)
+        for col in missing:
+            df[col] = np.nan
+        # ensure deterministic order and column set
+        df = df.reindex(columns=cols)
+        return df.sort_values(["ts", "symbol"]) if not df.empty else df
     except Exception as e:
         log.error(f"Failed to load features window: {e}")
         return pd.DataFrame(columns=cols)
