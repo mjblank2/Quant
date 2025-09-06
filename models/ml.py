@@ -83,7 +83,8 @@ def _load_features_window(start_ts, end_ts):
         for col in missing:
             df[col] = np.nan
         # ensure deterministic order and column set
-        return df.sort_values(["ts", "symbol"])[cols] if not df.empty else pd.DataFrame(columns=cols)
+        df = df.reindex(columns=cols)
+        return df.sort_values(["ts", "symbol"]) if not df.empty else df
     except Exception as e:
         log.error(f"Failed to load features window: {e}")
         return pd.DataFrame(columns=cols)
