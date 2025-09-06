@@ -65,7 +65,16 @@ def _load_features_window(start_ts, end_ts):
     if missing:
         log.warning("Missing feature columns: %s", missing)
     cols_to_query = [c for c in cols if c in existing_cols]
-    cols_str = ", ".join(cols_to_query) if cols_to_query else "symbol, ts"
+    if cols_to_query:
+        cols_str = ", ".join(cols_to_query)
+    else:
+        # Fallback: only use identifier columns if they exist
+        fallback_cols = [c for c in ["symbol", "ts"] if c in existing_cols]
+        if fallback_cols:
+            cols_str = ", ".join(fallback_cols)
+        else:
+            log.error("No columns found in 'features' table to query.")
+            return pd.DataFrame(columns=cols)
     sql = f"SELECT {cols_str} FROM features WHERE ts >= :start AND ts <= :end"
     try:
         df = pd.read_sql_query(text(sql), engine,
