@@ -27,9 +27,19 @@ try:
         DB_AVAILABLE = False
         engine = None
 
-    # Import Celery task for async ingestion
+    # Import Celery tasks for async operations
     try:
-        from tasks.core_tasks import ingest_market_data_task
+        from tasks.core_tasks import (
+            ingest_market_data_task,
+            ingest_fundamentals_task,
+            rebuild_universe_task,
+            build_features_task,
+            train_and_predict_task,
+            run_backtest_task,
+            generate_trades_task,
+            sync_broker_task,
+            run_full_pipeline_task
+        )
         from tasks.task_utils import get_task_status
         TASK_QUEUE_AVAILABLE = True
     except ImportError:
@@ -274,8 +284,18 @@ if FASTAPI_AVAILABLE:
             "health_check": "/health",
             "status": "/status",
             "metrics": "/metrics",
-            "ingest_trigger": "POST /ingest",
-            "ingest_status": "GET /ingest/status/{task_id}"
+            "endpoints": {
+                "universe": "POST /universe",
+                "ingest": "POST /ingest",
+                "fundamentals": "POST /fundamentals",
+                "features": "POST /features",
+                "train": "POST /train",
+                "backtest": "POST /backtest",
+                "trades": "POST /trades",
+                "broker-sync": "POST /broker-sync",
+                "pipeline": "POST /pipeline"
+            },
+            "task_status": "GET /tasks/status/{task_id}"
         }
 
     @app.get("/metrics")
@@ -284,6 +304,138 @@ if FASTAPI_AVAILABLE:
         Monitoring metrics endpoint for Grafana/Datadog dashboards.
         """
         return metrics_store.get_metrics_summary()
+
+    # Request models for various endpoints
+    class IngestRequest(BaseModel):
+        days: Optional[int] = 7
+        source: Optional[str] = "api"
+
+    class FeaturesRequest(BaseModel):
+        source: Optional[str] = "api"
+
+    class TrainRequest(BaseModel):
+        source: Optional[str] = "api"
+
+    class BacktestRequest(BaseModel):
+        source: Optional[str] = "api"
+
+    class TradesRequest(BaseModel):
+        source: Optional[str] = "api"
+
+    class BrokerSyncRequest(BaseModel):
+        trade_ids: Optional[list[int]] = None
+        source: Optional[str] = "api"
+
+    class PipelineRequest(BaseModel):
+        sync_broker: Optional[bool] = False
+        source: Optional[str] = "api"
+
+    # Helper function to dispatch tasks
+    async def dispatch_task_with_response(task_func, task_name: str, endpoint_name: str, *args, **kwargs):
+        """Helper to dispatch a task and return standardized response"""
+        if not TASK_QUEUE_AVAILABLE:
+            raise HTTPException(status_code=503, detail="Task queue is not available.")
+
+        try:
+            task = task_func.delay(*args, **kwargs)
+            return {
+                "status": "accepted",
+                "message": f"{task_name} task has been dispatched.",
+                "task_id": task.id,
+                "status_url": f"/tasks/status/{task.id}",
+                "endpoint": endpoint_name
+            }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Failed to dispatch {task_name.lower()} task: {e}")
+            
+            # Check if this is a Redis connection error
+            if "Connection refused" in error_msg or "Redis" in error_msg or "111" in error_msg:
+                raise HTTPException(status_code=503, detail="Task queue (Redis) is not available.")
+            else:
+                raise HTTPException(status_code=500, detail=f"Failed to dispatch {task_name.lower()} task.")
+
+    @app.post("/universe", status_code=202)
+    async def trigger_universe_rebuild(request: dict = {}) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous universe rebuild task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            rebuild_universe_task, "Universe rebuild", "universe"
+        )
+
+    @app.post("/fundamentals", status_code=202)
+    async def trigger_fundamentals_ingestion(request: dict = {}) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous fundamentals data ingestion task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            ingest_fundamentals_task, "Fundamentals ingestion", "fundamentals"
+        )
+
+    @app.post("/features", status_code=202)
+    async def trigger_features_build(request: FeaturesRequest = FeaturesRequest()) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous feature building task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            build_features_task, "Feature building", "features"
+        )
+
+    @app.post("/train", status_code=202)
+    async def trigger_model_training(request: TrainRequest = TrainRequest()) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous model training and prediction task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            train_and_predict_task, "Model training", "train"
+        )
+
+    @app.post("/backtest", status_code=202)
+    async def trigger_backtest(request: BacktestRequest = BacktestRequest()) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous walk-forward backtest task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            run_backtest_task, "Walk-forward backtest", "backtest"
+        )
+
+    @app.post("/trades", status_code=202)
+    async def trigger_trade_generation(request: TradesRequest = TradesRequest()) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous trade generation task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            generate_trades_task, "Trade generation", "trades"
+        )
+
+    @app.post("/broker-sync", status_code=202)
+    async def trigger_broker_sync(request: BrokerSyncRequest = BrokerSyncRequest()) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous broker synchronization task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            sync_broker_task, "Broker synchronization", "broker-sync", 
+            trade_ids=request.trade_ids
+        )
+
+    @app.post("/pipeline", status_code=202)
+    async def trigger_full_pipeline(request: PipelineRequest = PipelineRequest()) -> Dict[str, Any]:
+        """
+        Triggers an asynchronous full pipeline execution task.
+        Returns a task ID to monitor the job's progress.
+        """
+        return await dispatch_task_with_response(
+            run_full_pipeline_task, "Full pipeline", "pipeline",
+            sync_broker=request.sync_broker
+        )
 
     # Request model for ingest endpoint
     class IngestRequest(BaseModel):
@@ -296,25 +448,17 @@ if FASTAPI_AVAILABLE:
         Triggers an asynchronous data ingestion task.
         Returns a task ID to monitor the job's progress.
         """
-        if not TASK_QUEUE_AVAILABLE:
-            raise HTTPException(status_code=503, detail="Task queue is not available. Cannot start ingestion job.")
+        return await dispatch_task_with_response(
+            ingest_market_data_task, "Data ingestion", "ingest", 
+            days=request.days
+        )
 
-        try:
-            task = ingest_market_data_task.delay(days=request.days)
-            return {
-                "status": "accepted",
-                "message": "Data ingestion task has been dispatched.",
-                "task_id": task.id,
-                "status_url": f"/ingest/status/{task.id}"
-            }
-        except Exception as e:
-            logger.error(f"Failed to dispatch ingestion task: {e}")
-            raise HTTPException(status_code=500, detail="Failed to dispatch ingestion task.")
-
-    @app.get("/ingest/status/{task_id}")
-    async def get_ingestion_status(task_id: str) -> Dict[str, Any]:
+    # Unified task status endpoint (preferred)
+    @app.get("/tasks/status/{task_id}")
+    async def get_task_status_unified(task_id: str) -> Dict[str, Any]:
         """
-        Gets the status of a previously started ingestion task.
+        Gets the status of any previously started task.
+        This is the unified endpoint for all task types.
         """
         if not TASK_QUEUE_AVAILABLE:
             raise HTTPException(status_code=503, detail="Task queue is not available.")
@@ -324,6 +468,15 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=404, detail="Task not found.")
 
         return status
+
+    # Legacy endpoint for backward compatibility
+    @app.get("/ingest/status/{task_id}")
+    async def get_ingestion_status(task_id: str) -> Dict[str, Any]:
+        """
+        Gets the status of a previously started ingestion task.
+        (Legacy endpoint - use /tasks/status/{task_id} instead)
+        """
+        return await get_task_status_unified(task_id)
 
 else:
     # Fallback for when FastAPI is not available
