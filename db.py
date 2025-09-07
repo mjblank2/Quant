@@ -470,13 +470,21 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
             # Only warn and drop columns if they're still missing after cache refresh
             if df_columns != valid_columns:
-                # Rate-limit warnings to avoid log spam and memory issues
-                if _should_log_column_warning(table.__tablename__, missing_in_table):
-                    # Use DEBUG level for known issues like adj_close to reduce log noise
+                # Use enhanced warning deduplication
+                try:
+                    from warning_dedup import warn_adj_close_missing, warn_column_mismatch
+                    
                     if 'adj_close' in missing_in_table and len(missing_in_table) == 1:
-                        log.debug(f"Dropping adj_close column (not present in {table.__tablename__}). This may indicate pending migration.")
+                        warn_adj_close_missing(log, table.__tablename__)
                     else:
-                        log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
+                        warn_column_mismatch(log, table.__tablename__, list(missing_in_table))
+                except ImportError:
+                    # Fallback to rate-limited warnings if dedup module not available
+                    if _should_log_column_warning(table.__tablename__, missing_in_table):
+                        if 'adj_close' in missing_in_table and len(missing_in_table) == 1:
+                            log.debug(f"Dropping adj_close column (not present in {table.__tablename__}). This may indicate pending migration.")
+                        else:
+                            log.warning(f"Dropping columns not present in {table.__tablename__}: {missing_in_table}")
                 df = df[list(valid_columns)]
 
         if df.empty:
@@ -548,6 +556,20 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                         original_size = len(smaller_df)
                         smaller_df = smaller_df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
                         dedupe_size = len(smaller_df)
+                        
+                        # Use enhanced warning deduplication for cardinality violations
+                        if dedupe_size < original_size:
+                            try:
+                                from warning_dedup import warn_cardinality_violation
+                                warn_cardinality_violation(log, table.__tablename__, 
+                                                         original_size - dedupe_size, original_size)
+                            except ImportError:
+                                # Fallback to simple logging
+                                removed_count = original_size - dedupe_size
+                                if removed_count > original_size * 0.5:  # More than 50% are duplicates
+                                    log.warning(f"Removed {removed_count} duplicate rows during retry (significant duplication detected)")
+                                else:
+                                    log.debug(f"Removed {removed_count} duplicate rows during retry to prevent CardinalityViolation")
                         if dedupe_size < original_size:
                             # Use DEBUG level for retry deduplication since this is expected behavior
                             # Only log as WARNING if we're removing a significant number of duplicates
