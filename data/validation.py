@@ -3,29 +3,44 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict
+from datetime import datetime
 import pandas as pd
 from sqlalchemy import text
 
-from db import engine  # type: ignore
 try:
-    from config import ENABLE_DATA_VALIDATION
+    from db import engine  # type: ignore
+except Exception:
+    engine = None
+
+try:
+    from config import ENABLE_DATA_VALIDATION, DATA_STALENESS_THRESHOLD_HOURS
 except Exception:
     ENABLE_DATA_VALIDATION = False
+    DATA_STALENESS_THRESHOLD_HOURS = 48
 
 log = logging.getLogger("data.validation")
+
 
 @dataclass
 class ValidationResult:
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    metrics: Dict[str, float] = field(default_factory=dict)
     anomalies: Optional[pd.DataFrame] = None
+
+    @property
+    def passed(self) -> bool:
+        return not self.errors
 
     def add_error(self, msg: str) -> None:
         self.errors.append(msg)
 
     def add_warning(self, msg: str) -> None:
         self.warnings.append(msg)
+
+    def add_metric(self, key: str, value: float) -> None:
+        self.metrics[key] = value
 
 def detect_price_anomalies(symbol: str | None = None, lookback_days: int = 30) -> ValidationResult:
     result = ValidationResult()
@@ -65,4 +80,46 @@ def detect_price_anomalies(symbol: str | None = None, lookback_days: int = 30) -
     df['vol_sigma'] = (df['volume'] - df['avg_volume']) / (df['avg_volume'].replace(0, pd.NA))
     anomalies = df[(df['ret'].abs() > 0.2) | (df['vol_sigma'].abs() > 5)]
     result.anomalies = anomalies
+    return result
+
+
+def check_data_staleness() -> ValidationResult:
+    """Check if market data is stale based on latest timestamp."""
+    result = ValidationResult()
+    if not ENABLE_DATA_VALIDATION or engine is None:
+        return result
+
+    try:
+        with engine.connect() as conn:
+            latest_ts = conn.execute(text("SELECT MAX(ts) FROM daily_bars")).scalar()
+    except Exception as e:
+        log.error(f"Error checking data staleness: {e}")
+        result.add_error(f"Database error: {e}")
+        return result
+
+    if latest_ts is None:
+        result.add_warning("No data available")
+        return result
+
+    if isinstance(latest_ts, pd.Timestamp):
+        latest_dt = latest_ts.to_pydatetime()
+    else:
+        latest_dt = pd.to_datetime(latest_ts).to_pydatetime()
+
+    staleness_hours = (datetime.utcnow() - latest_dt).total_seconds() / 3600
+    result.add_metric("staleness_hours", staleness_hours)
+    if staleness_hours > DATA_STALENESS_THRESHOLD_HOURS:
+        result.add_error(f"Data stale by {staleness_hours:.1f} hours")
+
+    return result
+
+
+def run_validation_pipeline(symbols: Optional[List[str]] = None) -> ValidationResult:
+    """Basic validation pipeline combining staleness and anomaly checks."""
+    result = check_data_staleness()
+    if symbols:
+        anomalies = detect_price_anomalies()
+        result.errors.extend(anomalies.errors)
+        result.warnings.extend(anomalies.warnings)
+        result.metrics.update(anomalies.metrics)
     return result

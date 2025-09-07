@@ -244,6 +244,22 @@ class DataValidationLog(Base):
         Index("ix_validation_log_type_status", "validation_type", "status"),
     )
 
+
+class DataLineage(Base):
+    __tablename__ = "data_lineage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    table_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    data_date: Mapped[date] = mapped_column(Date, nullable=False)
+    ingestion_timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lineage_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    __table_args__ = (
+        Index("ix_lineage_table_symbol_date", "table_name", "symbol", "data_date"),
+    )
+
 def create_tables():
     Base.metadata.create_all(engine)
     from config import STARTING_CAPITAL

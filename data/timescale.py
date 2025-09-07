@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import logging
 from sqlalchemy import text, exc
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, Engine
 from typing import Optional
+
+try:
+    from db import engine  # type: ignore
+except Exception:
+    engine = None
 
 try:
     from config import ENABLE_TIMESCALEDB, TIMESCALEDB_CHUNK_TIME_INTERVAL
@@ -14,13 +19,25 @@ except Exception:
 
 log = logging.getLogger("data.timescale")
 
-def is_timescaledb_available(conn: Connection) -> bool:
-    try:
-        result = conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")).scalar()
-        return result is not None
-    except Exception as e:
-        log.warning(f"Could not check TimescaleDB availability: {e}")
-        return False
+
+def is_timescaledb_available(conn: Optional[Connection] = None) -> bool:
+    """Check if TimescaleDB extension is installed."""
+    if conn is None:
+        if engine is None:
+            return False
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")).scalar()
+        except Exception as e:
+            log.warning(f"Could not check TimescaleDB availability: {e}")
+            return False
+    else:
+        try:
+            result = conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")).scalar()
+        except Exception as e:
+            log.warning(f"Could not check TimescaleDB availability: {e}")
+            return False
+    return result is not None
 
 def _execute_optional_sql(conn: Connection, sql: str, description: str) -> bool:
     log.info(f"Attempting (Optional): {description}")
@@ -90,12 +107,15 @@ def optimize_timescaledb_indexes(conn: Connection) -> bool:
     # Add any optional index/comment statements here.
     return True
 
-def setup_timescaledb(engine) -> bool:
-    if not ENABLE_TIMESCALEDB or engine is None:
+def setup_timescaledb(db_engine: Optional[Engine] = None) -> bool:
+    """Configure TimescaleDB if enabled."""
+    if db_engine is None:
+        db_engine = engine
+    if not ENABLE_TIMESCALEDB or db_engine is None:
         return False
     success = True
     try:
-        with engine.begin() as conn:
+        with db_engine.begin() as conn:
             if not enable_timescaledb_extension(conn):
                 return False
             if not convert_daily_bars_to_hypertable(conn):
@@ -112,3 +132,20 @@ def setup_timescaledb(engine) -> bool:
     else:
         log.warning("TimescaleDB setup completed with errors. System will operate without full optimization.")
     return success
+
+
+def get_timescaledb_info() -> dict:
+    """Return basic TimescaleDB status information."""
+    info = {
+        "enabled": ENABLE_TIMESCALEDB,
+        "available": False,
+        "hypertable_configured": False,
+        "compression_enabled": False,
+        "chunk_count": 0,
+        "compressed_chunks": 0,
+    }
+    if not ENABLE_TIMESCALEDB:
+        return info
+
+    info["available"] = is_timescaledb_available()
+    return info

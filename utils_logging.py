@@ -2,13 +2,16 @@
 Logging utilities for request tracking and observability
 """
 from __future__ import annotations
-import uuid
 import time
 import logging
 import json
 from datetime import datetime
 from typing import Optional
 from contextlib import contextmanager
+import uuid
+
+# Warm up the UUID generator to avoid cold-start latency
+_ = uuid.uuid4()
 
 
 def generate_request_id() -> str:

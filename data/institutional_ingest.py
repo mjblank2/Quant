@@ -13,7 +13,21 @@ from datetime import datetime, date
 from typing import List
 import pandas as pd
 from sqlalchemy import text
-from db import engine, upsert_dataframe, DataValidationLog, DataLineage
+
+try:
+    from db import engine, upsert_dataframe, DataValidationLog, DataLineage
+except Exception:  # pragma: no cover - fallback for missing DB
+    engine = None
+
+    def upsert_dataframe(*args, **kwargs):
+        return False
+
+    class DataValidationLog:  # minimal placeholders
+        __table__ = None
+
+    class DataLineage:
+        __table__ = None
+
 from data.timescale import setup_timescaledb, get_timescaledb_info
 from data.validation import run_validation_pipeline, ValidationResult
 from config import ENABLE_DATA_VALIDATION, DEFAULT_KNOWLEDGE_LATENCY_DAYS
