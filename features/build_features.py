@@ -8,6 +8,7 @@ import pandas as pd
 from sqlalchemy import text, bindparam
 
 from db import engine, upsert_dataframe, Feature  # type: ignore
+from config import TARGET_HORIZON_DAYS
 
 log = logging.getLogger(__name__)
 
@@ -63,17 +64,25 @@ def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFra
             raise
 
 def _load_market_returns(market_symbol: str = "IWM") -> pd.DataFrame:
+    """Return market prices and daily returns for the benchmark symbol."""
     try:
-        df = pd.read_sql_query(text("""
+        df = pd.read_sql_query(
+            text(
+                """
             SELECT ts, COALESCE(adj_close, close) AS px
             FROM daily_bars WHERE symbol=:m ORDER BY ts
-        """), engine, params={'m': market_symbol}, parse_dates=['ts'])
+                """
+            ),
+            engine,
+            params={"m": market_symbol},
+            parse_dates=["ts"],
+        )
         if df.empty:
-            return pd.DataFrame(columns=['ts','mret'])
-        df['mret'] = df['px'].pct_change()
-        return df[['ts','mret']]
+            return pd.DataFrame(columns=["ts", "px", "mret"])
+        df["mret"] = df["px"].pct_change()
+        return df[["ts", "px", "mret"]]
     except Exception:
-        return pd.DataFrame(columns=['ts','mret'])
+        return pd.DataFrame(columns=["ts", "px", "mret"])
 
 def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
     if not symbols:
@@ -103,6 +112,8 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
     last_map = _last_feature_dates()
     new_rows: list[pd.DataFrame] = []
     mkt = _load_market_returns("IWM")
+    if not mkt.empty:
+        mkt = mkt.rename(columns={"px": "mkt_px", "mret": "mkt_ret"})
 
     for i in range(0, len(syms), batch_size):
         bsyms = syms[i:i+batch_size]
@@ -123,7 +134,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
         px['price_feat'] = px['adj_close'].where(px['adj_close'].notna(), px['close'])
 
-        # Merge market returns once for beta calculations
+        # Merge market data once for beta and residual calculations
         if not mkt.empty:
             px = px.merge(mkt, on='ts', how='left')
 
@@ -186,20 +197,40 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                     g[col] = np.nan
 
             # Rolling beta vs market (if available)
-            if 'mret' in g.columns and not g['mret'].isna().all():
-                cov = g['ret_1d'].rolling(63).cov(g['mret'])
-                var = g['mret'].rolling(63).var()
+            if 'mkt_ret' in g.columns and not g['mkt_ret'].isna().all():
+                cov = g['ret_1d'].rolling(63).cov(g['mkt_ret'])
+                var = g['mkt_ret'].rolling(63).var()
                 g['beta_63'] = cov / var.replace(0, np.nan)
             else:
                 g['beta_63'] = 1.0
+
+            # Idiosyncratic volatility based on residual daily returns
+            if 'mkt_ret' in g.columns and not g['mkt_ret'].isna().all():
+                resid = g['ret_1d'] - g['beta_63'] * g['mkt_ret']
+                g['ivol_63'] = resid.rolling(63).std()
+            else:
+                g['ivol_63'] = g['ret_1d'].rolling(63).std()
+
+            # Forward returns and market-neutral residuals
+            g['px_fwd'] = g['price_feat'].shift(-TARGET_HORIZON_DAYS)
+            g['fwd_ret'] = (g['px_fwd'] / g['price_feat']) - 1.0
+            if 'mkt_px' in g.columns:
+                g['mkt_px_fwd'] = g['mkt_px'].shift(-TARGET_HORIZON_DAYS)
+                g['mkt_fwd_ret'] = (g['mkt_px_fwd'] / g['mkt_px']) - 1.0
+                g['fwd_ret_resid'] = g['fwd_ret'] - g['beta_63'].fillna(1.0) * g['mkt_fwd_ret'].fillna(0.0)
+            else:
+                g['fwd_ret_resid'] = g['fwd_ret']
 
             last_ts = last_map.get(sym)
             if last_ts is not None and not pd.isna(last_ts):
                 g = g[g['ts'] > pd.Timestamp(last_ts)]
 
-            fcols = ['symbol','ts','ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14',
-                     'turnover_21','size_ln','adv_usd_21','overnight_gap','illiq_21','beta_63',
-                     'f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio']
+            fcols = [
+                'symbol','ts','ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14',
+                'reversal_5d_z','ivol_63','turnover_21','size_ln','adv_usd_21','overnight_gap',
+                'illiq_21','beta_63','fwd_ret','fwd_ret_resid',
+                'f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio'
+            ]
 
             # map PIT fund columns to unified names used by downstream model
             g['f_pe_ttm'] = g.get('pe_ttm')
