@@ -152,7 +152,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "0 14 * * 1"
-    dockerCommand: "python -m data.universe"
+    dockerCommand: ["sh", "-c", "python -m data.universe"]
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -182,7 +182,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "45 21 * * 1-5"
-    dockerCommand: "python -m data.ingest --days 7"
+    dockerCommand: ["sh", "-c", "python -m data.ingest --days 7"]
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -209,7 +209,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "30 22 * * 1-5"
-    dockerCommand: "alembic upgrade heads && python -m run_pipeline"
+    dockerCommand: ["sh", "-c", "python run_pipeline.py"]
     envVars:
       - key: DATABASE_URL
         sync: false
