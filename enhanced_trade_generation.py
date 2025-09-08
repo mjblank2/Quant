@@ -9,11 +9,40 @@ import logging
 from typing import Tuple, Optional, Dict, Any
 import pandas as pd
 import numpy as np
-from datetime import date
+from datetime import date, datetime
 from market_calendar import should_run_pipeline, is_market_day
 from warning_dedup import warn_once
 
 log = logging.getLogger(__name__)
+
+def _to_date(x) -> date:
+    """
+    Helper function to safely convert various datetime types to date.
+    
+    Args:
+        x: Input that could be datetime.datetime, datetime.date, pandas.Timestamp, or string
+        
+    Returns:
+        datetime.date object
+    """
+    if isinstance(x, date) and not isinstance(x, datetime):
+        # Already a date object (not datetime)
+        return x
+    elif isinstance(x, datetime):
+        # datetime.datetime -> date
+        return x.date()
+    elif hasattr(x, 'to_pydatetime'):
+        # pandas.Timestamp -> date
+        return x.to_pydatetime().date()
+    elif isinstance(x, str):
+        # String -> date
+        try:
+            return datetime.fromisoformat(x).date()
+        except ValueError:
+            return datetime.strptime(x, "%Y-%m-%d").date()
+    else:
+        # Fallback: try to convert to string first
+        return datetime.fromisoformat(str(x)).date()
 
 class TradeGenerationError(Exception):
     """Custom exception for trade generation failures."""
@@ -47,10 +76,7 @@ def validate_trading_conditions() -> Tuple[bool, str]:
             if result[0] is None:
                 return False, "No market data available in database"
             
-            latest_data_date = result[0]
-            if isinstance(latest_data_date, str):
-                from datetime import datetime
-                latest_data_date = datetime.strptime(latest_data_date, '%Y-%m-%d').date()
+            latest_data_date = _to_date(result[0])
             
             # Check if data is reasonably recent (within 5 trading days)
             days_since_data = (date.today() - latest_data_date).days
