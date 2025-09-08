@@ -8,6 +8,8 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy import text
 
+DEFAULT_DATA_STALENESS_THRESHOLD_HOURS = 48
+
 try:
     from db import engine  # type: ignore
 except Exception:
@@ -17,7 +19,7 @@ try:
     from config import ENABLE_DATA_VALIDATION, DATA_STALENESS_THRESHOLD_HOURS
 except Exception:
     ENABLE_DATA_VALIDATION = False
-    DATA_STALENESS_THRESHOLD_HOURS = 48
+    DATA_STALENESS_THRESHOLD_HOURS = DEFAULT_DATA_STALENESS_THRESHOLD_HOURS
 
 log = logging.getLogger("data.validation")
 
