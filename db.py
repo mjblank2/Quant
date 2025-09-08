@@ -113,9 +113,16 @@ class Feature(Base):
     mom_63: Mapped[float | None] = mapped_column(Float)
     vol_21: Mapped[float | None] = mapped_column(Float)
     rsi_14: Mapped[float | None] = mapped_column(Float)
+    reversal_5d_z: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ivol_63: Mapped[float | None] = mapped_column(Float, nullable=True)
     turnover_21: Mapped[float | None] = mapped_column(Float)
     size_ln: Mapped[float | None] = mapped_column(Float)
     adv_usd_21: Mapped[float | None] = mapped_column(Float)  # v16 extension
+    overnight_gap: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    illiq_21: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    beta_63: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    fwd_ret: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fwd_ret_resid: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_pb: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_ps_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -124,9 +131,6 @@ class Feature(Base):
     f_gm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_profit_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-    beta_63: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
-    overnight_gap: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
-    illiq_21: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
     __table_args__ = (Index("ix_features_symbol_ts", "symbol", "ts"),)
 
 class Prediction(Base):
