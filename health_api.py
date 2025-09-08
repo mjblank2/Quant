@@ -42,7 +42,14 @@ try:
         )
         from tasks.task_utils import get_task_status
         TASK_QUEUE_AVAILABLE = True
-    except ImportError:
+    except Exception as e:
+        # Catch any exception (not just ImportError) so the API can start even
+        # when task dependencies or database configuration are missing. This
+        # ensures health endpoints remain accessible in lightweight
+        # environments.
+        logging.getLogger(__name__).warning(
+            f"Background task imports unavailable: {e}"
+        )
         TASK_QUEUE_AVAILABLE = False
 
 
