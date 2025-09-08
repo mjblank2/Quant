@@ -54,7 +54,7 @@ def check_schema_version() -> Tuple[bool, str]:
             if _is_version_compatible(db_version, MIN_COMPATIBLE_SCHEMA_VERSION):
                 if db_version != CURRENT_SCHEMA_VERSION:
                     log.info(f"Schema version {db_version} is compatible with code {CURRENT_SCHEMA_VERSION}")
-                return True, f"Schema version {db_version} is compatible"
+                return True, f"Schema version {db_version} is compatible (already initialized)"
             else:
                 error_msg = (f"Schema version mismatch: database has {db_version}, "
                            f"but code requires >= {MIN_COMPATIBLE_SCHEMA_VERSION}")

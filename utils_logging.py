@@ -25,9 +25,9 @@ class StructuredLogger:
     def __init__(self, logger_name: str = __name__):
         self.logger = logging.getLogger(logger_name)
     
-    def log_request(self, 
+    def log_request(self,
                    method: str,
-                   path: str, 
+                   path: str,
                    request_id: str,
                    user_agent: Optional[str] = None,
                    remote_addr: Optional[str] = None,
@@ -36,7 +36,9 @@ class StructuredLogger:
                    session_id: Optional[str] = None,
                    **kwargs) -> None:
         """Log incoming request with structured metadata."""
-        
+        if not self.logger.isEnabledFor(logging.INFO):
+            return
+
         log_data = {
             "event": "request_start",
             "request_id": request_id,
@@ -48,9 +50,9 @@ class StructuredLogger:
             "referer": referer,
             "user_id": user_id,
             "session_id": session_id,
-            **kwargs
+            **kwargs,
         }
-        
+
         self.logger.info(json.dumps(log_data))
     
     def log_response(self,
@@ -64,7 +66,9 @@ class StructuredLogger:
                     upstream_time_ms: Optional[float] = None,
                     **kwargs) -> None:
         """Log response with comprehensive metrics."""
-        
+        if not self.logger.isEnabledFor(logging.INFO):
+            return
+
         log_data = {
             "event": "request_complete",
             "request_id": request_id,
@@ -76,9 +80,9 @@ class StructuredLogger:
             "timestamp": datetime.utcnow().isoformat(),
             "cache_status": cache_status,
             "upstream_time_ms": upstream_time_ms,
-            **kwargs
+            **kwargs,
         }
-        
+
         # Flag potential timeout issues
         if response_time_ms > 10000:  # 10+ seconds
             log_data["timeout_risk"] = True
@@ -96,7 +100,9 @@ class StructuredLogger:
                      request_id: Optional[str] = None,
                      **kwargs) -> None:
         """Log outbound HTTP calls with metrics."""
-        
+        if not self.logger.isEnabledFor(logging.INFO):
+            return
+
         log_data = {
             "event": "http_call",
             "request_id": request_id or generate_request_id(),
@@ -107,9 +113,9 @@ class StructuredLogger:
             "bytes_received": bytes_received,
             "attempt": attempt,
             "timestamp": datetime.utcnow().isoformat(),
-            **kwargs
+            **kwargs,
         }
-        
+
         # Flag issues
         if response_time_ms > 10000:
             log_data["timeout_risk"] = True
@@ -117,7 +123,7 @@ class StructuredLogger:
             log_data["empty_response"] = True
         if bytes_received < 100:  # Tiny response - possible polling/heartbeat
             log_data["tiny_response"] = True
-        
+
         if status_code >= 400 or response_time_ms > 10000:
             self.logger.warning(json.dumps(log_data))
         else:
