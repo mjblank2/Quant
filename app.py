@@ -65,6 +65,43 @@ colA.metric("Last Price Date", str(_max_ts("daily_bars")))
 colB.metric("Last Features Date", str(_max_ts("features")))
 colC.metric("Last Prediction Date", str(_max_ts("predictions")))
 
+# Main-page quick actions so users can run the pipeline even if the
+# sidebar is hidden in their Streamlit deployment.
+st.subheader("Quick Actions")
+use_task_queue_main = st.checkbox(
+    "Use Task Queue (async)",
+    value=TASK_QUEUE_AVAILABLE,
+    key="main_use_task_queue",
+    disabled=not TASK_QUEUE_AVAILABLE,
+)
+if st.button("🚀 Run Full Pipeline", key="main_run_pipeline"):
+    if use_task_queue_main and TASK_QUEUE_AVAILABLE:
+        try:
+            task_id = dispatch_task(run_full_pipeline_task, False)
+            st.success(f"Full pipeline task dispatched: {task_id[:8]}...")
+            st.session_state[f"task_{task_id}"] = {"name": "Full Pipeline", "id": task_id}
+        except Exception as e:
+            st.error(f"Failed to dispatch task: {e}")
+    else:
+        try:
+            from run_pipeline import main as run_full_pipeline_main  # type: ignore
+        except Exception:
+            run_full_pipeline_main = None
+        if run_full_pipeline_main is None:
+            st.error("Pipeline module is unavailable. Ensure run_pipeline.py exists in your project.")
+        else:
+            with st.spinner("Running full pipeline (this may take several minutes)…"):
+                try:
+                    success = run_full_pipeline_main(sync_broker=False)
+                    if success:
+                        st.success("Pipeline completed successfully.")
+                    else:
+                        st.error("Pipeline completed with errors. Check logs for details.")
+                except Exception as e:
+                    st.error(f"Pipeline execution failed: {e}")
+
+st.divider()
+
 with st.sidebar:
     st.header("Controls")
     

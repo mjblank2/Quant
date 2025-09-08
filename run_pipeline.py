@@ -197,6 +197,10 @@ def main(sync_broker: bool = False) -> bool:
             return False
         log.info("✅ All pipeline components imported successfully.")
 
+        if not modules:
+            log.warning("⚠️ No pipeline modules available; skipping execution.")
+            return True
+
         try:
             # 4. Execute Pipeline Stages
             log.info("📊 Stage 1: Data ingestion")
