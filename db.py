@@ -302,7 +302,7 @@ def _max_bind_params_for_connection(connection) -> int:
 
         if "sqlite" in url_str:
             # SQLite default limit is 999 variables, use conservative limit
-            return 999
+            return 900
         elif "postgresql" in url_str:
             # PostgreSQL varies by configuration, default is often 32767
             # But some hosted services may have lower limits, use conservative value
