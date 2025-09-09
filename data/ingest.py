@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import List, Dict, Any, Iterable, Optional
+from typing import List, Optional
 import pandas as pd
 
 try:
@@ -19,10 +19,267 @@ except Exception:
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
-from db import engine, SessionLocal, DailyBar
+from db import engine, SessionLocal, DailyBar, upsert_dataframe
 from db import Universe  # type: ignore
+from market_calendar import get_previous_market_day, is_market_day
 
 log = logging.getLogger("data.ingest")
+
+
+def _resolve_target_end_date(explicit_end: Optional[date] = None) -> date:
+    """
+    Decide the last data date we should collect for, accounting for market hours.
+    - If PIPELINE_TARGET_DATE is set: use that (string YYYY-MM-DD).
+    - Else: if today is before close, use previous market day; otherwise today.
+    """
+    import os
+    from datetime import datetime
+
+    env_td = os.getenv("PIPELINE_TARGET_DATE")
+    if env_td:
+        try:
+            return datetime.strptime(env_td, "%Y-%m-%d").date()
+        except Exception:
+            log.warning("Invalid PIPELINE_TARGET_DATE=%s; ignoring", env_td)
+
+    if explicit_end:
+        return explicit_end
+
+    today = date.today()
+    now = datetime.now()
+    if is_market_day(today) and now.hour < 16:
+        return get_previous_market_day(today)
+    return today
+
+
+def _universe_symbols(limit: Optional[int] = None) -> List[str]:
+    """
+    Get the trading universe (included = True). If empty, return a small fallback.
+    """
+    try:
+        with SessionLocal() as session:
+            q = session.query(Universe.symbol).filter(Universe.included.is_(True))
+            if limit and limit > 0:
+                q = q.limit(limit)
+            rows = q.all()
+            syms = [r[0] for r in rows]
+            if syms:
+                return syms
+    except Exception as e:
+        log.warning("Failed to load universe from DB: %s", e)
+
+    fallback = ["SPY", "QQQ", "AAPL", "MSFT", "AMZN"]
+    log.warning("Universe is empty; using fallback symbols: %s", fallback)
+    return fallback
+
+
+def _standardize_bar_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure DataFrame has columns: symbol, ts, open, high, low, close, adj_close, volume, vwap, trade_count.
+    Extra columns are dropped; missing become NaN/None; ts is coerced to date.
+    """
+    cols_out = ["symbol", "ts", "open", "high", "low", "close", "adj_close", "volume", "vwap", "trade_count"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    df = df.copy()
+
+    # Normalize ts
+    if "ts" not in df.columns:
+        for cand in ("timestamp", "time", "t", "datetime"):
+            if cand in df.columns:
+                try:
+                    ts_series = pd.to_datetime(df[cand], utc=True, errors="coerce")
+                except Exception:
+                    ts_series = pd.to_datetime(df[cand], errors="coerce")
+                df["ts"] = ts_series.dt.date
+                break
+
+    if "ts" not in df.columns:
+        log.warning("Standardization could not find/convert timestamp; dropping DataFrame")
+        return pd.DataFrame(columns=cols_out)
+
+    # Ensure symbol exists
+    if "symbol" not in df.columns:
+        if isinstance(df.index, pd.MultiIndex) and "symbol" in df.index.names:
+            df = df.reset_index("symbol")
+        else:
+            log.warning("Standardization missing symbol column; dropping DataFrame")
+            return pd.DataFrame(columns=cols_out)
+
+    # Map provider keys
+    rename_map = {
+        "o": "open",
+        "h": "high",
+        "l": "low",
+        "c": "close",
+        "v": "volume",
+        "tradecount": "trade_count",
+        "trade_count": "trade_count",
+        "n": "trade_count",  # Polygon uses "n" for trade count
+        "vw": "vwap",
+    }
+    for k, v in rename_map.items():
+        if k in df.columns and v not in df.columns:
+            df[v] = df[k]
+
+    if "adj_close" not in df.columns:
+        df["adj_close"] = df.get("close")
+
+    keep_cols = [c for c in cols_out if c in df.columns]
+    df = df[keep_cols].copy()
+
+    # Required fields presence
+    for c in ("symbol", "ts", "close"):
+        if c not in df.columns:
+            df[c] = None
+    df = df.dropna(subset=["symbol", "ts", "close"])
+
+    df["symbol"] = df["symbol"].astype(str)
+    try:
+        df["ts"] = pd.to_datetime(df["ts"]).dt.date
+    except Exception:
+        pass
+
+    # Dedup
+    before = len(df)
+    df = df.drop_duplicates(subset=["symbol", "ts"], keep="last").reset_index(drop=True)
+    removed = before - len(df)
+    if removed > 0:
+        log.debug("Removed %d duplicate bar rows during standardization", removed)
+
+    # Ensure full column set
+    for c in cols_out:
+        if c not in df.columns:
+            df[c] = None
+
+    df = df.sort_values(["symbol", "ts"]).reset_index(drop=True)
+    return df[cols_out]
+
+
+def _fetch_from_alpaca(symbols: List[str], start: date, end: date) -> pd.DataFrame:
+    """
+    Fetch daily bars from Alpaca across the symbol list. Returns standardized DataFrame.
+    """
+    if not APCA_API_KEY_ID or not APCA_API_SECRET_KEY or not APCA_API_BASE_URL:
+        return pd.DataFrame()
+
+    try:
+        import alpaca_trade_api as tradeapi
+        from alpaca_trade_api.rest import TimeFrame
+
+        api = tradeapi.REST(
+            key_id=APCA_API_KEY_ID,
+            secret_key=APCA_API_SECRET_KEY,
+            base_url=APCA_API_BASE_URL,
+        )
+
+        chunk = 200
+        dfs: List[pd.DataFrame] = []
+        for i in range(0, len(symbols), chunk):
+            batch = symbols[i:i + chunk]
+            try:
+                raw = api.get_bars(
+                    batch,
+                    TimeFrame.Day,
+                    start.isoformat(),
+                    end.isoformat(),
+                    adjustment="all",
+                    feed=ALPACA_DATA_FEED or "iex",
+                ).df
+            except Exception as e:
+                log.error("Alpaca get_bars failed for batch %d-%d: %s", i, i + len(batch), e)
+                continue
+
+            if raw is None or raw.empty:
+                continue
+
+            raw = raw.reset_index()
+            if "timestamp" in raw.columns:
+                raw["ts"] = pd.to_datetime(raw["timestamp"], utc=True, errors="coerce").dt.date
+            elif "time" in raw.columns:
+                raw["ts"] = pd.to_datetime(raw["time"], utc=True, errors="coerce").dt.date
+
+            raw_std = _standardize_bar_df(raw)
+            if not raw_std.empty:
+                dfs.append(raw_std)
+
+        if dfs:
+            out = pd.concat(dfs, ignore_index=True)
+            log.info("Alpaca fetched %d rows across %d symbols", len(out), out["symbol"].nunique())
+            return out
+        return pd.DataFrame()
+
+    except ImportError as e:
+        log.warning("alpaca_trade_api not installed; skipping Alpaca provider: %s", e)
+        return pd.DataFrame()
+    except Exception as e:
+        log.error("Unexpected Alpaca error: %s", e, exc_info=True)
+        return pd.DataFrame()
+
+
+def _fetch_from_polygon(symbols: List[str], start: date, end: date) -> pd.DataFrame:
+    """
+    Fetch daily bars from Polygon across the symbol list (synchronous).
+    """
+    if not POLYGON_API_KEY:
+        return pd.DataFrame()
+
+    import time
+    import requests
+
+    dfs: List[pd.DataFrame] = []
+    for idx, sym in enumerate(symbols):
+        url = f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/day/{start.isoformat()}/{end.isoformat()}"
+        params = {"adjusted": "true", "sort": "asc", "apiKey": POLYGON_API_KEY}
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 429:
+                time.sleep(1.5)
+                r = requests.get(url, params=params, timeout=15)
+
+            if r.status_code != 200:
+                log.warning("Polygon %s returned %s", sym, r.status_code)
+                continue
+
+            data = r.json()
+            if not data or "results" not in data:
+                continue
+
+            rows = []
+            for result in data.get("results", []):
+                rows.append({
+                    "symbol": sym.upper(),
+                    "ts": pd.to_datetime(result.get("t"), unit="ms").date(),
+                    "open": result.get("o"),
+                    "high": result.get("h"),
+                    "low": result.get("l"),
+                    "close": result.get("c"),
+                    "volume": result.get("v"),
+                    "adj_close": result.get("c"),  # adjusted=true returns adjusted close
+                    "vwap": result.get("vw"),
+                    "trade_count": result.get("n"),
+                })
+
+            if rows:
+                df_sym = pd.DataFrame(rows)
+                df_std = _standardize_bar_df(df_sym)
+                if not df_std.empty:
+                    dfs.append(df_std)
+
+            # Rate limiting
+            if idx > 0 and idx % 10 == 0:
+                time.sleep(0.5)
+
+        except Exception as e:
+            log.error("Error fetching Polygon data for %s: %s", sym, e)
+            continue
+
+    if dfs:
+        out = pd.concat(dfs, ignore_index=True)
+        log.info("Polygon fetched %d rows across %d symbols", len(out), out["symbol"].nunique())
+        return out
+    return pd.DataFrame()
 
 
 def _get_universe_symbols() -> List[str]:
@@ -208,87 +465,110 @@ def _upsert_daily_bars(df: pd.DataFrame, chunk_size: int = 5000) -> int:
 
 
 def ingest_bars_for_universe(days: int = 7) -> bool:
-    """Fetch and upsert daily bars for investable universe from Alpaca (pref) or Polygon (fallback)."""
+    """
+    Fetch and upsert daily bars for investable universe from Alpaca (pref) or Polygon (fallback).
+    Uses market calendar for safe date resolution and db.upsert_dataframe for robust database operations.
+    """
     if days <= 0:
         raise ValueError("days must be positive")
 
-    end = date.today()
+    # Resolve safe end date using market calendar and PIPELINE_TARGET_DATE
+    end = _resolve_target_end_date()
     start = end - timedelta(days=days)
-    symbols = _get_universe_symbols()
+
+    # Load universe symbols with fallback
+    symbols = _universe_symbols()
     if not symbols:
-        symbols = _fallback_symbols_from_alpaca(max_symbols=200)
+        # If universe loading failed, use the legacy fallback
+        try:
+            symbols = _fallback_symbols_from_alpaca(max_symbols=200)
+        except Exception as e:
+            log.warning("Alpaca fallback failed: %s", e)
 
     if not symbols:
         raise RuntimeError("No symbols available from universe or Alpaca assets. Populate universe first.")
 
-    log.info(f"Ingesting daily bars for {len(symbols)} symbols from {start} to {end}.")
+    log.info("Ingesting daily bars for %d symbols from %s to %s", len(symbols), start, end)
 
-    all_rows = 0
+    all_dfs = []
 
     # Prefer Alpaca if configured
     if APCA_API_KEY_ID:
-        batch = 200
-        for i in range(0, len(symbols), batch):
-            syms = symbols[i:i + batch]
-            df = _bars_from_alpaca_batch(syms, start, end)
-            if df is None or df.empty:
-                log.warning(f"Alpaca returned no data for batch {i // batch + 1}.")
-                continue
-            ing = _upsert_daily_bars(df)
-            all_rows += ing
-            log.info(f"Alpaca batch {i // batch + 1}: upserted {ing} rows.")
-    else:
-        log.info("Alpaca credentials not found; using Polygon.")
-        try:
-            import asyncio
-            df_poly = asyncio.run(_fetch_polygon_daily(symbols, start, end))
-        except RuntimeError:
-            # In case we're already in an event loop (e.g., Streamlit), use nested loop approach
-            import nest_asyncio, asyncio as aio
-            nest_asyncio.apply()
-            df_poly = aio.get_event_loop().run_until_complete(_fetch_polygon_daily(symbols, start, end))
-        if df_poly is None or df_poly.empty:
-            log.warning("Polygon returned no data.")
+        log.info("Using Alpaca as primary data source")
+        alpaca_df = _fetch_from_alpaca(symbols, start, end)
+        if not alpaca_df.empty:
+            all_dfs.append(alpaca_df)
         else:
-            ing = _upsert_daily_bars(df_poly)
-            all_rows += ing
-            log.info(f"Polygon: upserted {ing} rows.")
+            log.warning("Alpaca returned no data, will try Polygon as fallback")
 
-    log.info(f"Ingestion complete. Total rows upserted: {all_rows}")
-    return True
+    # Fall back to Polygon if Alpaca failed or is not configured
+    if not all_dfs and POLYGON_API_KEY:
+        log.info("Using Polygon as data source")
+        polygon_df = _fetch_from_polygon(symbols, start, end)
+        if not polygon_df.empty:
+            all_dfs.append(polygon_df)
+        else:
+            log.warning("Polygon also returned no data")
+
+    if not all_dfs:
+        log.warning("No data retrieved from any provider")
+        return False
+
+    # Combine all data and standardize
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    if combined_df.empty:
+        log.warning("Combined data is empty")
+        return False
+
+    # Final standardization and deduplication
+    final_df = _standardize_bar_df(combined_df)
+
+    if final_df.empty:
+        log.warning("No valid data after standardization")
+        return False
+
+    # Use the robust upsert_dataframe function instead of custom PostgreSQL-only code
+    try:
+        log.info("Upserting %d rows to daily_bars", len(final_df))
+        upsert_dataframe(final_df, DailyBar, conflict_cols=["symbol", "ts"])
+        log.info("Ingestion complete. Upserted %d rows", len(final_df))
+        return True
+    except Exception as e:
+        log.error("Failed to upsert data: %s", e, exc_info=True)
+        return False
 
 
 if __name__ == "__main__":
     import sys
     import argparse
-    
+
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Ingest market data for universe")
     parser.add_argument(
-        "--days", 
-        type=int, 
+        "--days",
+        type=int,
         default=7,
         help="Number of days to ingest (default: 7)"
     )
     args = parser.parse_args()
-    
+
     try:
         log.info(f"Starting data ingestion for {args.days} days...")
         result = ingest_bars_for_universe(days=args.days)
-        
+
         if result is True or result is None:
             log.info("Data ingestion completed successfully")
             sys.exit(0)
         else:
             log.error("Data ingestion failed")
             sys.exit(1)
-            
+
     except Exception as e:
         log.error(f"Data ingestion failed with exception: {e}", exc_info=True)
         sys.exit(1)
