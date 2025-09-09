@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import List, Dict, Any, Iterable, Optional
+from typing import List, Optional
 import pandas as pd
 
 try:
@@ -177,7 +177,7 @@ def _fetch_from_alpaca(symbols: List[str], start: date, end: date) -> pd.DataFra
         chunk = 200
         dfs: List[pd.DataFrame] = []
         for i in range(0, len(symbols), chunk):
-            batch = symbols[i : i + chunk]
+            batch = symbols[i:i + chunk]
             try:
                 raw = api.get_bars(
                     batch,
@@ -475,7 +475,7 @@ def ingest_bars_for_universe(days: int = 7) -> bool:
     # Resolve safe end date using market calendar and PIPELINE_TARGET_DATE
     end = _resolve_target_end_date()
     start = end - timedelta(days=days)
-    
+
     # Load universe symbols with fallback
     symbols = _universe_symbols()
     if not symbols:
@@ -484,7 +484,7 @@ def ingest_bars_for_universe(days: int = 7) -> bool:
             symbols = _fallback_symbols_from_alpaca(max_symbols=200)
         except Exception as e:
             log.warning("Alpaca fallback failed: %s", e)
-            
+
     if not symbols:
         raise RuntimeError("No symbols available from universe or Alpaca assets. Populate universe first.")
 
@@ -522,7 +522,7 @@ def ingest_bars_for_universe(days: int = 7) -> bool:
 
     # Final standardization and deduplication
     final_df = _standardize_bar_df(combined_df)
-    
+
     if final_df.empty:
         log.warning("No valid data after standardization")
         return False
@@ -541,34 +541,34 @@ def ingest_bars_for_universe(days: int = 7) -> bool:
 if __name__ == "__main__":
     import sys
     import argparse
-    
+
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Ingest market data for universe")
     parser.add_argument(
-        "--days", 
-        type=int, 
+        "--days",
+        type=int,
         default=7,
         help="Number of days to ingest (default: 7)"
     )
     args = parser.parse_args()
-    
+
     try:
         log.info(f"Starting data ingestion for {args.days} days...")
         result = ingest_bars_for_universe(days=args.days)
-        
+
         if result is True or result is None:
             log.info("Data ingestion completed successfully")
             sys.exit(0)
         else:
             log.error("Data ingestion failed")
             sys.exit(1)
-            
+
     except Exception as e:
         log.error(f"Data ingestion failed with exception: {e}", exc_info=True)
         sys.exit(1)

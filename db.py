@@ -299,7 +299,7 @@ def _max_bind_params_for_connection(connection) -> int:
     """
     try:
         url_str = str(connection.engine.url).lower()
-        
+
         if "sqlite" in url_str:
             # SQLite default limit is 999 variables, use conservative limit
             return 999
@@ -313,7 +313,7 @@ def _max_bind_params_for_connection(connection) -> int:
         else:
             # Unknown database, use very conservative default
             return 1000
-            
+
     except Exception as e:
         log.warning(f"Could not determine database type for parameter limits: {e}")
         return 1000  # Very conservative fallback
@@ -352,7 +352,7 @@ def _should_log_column_warning(table_name: str, missing_columns: set) -> bool:
         old_keys = [k for k, v in _column_warning_cache.items() if v < cutoff_time]
         for k in old_keys:
             del _column_warning_cache[k]
-        
+
         # If still too large after cleanup, remove oldest entries
         if len(_column_warning_cache) > MAX_CACHE_SIZE:
             sorted_items = sorted(_column_warning_cache.items(), key=lambda x: x[1])
@@ -470,18 +470,18 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
             # If columns are missing, try refreshing the cache in case schema has been updated
             # This handles cases where migrations have been applied but cache is stale
             import time
-            
+
             table_name = table.__tablename__
             refresh_key = (table_name, frozenset(missing_in_table))
             current_time = time.time()
-            
+
             # Avoid repeated cache refresh attempts for the same missing columns
             should_refresh = table_name in _table_columns_cache
             if refresh_key in _cache_refresh_failures:
                 last_failed_refresh = _cache_refresh_failures[refresh_key]
                 # Only retry cache refresh after 10 minutes
                 should_refresh = should_refresh and (current_time - last_failed_refresh > 600)
-            
+
             if should_refresh:
                 log.debug(f"Detected missing columns {missing_in_table} in {table_name}, refreshing column cache")
                 # Clear this table from cache and re-fetch
@@ -492,11 +492,11 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                     actual_columns = actual_columns_refreshed
                     valid_columns = df_columns.intersection(actual_columns)
                     missing_in_table_after_refresh = df_columns - actual_columns
-                    
+
                     # If columns are still missing after refresh, record this to avoid repeated attempts
                     if missing_in_table_after_refresh == missing_in_table:
                         _cache_refresh_failures[refresh_key] = current_time
-                    
+
                     missing_in_table = missing_in_table_after_refresh
                     log.debug(f"Cache refresh completed for {table_name}, found {len(actual_columns)} columns")
                 else:
@@ -514,7 +514,7 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 # Use enhanced warning deduplication
                 try:
                     from warning_dedup import warn_adj_close_missing, warn_column_mismatch
-                    
+
                     if 'adj_close' in missing_in_table and len(missing_in_table) == 1:
                         warn_adj_close_missing(log, table.__tablename__)
                     else:
@@ -551,7 +551,7 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
         for start in range(0, len(df), per_stmt_rows):
             part = df.iloc[start:start + per_stmt_rows]
-            
+
             # Additional safety: deduplicate each chunk to prevent cardinality violations
             # This handles edge cases where chunking might create duplicates
             if conflict_cols and set(conflict_cols).issubset(part.columns):
@@ -560,7 +560,7 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 chunk_dedupe_size = len(part)
                 if chunk_dedupe_size < chunk_original_size:
                     log.debug(f"Chunk deduplication: removed {chunk_original_size - chunk_dedupe_size} duplicates from batch")
-            
+
             cols = list(part.columns)
             records = part.to_dict(orient="records")
             if not records:
@@ -599,13 +599,13 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                         original_size = len(smaller_df)
                         smaller_df = smaller_df.drop_duplicates(subset=conflict_cols, keep='last').reset_index(drop=True)
                         dedupe_size = len(smaller_df)
-                        
+
                         # Use enhanced warning deduplication for cardinality violations
                         if dedupe_size < original_size:
                             try:
                                 from warning_dedup import warn_cardinality_violation
-                                warn_cardinality_violation(log, table.__tablename__, 
-                                                         original_size - dedupe_size, original_size)
+                                warn_cardinality_violation(log, table.__tablename__,
+                                                           original_size - dedupe_size, original_size)
                             except ImportError:
                                 # Fallback to simple logging
                                 removed_count = original_size - dedupe_size
