@@ -2,6 +2,16 @@
 
 This document describes the newly implemented task queue infrastructure that decouples Streamlit from long-running operations.
 
+## Cron vs. Task Queue
+
+- Cron jobs (scheduled operations) should run the Python modules directly inside the container. This is the simplest and most reliable approach and does not require Celery or Redis.
+- The task queue (Celery + Redis) is intended for asynchronous operations triggered from the Streamlit UI or the FastAPI service.
+
+Recommended cron commands (also wired in render.yaml):
+- Refresh universe: bash -lc scripts/cron_universe.sh
+- Ingest bars: bash -lc scripts/cron_ingest.sh (honors DAYS env; default 7)
+- EOD pipeline: bash -lc scripts/cron_eod_pipeline.sh
+
 ## Architecture Overview
 
 The system now supports two modes:
