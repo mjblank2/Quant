@@ -292,6 +292,33 @@ def clear_table_columns_cache():
     _cache_refresh_failures.clear()
 
 
+def _max_bind_params_for_connection(connection) -> int:
+    """
+    Get the maximum number of bind parameters for the given database connection.
+    Returns conservative limits to avoid parameter limit errors.
+    """
+    try:
+        url_str = str(connection.engine.url).lower()
+        
+        if "sqlite" in url_str:
+            # SQLite default limit is 999 variables, use conservative limit
+            return 999
+        elif "postgresql" in url_str:
+            # PostgreSQL varies by configuration, default is often 32767
+            # But some hosted services may have lower limits, use conservative value
+            return 16000
+        elif "mysql" in url_str:
+            # MySQL limit is typically 65535
+            return 32000
+        else:
+            # Unknown database, use very conservative default
+            return 1000
+            
+    except Exception as e:
+        log.warning(f"Could not determine database type for parameter limits: {e}")
+        return 1000  # Very conservative fallback
+
+
 def _should_log_column_warning(table_name: str, missing_columns: set) -> bool:
     """
     Check if we should log a warning about missing columns.
@@ -422,10 +449,8 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         if removed > 0:
             log.debug(f"Removed {removed} duplicate rows based on conflict columns {conflict_cols} before UPSERT")
 
-    # Safety: PostgreSQL's parameter limit varies by configuration.
-    # Use a very conservative limit to ensure compatibility across different PostgreSQL setups.
-    # Some configurations may have limits as low as 16,000 parameters.
-    MAX_BIND_PARAMS = 10000  # Very conservative to prevent parameter limit errors
+    # Use dynamic parameter limits based on the database connection type
+    # This prevents parameter limit errors across different database backends
 
     ctx = engine.begin() if conn is None else nullcontext(conn)
     with ctx as connection:
@@ -517,9 +542,11 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 log.debug(f"Proactively removed {original_size - dedupe_size} duplicate rows to prevent CardinalityViolation on conflict cols {conflict_cols}")
 
         cols_all = list(df.columns)
-        # rows per statement bounded by MAX_BIND_PARAMS / num_columns
+        # Get dynamic parameter limits based on connection type
+        max_bind_params = _max_bind_params_for_connection(connection)
+        # rows per statement bounded by max_bind_params / num_columns
         # Add additional safety: ensure we don't exceed reasonable batch sizes
-        theoretical_max_rows = MAX_BIND_PARAMS // max(1, len(cols_all))
+        theoretical_max_rows = max_bind_params // max(1, len(cols_all))
         per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows, 1000))  # Cap at 1000 rows max
 
         for start in range(0, len(df), per_stmt_rows):

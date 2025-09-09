@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse, logging, os, sys, time
 from data.universe import _list_alpaca_assets as rebuild_universe  # placeholder
-from data.ingest import _bars_from_alpaca_batch as ingest_bars_for_universe  # placeholder
+from data.ingest import ingest_bars_for_universe  
 from models.train_predict import train_and_predict_all_models as run_eod_pipeline  # placeholder
 
 def main():
@@ -21,7 +21,7 @@ def main():
         elif args.task == "universe":
             rebuild_universe()
         elif args.task == "ingest":
-            ingest_bars_for_universe([], None, None)  # placeholders
+            ingest_bars_for_universe(args.days)
         elif args.task == "pipeline":
             ok = run_eod_pipeline()
             if not ok:
