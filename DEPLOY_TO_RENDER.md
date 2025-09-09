@@ -110,35 +110,20 @@ ADV_USD_MIN=25000
 ADV_LOOKBACK=20
 ```
 
-### 3.3 Service Configuration
+### 3.3 Service Configuration (Cron Jobs)
 
-The `render.yaml` defines these services:
+Use direct Python execution (Option A) for cron jobs. This avoids coupling to the API/Celery path and prevents common 404/405 errors from curl-based cron.
 
-#### Web Service (Streamlit Dashboard)
-- **Name**: `smallcap-quant`
-- **Type**: Web Service
-- **Build**: Docker
-- **Port**: Automatically assigned by Render
-- **Environment**: `SERVICE=web APP_MODE=streamlit`
+Examples (as configured in render.yaml):
 
-#### Data Ingestion API Service
-- **Name**: `data-ingestion-service`
-- **Type**: Web Service
-- **Build**: Docker
-- **Port**: Automatically assigned by Render
-- **Environment**: `SERVICE=web APP_MODE=api`
-- **Endpoints**: `/health`, `/ingest`, `/metrics`, `/status`
+- Refresh universe (Mon 09:00 CT):
+  - dockerCommand: ["bash", "-lc", "scripts/cron_universe.sh"]
+- Ingest recent bars (Mon–Fri 16:45 CT):
+  - dockerCommand: ["bash", "-lc", "scripts/cron_ingest.sh"]
+- Full EOD pipeline (Mon–Fri 17:30 CT):
+  - dockerCommand: ["bash", "-lc", "scripts/cron_eod_pipeline.sh"]
 
-#### Worker Service (Background Tasks)
-- **Name**: `quant-worker`  
-- **Type**: Worker
-- **Build**: Docker
-- **Environment**: `SERVICE=worker WORKER_TASK=idle`
-
-#### Cron Jobs
-1. **Universe Refresh**: Monday 9:00 AM CT
-2. **Data Ingestion**: Weekdays 4:45 PM CT  
-3. **EOD Pipeline**: Weekdays 5:30 PM CT
+Ensure SERVICE=cron and PYTHONPATH=/app are set in each cron's environment. Do not use curl to call the API from cron; that's only needed for interactive/API-driven workflows.
 
 ## Step 4: Deployment Process
 

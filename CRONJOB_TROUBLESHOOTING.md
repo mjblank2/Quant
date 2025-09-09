@@ -78,6 +78,20 @@ The pipeline has been enhanced with comprehensive error handling and diagnostics
 
 ## Common Issues and Solutions
 
+### curl to API returns 404 or 405 from cron
+
+Symptoms:
+- 404 Not Found when POSTing to a wrong API hostname or missing /ingest path
+- 405 Method Not Allowed when POSTing to the root (/) instead of /ingest
+
+Resolution (recommended):
+- Switch cron to direct Python execution (Option A) using the provided scripts:
+  - scripts/cron_universe.sh
+  - scripts/cron_ingest.sh
+  - scripts/cron_eod_pipeline.sh
+
+This removes the dependency on the API/Celery path for scheduled operations. Keep curl-based triggers only for ad‑hoc/manual runs.
+
 ### Parameter Limit Errors (f405)
 
 **Symptoms:**

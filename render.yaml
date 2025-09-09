@@ -152,7 +152,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "0 14 * * 1"
-    dockerCommand: ["python", "-m", "data.universe"]
+    dockerCommand: ["bash", "-lc", "scripts/cron_universe.sh"]
     envVars:
       - key: SERVICE
         value: cron
@@ -184,7 +184,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "45 21 * * 1-5"
-    dockerCommand: ["python", "-m", "data.ingest", "--days", "7"]
+    dockerCommand: ["bash", "-lc", "scripts/cron_ingest.sh"]
     envVars:
       - key: SERVICE
         value: cron
@@ -213,7 +213,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "30 22 * * 1-5"
-    dockerCommand: ["python", "run_pipeline.py"]
+    dockerCommand: ["bash", "-lc", "scripts/cron_eod_pipeline.sh"]
     envVars:
       - key: SERVICE
         value: cron
