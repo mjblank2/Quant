@@ -64,7 +64,8 @@ def main():
     """Test all API endpoints."""
     if len(sys.argv) != 2:
         print("Usage: python api_endpoints.py <base_url>")
-        print("Example: python api_endpoints.py https://data-ingestion-service-abcd.onrender.com")
+        # Replace with the public URL shown for your Render service
+        print("Example: python api_endpoints.py https://data-ingestion-service-se1j.onrender.com")
         sys.exit(1)
         
     base_url = sys.argv[1]

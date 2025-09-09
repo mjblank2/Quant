@@ -161,9 +161,9 @@ alembic upgrade head
 - Verify database connection and basic functionality
 
 #### Check Data Ingestion API Service
-- Test the health endpoint: `https://data-ingestion-service-abcd.onrender.com/health`
-- Verify API endpoints are accessible: `https://data-ingestion-service-abcd.onrender.com/`
-- Test data ingestion: `curl -X POST https://data-ingestion-service-abcd.onrender.com/ingest -H "Content-Type: application/json" -d '{"days": 1}'`
+- Test the health endpoint: `https://data-ingestion-service-se1j.onrender.com/health`
+- Verify API endpoints are accessible: `https://data-ingestion-service-se1j.onrender.com/`
+- Test data ingestion: `curl -X POST https://data-ingestion-service-se1j.onrender.com/ingest -H "Content-Type: application/json" -d '{"days": 1}'`
 
 #### Check Worker Service  
 - Review worker logs for successful startup
