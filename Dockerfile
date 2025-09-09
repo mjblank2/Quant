@@ -28,8 +28,11 @@ COPY . /app
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Make entrypoint executable if present
+# Make scripts executable if present
 RUN test -f /app/scripts/entrypoint.sh && chmod +x /app/scripts/entrypoint.sh || true
+RUN test -f /app/scripts/cron_universe.sh && chmod +x /app/scripts/cron_universe.sh || true
+RUN test -f /app/scripts/cron_ingest.sh && chmod +x /app/scripts/cron_ingest.sh || true
+RUN test -f /app/scripts/cron_eod_pipeline.sh && chmod +x /app/scripts/cron_eod_pipeline.sh || true
 
 # Align exposed port with Streamlit default in entrypoint (PORT=10000)
 EXPOSE 10000
