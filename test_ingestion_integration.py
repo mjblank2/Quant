@@ -93,7 +93,7 @@ def test_standardization_integration():
     assert standardized.iloc[0]["open"] == 350.0
     assert standardized.iloc[0]["vwap"] == 351.5
     # The column mapping should convert "n" to "trade_count"
-    assert standardized.iloc[0]["trade_count"] == 3000 or pd.isna(standardized.iloc[0]["trade_count"]), f"Expected 3000 or NaN, got {standardized.iloc[0]['trade_count']}"
+    assert standardized.iloc[0]["trade_count"] == 3000, f"Expected 3000, got {standardized.iloc[0]['trade_count']}"
     
     print("✓ Multi-provider standardization works correctly")
     return True
