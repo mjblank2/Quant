@@ -82,3 +82,39 @@ def ingest_bars_for_universe(days: int = 7) -> bool:
     """Placeholder to orchestrate data ingestion (customize to your data providers)."""
     log.info("Ingestion run placeholder. Implement provider-specific logic here.")
     return True
+
+
+if __name__ == "__main__":
+    import sys
+    import argparse
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Ingest market data for universe")
+    parser.add_argument(
+        "--days", 
+        type=int, 
+        default=7,
+        help="Number of days to ingest (default: 7)"
+    )
+    args = parser.parse_args()
+    
+    try:
+        log.info(f"Starting data ingestion for {args.days} days...")
+        result = ingest_bars_for_universe(days=args.days)
+        
+        if result is True or result is None:
+            log.info("Data ingestion completed successfully")
+            sys.exit(0)
+        else:
+            log.error("Data ingestion failed")
+            sys.exit(1)
+            
+    except Exception as e:
+        log.error(f"Data ingestion failed with exception: {e}", exc_info=True)
+        sys.exit(1)

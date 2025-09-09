@@ -41,3 +41,28 @@ async def _poly_adv(symbol: str, start: date, end: date) -> float | None:
 def rebuild_universe() -> bool:
     log.info("Universe rebuild placeholder. Implement your rules here.")
     return True
+
+
+if __name__ == "__main__":
+    import sys
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    
+    try:
+        log.info("Starting universe rebuild...")
+        result = rebuild_universe()
+        
+        if result is True or result is None:
+            log.info("Universe rebuild completed successfully")
+            sys.exit(0)
+        else:
+            log.error("Universe rebuild failed")
+            sys.exit(1)
+            
+    except Exception as e:
+        log.error(f"Universe rebuild failed with exception: {e}", exc_info=True)
+        sys.exit(1)
