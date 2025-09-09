@@ -4,7 +4,9 @@ import sys
 import logging
 import traceback
 import tempfile
-from datetime import date
+import argparse
+import inspect
+from datetime import date, datetime, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -89,13 +91,63 @@ def _import_modules() -> tuple[bool, dict, str]:
             log.warning(f"Could not import 'models.ml', likely missing optional ML libraries like xgboost. ML steps will be skipped. Error: {e}")
             modules['train_and_predict_all_models'] = None
             
+        # Optional enhanced trade generation
+        try:
+            from enhanced_trade_generation import enhanced_generate_today_trades
+            modules['enhanced_generate_today_trades'] = enhanced_generate_today_trades
+        except Exception:
+            modules['enhanced_generate_today_trades'] = None
+
         return True, modules, "All modules imported successfully"
 
     except ImportError as e:
         return False, {}, f"A critical module is missing: {e}"
 
+def _parse_iso_date(value: str) -> date:
+    return datetime.strptime(value, "%Y-%m-%d").date()
 
-def main(sync_broker: bool = False) -> bool:
+def _previous_market_day(ref: date) -> date:
+    """
+    Compute previous market day using market_calendar if available; otherwise fallback to previous weekday.
+    """
+    try:
+        # Try common function names in market_calendar
+        from market_calendar import get_previous_market_day as _prev_md  # type: ignore
+        return _prev_md(ref)
+    except Exception:
+        pass
+    try:
+        from market_calendar import previous_market_day as _prev_md  # type: ignore
+        return _prev_md(ref)
+    except Exception:
+        pass
+    # Fallback: previous weekday (does not account for holidays)
+    d = ref - timedelta(days=1)
+    while d.weekday() >= 5:  # 5=Sat, 6=Sun
+        d -= timedelta(days=1)
+    return d
+
+def _call_with_optional_date(func, target: date | None):
+    """
+    Call a function, passing a date if it supports one of the common parameter names.
+    """
+    if target is None:
+        return func()
+    try:
+        sig = inspect.signature(func)
+        for pname in ("target_date", "as_of", "run_date", "trade_date", "date"):
+            if pname in sig.parameters:
+                return func(**{pname: target})
+    except Exception:
+        # If anything goes wrong with introspection, fall back to calling without args
+        pass
+    return func()
+
+def main(
+    sync_broker: bool = False,
+    target_date: date | None = None,
+    ignore_market_hours: bool = False,
+) -> bool:
     """
     A robust daily pipeline that prioritizes reliability and clear error reporting.
     It relies solely on Alembic for schema management and will fail clearly if the
@@ -106,11 +158,18 @@ def main(sync_broker: bool = False) -> bool:
     - Market calendar validation
     - Enhanced trade generation with abort mechanisms
     - Warning deduplication
+    - Target-date override for re-running prior days
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     
     log.info("🚀 Starting enhanced pipeline (sync_to_broker=%s)", sync_broker)
-    
+    if target_date:
+        os.environ["PIPELINE_TARGET_DATE"] = target_date.isoformat()
+        log.info("📅 Target date override set to %s", target_date.isoformat())
+    if ignore_market_hours:
+        os.environ["EOD_FORCE_RUN"] = "true"
+        log.info("⏱️ Market-hours gate will be ignored for this run")
+
     # Version Guard Check
     try:
         from version_guard import check_schema_version
@@ -125,9 +184,50 @@ def main(sync_broker: bool = False) -> bool:
     # Market Calendar Check
     try:
         from market_calendar import should_run_pipeline, log_market_calendar_status
-        log_market_calendar_status()
-        
-        should_run, calendar_reason = should_run_pipeline()
+
+        # Try logging status for the target date if supported
+        try:
+            sig = inspect.signature(log_market_calendar_status)
+            if target_date and ("date" in sig.parameters or "as_of" in sig.parameters or "target_date" in sig.parameters):
+                kwargs = {}
+                if "date" in sig.parameters:
+                    kwargs["date"] = target_date
+                elif "as_of" in sig.parameters:
+                    kwargs["as_of"] = target_date
+                else:
+                    kwargs["target_date"] = target_date
+                log_market_calendar_status(**kwargs)  # type: ignore
+            else:
+                log_market_calendar_status()
+        except Exception:
+            log_market_calendar_status()
+
+        should_run = True
+        calendar_reason = "OK to run"
+
+        # If not ignoring market hours, evaluate the gate. For prior-day target we treat it as allowed.
+        if not ignore_market_hours:
+            if target_date and target_date < date.today():
+                should_run = True
+                calendar_reason = f"Targeting prior day {target_date.isoformat()} — bypassing 'market not closed yet' gate"
+            else:
+                # Try passing target_date to should_run_pipeline if supported
+                try:
+                    sig = inspect.signature(should_run_pipeline)
+                    if target_date and ("date" in sig.parameters or "as_of" in sig.parameters or "target_date" in sig.parameters):
+                        kwargs = {}
+                        if "date" in sig.parameters:
+                            kwargs["date"] = target_date
+                        elif "as_of" in sig.parameters:
+                            kwargs["as_of"] = target_date
+                        else:
+                            kwargs["target_date"] = target_date
+                        should_run, calendar_reason = should_run_pipeline(**kwargs)  # type: ignore
+                    else:
+                        should_run, calendar_reason = should_run_pipeline()
+                except Exception:
+                    should_run, calendar_reason = should_run_pipeline()
+
         if not should_run:
             log.info("📅 Pipeline skipped: %s", calendar_reason)
             return True  # Not an error, just not a trading day
@@ -204,6 +304,7 @@ def main(sync_broker: bool = False) -> bool:
         try:
             # 4. Execute Pipeline Stages
             log.info("📊 Stage 1: Data ingestion")
+            # Ingest a recent window; downstream consumers can use PIPELINE_TARGET_DATE
             modules['ingest_bars_for_universe'](7)
             modules['fetch_fundamentals_for_universe']()
             log.info("✅ Data ingestion completed.")
@@ -211,12 +312,28 @@ def main(sync_broker: bool = False) -> bool:
             log.info("🧮 Stage 2: Feature engineering")
             # Use a small batch size to limit memory usage during feature building
             # (default batch_size=200 helps avoid OOM errors on limited-memory plans)
-            modules['build_features'](batch_size=200)
+            # Try to pass a date if supported by build_features
+            try:
+                _call_with_optional_date(modules['build_features'], target_date)
+            except Exception:
+                modules['build_features'](batch_size=200)
+            else:
+                # If build_features accepted a date, still ensure batch size if possible
+                try:
+                    sig = inspect.signature(modules['build_features'])
+                    if "batch_size" in sig.parameters:
+                        modules['build_features'](batch_size=200)
+                except Exception:
+                    pass
             log.info("✅ Feature engineering completed.")
 
             if modules.get('train_and_predict_all_models'):
                 log.info("🤖 Stage 3: Model training and prediction")
-                modules['train_and_predict_all_models']()
+                # Try to pass a date if supported
+                try:
+                    _call_with_optional_date(modules['train_and_predict_all_models'], target_date)
+                except Exception:
+                    modules['train_and_predict_all_models']()
                 log.info("✅ Model training and prediction completed.")
             else:
                 log.warning("⚠️ Stage 3: Skipping model training due to missing modules.")
@@ -224,15 +341,17 @@ def main(sync_broker: bool = False) -> bool:
             if modules.get('generate_today_trades'):
                 log.info("💰 Stage 4: Enhanced trade generation with validation")
                 try:
-                    # Use enhanced trade generation with abort mechanisms
-                    from enhanced_trade_generation import enhanced_generate_today_trades
-                    trades = enhanced_generate_today_trades()
-                    log.info("✅ Enhanced trade generation completed.")
+                    # Prefer enhanced version if available
+                    trades = None
+                    if modules.get('enhanced_generate_today_trades'):
+                        trades = _call_with_optional_date(modules['enhanced_generate_today_trades'], target_date)
+                    if trades is None:
+                        # Fallback to original implementation
+                        trades = _call_with_optional_date(modules['generate_today_trades'], target_date)
+                    log.info("✅ Trade generation completed.")
                 except Exception as e:
-                    log.error("❌ Enhanced trade generation failed, falling back to basic: %s", e)
-                    # Fallback to original implementation
-                    trades = modules['generate_today_trades']()
-                    log.info("✅ Fallback trade generation completed.")
+                    log.error("❌ Trade generation failed: %s", e)
+                    raise
 
                 if sync_broker and modules.get('sync_trades_to_broker') and trades is not None and not trades.empty:
                     log.info("🔄 Stage 5: Syncing trades to broker")
@@ -270,14 +389,39 @@ def main(sync_broker: bool = False) -> bool:
 
 
 if __name__ == "__main__":
-    do_sync = os.getenv("SYNC_TO_BROKER", "false").lower() == "true"
-    
+    parser = argparse.ArgumentParser(description="Run the EOD pipeline with optional date overrides.")
+    parser.add_argument("--sync-to-broker", action="store_true", help="Also sync generated trades to broker.")
+    parser.add_argument("--ignore-market-hours", "--force", dest="ignore_market_hours", action="store_true",
+                        help="Bypass market-hours gate and run immediately.")
+    parser.add_argument("--yesterday", action="store_true", help="Run as if for the previous market day.")
+    parser.add_argument("--target-date", type=_parse_iso_date, help="Run as if for the specified date (YYYY-MM-DD).")
+
+    args = parser.parse_args()
+
+    # Resolve target date
+    resolved_target: date | None = None
+    if args.target_date:
+        resolved_target = args.target_date
+    elif args.yesterday:
+        resolved_target = _previous_market_day(date.today())
+
+    # Determine broker sync setting
+    do_sync_env = os.getenv("SYNC_TO_BROKER", "false").lower() == "true"
+    do_sync = do_sync_env or args.sync_to_broker
+
     try:
-        success = main(sync_broker=do_sync)
+        success = main(
+            sync_broker=do_sync,
+            target_date=resolved_target,
+            ignore_market_hours=bool(args.ignore_market_hours),
+        )
         if success:
             sys.exit(0)
         else:
             sys.exit(1)
+    except KeyboardInterrupt:
+        log.warning("⚠️ Pipeline execution interrupted by user.")
+        sys.exit(130)
     except KeyboardInterrupt:
         log.warning("⚠️ Pipeline execution interrupted by user.")
         sys.exit(130)
