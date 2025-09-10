@@ -5,7 +5,7 @@ services:
   - type: redis
     name: quant-redis
     ipAllowList: []
-    plan: starter  # Use 'standard' for production
+    plan: standard  # Use 'standard' for production
 
   # -----------------------------
   # Web UI (read-only Streamlit)
