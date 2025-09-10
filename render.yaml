@@ -183,7 +183,7 @@ services:
     name: ingest-recent
     runtime: docker
     dockerfilePath: Dockerfile
-    schedule: "45 21 * * 1-10"
+    schedule: "45 21 * * 1-5"
     dockerCommand: ["bash", "-lc", "scripts/cron_ingest.sh"]
     envVars:
       - key: SERVICE
