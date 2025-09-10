@@ -47,7 +47,6 @@ services:
         sync: false
       - key: PYTHONPATH
         value: /app
-      # The entrypoint defaults SERVICE=web APP_MODE=streamlit
 
   # -----------------------------
   # Data Ingestion API Service
@@ -61,7 +60,7 @@ services:
       - key: SERVICE
         value: web
       - key: APP_MODE
-        value: api                          # Run FastAPI instead of Streamlit
+        value: api
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -103,9 +102,9 @@ services:
     dockerfilePath: Dockerfile
     envVars:
       - key: SERVICE
-        value: worker                       # entrypoint will run: python -m jobs.worker
+        value: worker
       - key: WORKER_TASK
-        value: idle                         # stays alive; exec tasks via Shell or override
+        value: idle
       - key: PYTHONPATH
         value: /app
       - key: DATABASE_URL
@@ -132,19 +131,14 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip                          # or 'iex'
+        value: sip
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
         sync: false
-      # Optional toggles used by your code:
-      # - key: SYNC_TO_BROKER
-      #   value: "false"
-      # - key: LOG_LEVEL
-      #   value: INFO
 
   # ---------------------------------------------------------
-  # Cron: refresh universe (Mon 09:00 CT = 14:00 UTC)
+  # Cron: refresh universe
   # ---------------------------------------------------------
   - type: cron
     name: refresh-universe
@@ -164,7 +158,7 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip                          # or 'iex'
+        value: sip
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
@@ -172,10 +166,10 @@ services:
       - key: PYTHONPATH
         value: /app
       - key: ADV_USD_MIN
-        value: "-1"                         # revert later when Polygon ADV is flowing
+        value: "-1"
 
   # --------------------------------------------------------------
-  # Cron: ingest recent bars (Mon–Fri 16:45 CT ≈ 21:45 UTC)
+  # Cron: ingest recent bars
   # --------------------------------------------------------------
   - type: cron
     name: ingest-recent
@@ -195,7 +189,7 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip                          # or 'iex'
+        value: sip
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
@@ -204,7 +198,7 @@ services:
         value: /app
 
   # --------------------------------------------------------------
-  # Cron: full EOD pipeline (Mon–Fri 17:30 CT ≈ 22:30 UTC)
+  # Cron: full EOD pipeline
   # --------------------------------------------------------------
   - type: cron
     name: eod-pipeline
@@ -224,7 +218,7 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip                          # or 'iex'
+        value: sip
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
@@ -238,7 +232,7 @@ services:
       #   value: "true"
 
   # ---------------------------------------------------------------------
-  # Cron: high-frequency bar ingestion (every 5 minutes)
+  # Cron: high-frequency bar ingestion
   # ---------------------------------------------------------------------
   - type: cron
     name: ingest-frequent
@@ -258,13 +252,10 @@ services:
       - key: APCA_API_BASE_URL
         value: https://api.alpaca.markets
       - key: ALPACA_DATA_FEED
-        value: sip                          # or 'iex'
+        value: sip
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
-        sync: false
-      - key: PYTHONPATH
-        value: /app
         sync: false
       - key: PYTHONPATH
         value: /app
