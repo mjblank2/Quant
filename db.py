@@ -116,6 +116,17 @@ class Feature(Base):
     turnover_21: Mapped[float | None] = mapped_column(Float)
     size_ln: Mapped[float | None] = mapped_column(Float)
     adv_usd_21: Mapped[float | None] = mapped_column(Float)  # v16 extension
+    reversal_5d_z: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ivol_63: Mapped[float | None] = mapped_column(Float, nullable=True)
+    beta_63: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    overnight_gap: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    illiq_21: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
+    fwd_ret: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fwd_ret_resid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pead_event: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pead_surprise_eps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pead_surprise_rev: Mapped[float | None] = mapped_column(Float, nullable=True)
+    russell_inout: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_pb: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_ps_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -124,9 +135,6 @@ class Feature(Base):
     f_gm: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_profit_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     f_current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-    beta_63: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
-    overnight_gap: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
-    illiq_21: Mapped[float | None] = mapped_column(Float, nullable=True)  # v16 extension
     __table_args__ = (Index("ix_features_symbol_ts", "symbol", "ts"),)
 
 class Prediction(Base):
@@ -301,8 +309,8 @@ def _max_bind_params_for_connection(connection) -> int:
         url_str = str(connection.engine.url).lower()
 
         if "sqlite" in url_str:
-            # SQLite default limit is 999 variables, use conservative limit
-            return 900
+            # SQLite default limit is 999 variables; use full limit minus small safety margin
+            return 999
         elif "postgresql" in url_str:
             # PostgreSQL varies by configuration, default is often 32767
             # But some hosted services may have lower limits, use conservative value

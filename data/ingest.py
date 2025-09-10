@@ -431,10 +431,39 @@ def _dedupe_bars(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+_ADJ_CLOSE_CHECKED = False
+
+def _ensure_adj_close_column() -> None:
+    """Ensure the daily_bars table has an adj_close column.
+
+    Older databases might have been created before the adj_close field
+    existed.  This helper adds the column on-the-fly if it's missing so
+    downstream feature building can rely on it.  The check is cached so
+    we only touch the database once per process.
+    """
+    global _ADJ_CLOSE_CHECKED
+    if _ADJ_CLOSE_CHECKED:
+        return
+    from sqlalchemy import inspect, text
+    try:
+        insp = inspect(engine)
+        cols = {c['name'] for c in insp.get_columns('daily_bars')}
+        if 'adj_close' not in cols:
+            with engine.begin() as conn:
+                conn.execute(text('ALTER TABLE daily_bars ADD COLUMN adj_close DOUBLE PRECISION'))
+            log.warning("Added missing adj_close column to daily_bars")
+    except Exception:
+        # If inspection fails we silently continue; subsequent logic will
+        # fall back to using close prices.
+        pass
+    finally:
+        _ADJ_CLOSE_CHECKED = True
+
 def _upsert_daily_bars(df: pd.DataFrame, chunk_size: int = 5000) -> int:
     """Upsert to daily_bars using PostgreSQL ON CONFLICT."""
     if df is None or df.empty:
         return 0
+    _ensure_adj_close_column()
     df = _dedupe_bars(df)
     cols = ["symbol", "ts", "open", "high", "low", "close", "adj_close", "volume", "vwap", "trade_count"]
     df = df[cols].copy()
