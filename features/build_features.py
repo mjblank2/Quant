@@ -5,7 +5,7 @@ import logging
 from typing import List
 import numpy as np
 import pandas as pd
-from sqlalchemy import text, bindparam
+from sqlalchemy import text, bindparam, inspect
 
 from db import engine, upsert_dataframe, Feature  # type: ignore
 from config import TARGET_HORIZON_DAYS
@@ -35,33 +35,37 @@ def _symbols() -> list[str]:
     except Exception:
         return []
 
+_HAS_ADJ_CLOSE: bool | None = None
+
+def _has_adj_close() -> bool:
+    global _HAS_ADJ_CLOSE
+    if _HAS_ADJ_CLOSE is None:
+        try:
+            insp = inspect(engine)
+            cols = {c['name'] for c in insp.get_columns('daily_bars')}
+            _HAS_ADJ_CLOSE = 'adj_close' in cols
+        except Exception:
+            _HAS_ADJ_CLOSE = False
+    return bool(_HAS_ADJ_CLOSE)
+
 def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame(columns=['symbol', 'ts', 'open', 'close', 'adj_close', 'volume'])
 
-    sql_with_adj = (
-        'SELECT symbol, ts, open, close, COALESCE(adj_close, close) as adj_close, volume '
+    has_adj = _has_adj_close()
+    sql = (
+        'SELECT symbol, ts, open, close, '
+        + ('COALESCE(adj_close, close)' if has_adj else 'close')
+        + ' as adj_close, volume '
         'FROM daily_bars '
         'WHERE ts >= :start AND symbol IN :syms '
         'ORDER BY symbol, ts'
     )
-    sql_fallback = (
-        'SELECT symbol, ts, open, close, close as adj_close, volume '
-        'FROM daily_bars '
-        'WHERE ts >= :start AND symbol IN :syms '
-        'ORDER BY symbol, ts'
-    )
-    stmt_with_adj = text(sql_with_adj).bindparams(bindparam('syms', expanding=True))
-    stmt_fallback = text(sql_fallback).bindparams(bindparam('syms', expanding=True))
+    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     params = {'start': start_ts.date(), 'syms': tuple(symbols)}
-    try:
-        return pd.read_sql_query(stmt_with_adj, engine, params=params, parse_dates=['ts'])
-    except Exception as e:
-        if "adj_close" in str(e) and ("no such column" in str(e) or "does not exist" in str(e)):
-            log.warning("adj_close column not found in daily_bars table, using close price instead")
-            return pd.read_sql_query(stmt_fallback, engine, params=params, parse_dates=['ts'])
-        else:
-            raise
+    if not has_adj:
+        log.warning("adj_close column not found in daily_bars table, using close price instead")
+    return pd.read_sql_query(stmt, engine, params=params, parse_dates=['ts'])
 
 def _load_market_returns(market_symbol: str = "IWM") -> pd.DataFrame:
     """Return market prices and daily returns for the benchmark symbol."""
@@ -101,6 +105,20 @@ def _load_shares_outstanding(symbols: List[str]) -> pd.DataFrame:
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
 
+def _load_alt_signals(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame(columns=['symbol','ts'])
+    sql = (
+        'SELECT symbol, ts, name, value FROM alt_signals '
+        'WHERE ts >= :start AND symbol IN :syms ORDER BY symbol, ts'
+    )
+    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
+    df = pd.read_sql_query(stmt, engine, params={'start': start_ts.date(), 'syms': tuple(symbols)}, parse_dates=['ts'])
+    if df.empty:
+        return pd.DataFrame(columns=['symbol','ts'])
+    piv = df.pivot_table(index=['symbol','ts'], columns='name', values='value', aggfunc='last').reset_index()
+    return piv
+
 def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame:
     """Incremental, point-in-time feature building with duplicate-safe upsert."""
     log.info("Starting feature build process (Incremental, PIT).")
@@ -131,6 +149,15 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
         fnd = _load_fundamentals(bsyms)
         shs = _load_shares_outstanding(bsyms)
+        alts = _load_alt_signals(bsyms, start_ts)
+
+        if not alts.empty:
+            px = px.merge(alts, on=['symbol','ts'], how='left')
+        for c in ['pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout']:
+            if c not in px.columns:
+                px[c] = 0.0
+            else:
+                px[c] = px[c].fillna(0.0)
 
         px['price_feat'] = px['adj_close'].where(px['adj_close'].notna(), px['close'])
 
@@ -229,6 +256,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 'symbol','ts','ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14',
                 'reversal_5d_z','ivol_63','turnover_21','size_ln','adv_usd_21','overnight_gap',
                 'illiq_21','beta_63','fwd_ret','fwd_ret_resid',
+                'pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout',
                 'f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio'
             ]
 
