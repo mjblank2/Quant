@@ -145,14 +145,13 @@ services:
 
   # ---------------------------------------------------------
   # Cron: refresh universe (Mon 09:00 CT = 14:00 UTC)
-  # Entry point already runs Alembic; just run the module.
   # ---------------------------------------------------------
   - type: cron
     name: refresh-universe
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "0 14 * * 1"
-    dockerCommand: ["bash", "-lc", "scripts/cron_universe.sh"]
+    dockerCommand: bash -lc "scripts/cron_universe.sh"
     envVars:
       - key: SERVICE
         value: cron
@@ -172,7 +171,6 @@ services:
         sync: false
       - key: PYTHONPATH
         value: /app
-      # Bootstrap tweak so the job doesn't fail when ADV is missing:
       - key: ADV_USD_MIN
         value: "-1"                         # revert later when Polygon ADV is flowing
 
@@ -184,7 +182,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "45 21 * * 1-5"
-    dockerCommand: ["bash", "-lc", "scripts/cron_ingest.sh"]
+    dockerCommand: bash -lc "scripts/cron_ingest.sh"
     envVars:
       - key: SERVICE
         value: cron
@@ -213,7 +211,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "30 22 * * 1-5"
-    dockerCommand: ["bash", "-lc", "scripts/cron_eod_pipeline.sh"]
+    dockerCommand: bash -lc "scripts/cron_eod_pipeline.sh"
     envVars:
       - key: SERVICE
         value: cron
@@ -233,7 +231,7 @@ services:
         sync: false
       - key: PYTHONPATH
         value: /app
-      # Optional: gating / blend controls used by models.ml
+      # Optional model controls:
       # - key: BLEND_WEIGHTS
       #   value: "xgb:0.5,rf:0.3,ridge:0.2"
       # - key: REGIME_GATING
@@ -241,16 +239,13 @@ services:
 
   # ---------------------------------------------------------------------
   # Cron: high-frequency bar ingestion (every 5 minutes)
-  # Replaces standalone Python runtime cron to ensure Docker consistency.
-  # Note: Consider tuning frequency or consolidating with ingest-recent
-  # if API quota/cost becomes a concern.
   # ---------------------------------------------------------------------
   - type: cron
     name: ingest-frequent
     runtime: docker
     dockerfilePath: Dockerfile
     schedule: "*/5 * * * *"
-    dockerCommand: ["bash", "-lc", "scripts/cron_ingest.sh"]
+    dockerCommand: bash -lc "scripts/cron_ingest.sh"
     envVars:
       - key: SERVICE
         value: cron
@@ -267,6 +262,9 @@ services:
       - key: POLYGON_API_KEY
         sync: false
       - key: TIINGO_API_KEY
+        sync: false
+      - key: PYTHONPATH
+        value: /app
         sync: false
       - key: PYTHONPATH
         value: /app
