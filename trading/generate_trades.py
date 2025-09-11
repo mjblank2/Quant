@@ -6,6 +6,7 @@ from typing import Iterable
 from sqlalchemy import text, bindparam
 from db import engine, upsert_dataframe, Trade, TargetPosition
 from config import PREFERRED_MODEL, STARTING_CAPITAL
+from utils.price_utils import select_price_as
 
 import logging
 from portfolio.optimizer import build_portfolio
@@ -133,9 +134,9 @@ def generate_today_trades() -> pd.DataFrame:
     )
     # arrival prices
     stmt_px = text(
-        """
+        f"""
         WITH latest AS (SELECT symbol, MAX(ts) ts FROM daily_bars WHERE symbol IN :syms GROUP BY symbol)
-        SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
+        SELECT b.symbol, {select_price_as('px')}
         FROM daily_bars b JOIN latest l ON b.symbol = l.symbol AND b.ts=l.ts
     """
     ).bindparams(bindparam("syms", expanding=True))

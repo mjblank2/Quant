@@ -10,6 +10,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from .registry import FeatureRegistry, registry
+from utils.price_utils import select_price_as
 
 log = logging.getLogger(__name__)
 
@@ -121,29 +122,15 @@ class FeatureStore:
             for i, symbol in enumerate(symbols):
                 params[f'sym_{i}'] = symbol
 
-            price_sql_with_adj = f"""
-                SELECT symbol, ts, open, close, COALESCE(adj_close, close) as adj_close, volume,
-                       COALESCE(adj_close, close) AS price_feat
-                FROM daily_bars 
-                WHERE symbol IN ({symbol_placeholders}) {date_filter}
-                ORDER BY symbol, ts
-            """
-            price_sql_fallback = f"""
-                SELECT symbol, ts, open, close, close as adj_close, volume,
-                       close AS price_feat
+            price_sql = f"""
+                SELECT symbol, ts, open, close, {select_price_as('adj_close')}, volume,
+                       {select_price_as('price_feat')}
                 FROM daily_bars 
                 WHERE symbol IN ({symbol_placeholders}) {date_filter}
                 ORDER BY symbol, ts
             """
             from db import engine  # type: ignore
-            try:
-                prices = pd.read_sql_query(text(price_sql_with_adj), engine, params=params, parse_dates=['ts'])
-            except Exception as e:
-                if "adj_close" in str(e) and ("no such column" in str(e) or "does not exist" in str(e)):
-                    log.warning("adj_close column not found in daily_bars table, using close price instead")
-                    prices = pd.read_sql_query(text(price_sql_fallback), engine, params=params, parse_dates=['ts'])
-                else:
-                    raise
+            prices = pd.read_sql_query(text(price_sql), engine, params=params, parse_dates=['ts'])
             if prices.empty: return pd.DataFrame()
 
             shares_sql = f"""

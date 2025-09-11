@@ -15,6 +15,7 @@ except Exception:
 
 from sqlalchemy import text, bindparam
 from db import engine  # type: ignore
+from utils.price_utils import select_price_as
 try:
     from config import (
         GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT, MIN_PRICE, MIN_ADV_USD,
@@ -70,10 +71,7 @@ def _calculate_dynamic_risk_lambda(as_of: date, base_lambda: float, market_symbo
     lookback = 63  # use roughly 3 months of data
     start_date = as_of - pd.Timedelta(days=int(lookback * 1.5))
     # Query market prices
-    sql = text("""
-        SELECT ts, COALESCE(adj_close, close) AS px FROM daily_bars
-        WHERE symbol=:s AND ts>=:start AND ts<=:end ORDER BY ts
-    """)
+    sql = text(f"SELECT ts, {select_price_as('px')} FROM daily_bars WHERE symbol=:s AND ts>=:start AND ts<=:end ORDER BY ts")
     try:
         df = pd.read_sql_query(sql, engine, params={'s': market_symbol, 'start': start_date, 'end': as_of}, parse_dates=['ts'])
     except Exception:
@@ -101,14 +99,14 @@ def _latest_prices(symbols: list[str]) -> pd.Series:
     """
     if not symbols:
         return pd.Series(dtype=float)
-    stmt = text("""
+    stmt = text(f"""
         WITH latest AS (
             SELECT symbol, MAX(ts) AS ts
             FROM daily_bars
             WHERE symbol IN :syms
             GROUP BY symbol
         )
-        SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
+        SELECT b.symbol, {select_price_as('px')}
         FROM daily_bars b
         JOIN latest l ON b.symbol = l.symbol AND b.ts = l.ts
     """).bindparams(bindparam("syms", expanding=True))

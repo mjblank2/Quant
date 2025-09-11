@@ -59,6 +59,23 @@ def price_expr() -> str:
         return "close"
 
 
+def select_price_as(alias: str) -> str:
+    """
+    Get SQL expression for price selection with custom alias.
+
+    Parameters
+    ----------
+    alias : str
+        The column alias to use for the price expression.
+
+    Returns
+    -------
+    str
+        SQL expression like "COALESCE(adj_close, close) AS alias" or "close AS alias"
+    """
+    return f"{price_expr()} AS {alias}"
+
+
 def log_price_mode_once() -> None:
     """Force logging of price mode if not already logged."""
     if not _logged_price_mode:

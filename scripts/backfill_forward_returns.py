@@ -28,14 +28,18 @@ from sqlalchemy import create_engine, text
 
 DEFAULT_BENCH_CANDIDATES = ["IWM", "SPY"]
 
+# Add parent directory to path for utils import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.price_utils import select_price_as
+
 def _norm_url(db: str) -> str:
     if db.startswith("postgres://"):
         return db.replace("postgres://", "postgresql+psycopg://", 1)
     return db
 
 def load_prices(engine) -> pd.DataFrame:
-    sql = """
-        SELECT symbol, ts, COALESCE(adj_close, close) AS px
+    sql = f"""
+        SELECT symbol, ts, {select_price_as('px')}
         FROM daily_bars
         ORDER BY symbol, ts
     """
