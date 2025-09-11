@@ -59,3 +59,4 @@ checkpoints/
 *token*
 credentials.json
 config.json
+*.db
