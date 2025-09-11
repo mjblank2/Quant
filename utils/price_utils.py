@@ -1,8 +1,17 @@
 """
 Price utilities for handling optional adj_close column in daily_bars table.
 
-This module provides utilities to detect the presence of the adj_close column
+This module provides centralized utilities to detect the presence of the adj_close column
 in the daily_bars table and return appropriate SQL expressions for price queries.
+
+All price-related SQL queries throughout the codebase use these utilities to ensure
+resilient operation with or without the adj_close column, eliminating hard dependencies
+and preventing psycopg.errors.UndefinedColumn crashes.
+
+Key functions:
+- price_expr(): Returns "COALESCE(adj_close, close)" or "close" dynamically
+- select_price_as(alias): Returns price expression with custom column alias
+- has_adj_close(): Detects column presence (cached for performance)
 """
 from functools import lru_cache
 from sqlalchemy import inspect

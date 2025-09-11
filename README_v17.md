@@ -17,18 +17,28 @@ and **wider options overlays** (collars/put-spreads). Includes a cron **back-com
 alembic upgrade head
 ```
 
-### Optional adj_close Column Support
-The pipeline now supports optional `adj_close` column in the `daily_bars` table with automatic fallback to `close` prices. 
+### Optional adj_close Column Support (Resilient)
+The system now provides **fully resilient** handling of the optional `adj_close` column in the `daily_bars` table with automatic detection and transparent fallback:
 
-- If `adj_close` column exists: Uses `COALESCE(adj_close, close)` for price queries
-- If `adj_close` column is missing: Automatically falls back to `close` column only
-- Single INFO log message on startup indicates which mode is active
+- **Resilient Operation**: System never fails due to missing `adj_close` column - EOD pipeline, feature builds, risk models, and portfolio optimization all work seamlessly
+- **Dynamic Detection**: Automatically detects column presence at runtime using centralized `price_expr()` utility
+- **Transparent Fallback**: Uses `COALESCE(adj_close, close)` when column exists, falls back to `close` when missing
+- **Consistent DataFrame Schema**: All queries maintain expected column names (e.g., `adj_close` alias) for backward compatibility
+- **Single Logging**: One INFO message per process indicates which price mode is active
 
-To add `adj_close` column to existing database:
+**Key Benefits:**
+- ✅ No more `psycopg.errors.UndefinedColumn` crashes
+- ✅ Hot-fix compatible - works immediately without schema changes
+- ✅ Forward compatible - automatically uses adjusted prices when column is added
+- ✅ Zero code changes required when transitioning between modes
+
+To add `adj_close` column to existing database (optional):
 ```sql
 ALTER TABLE daily_bars ADD COLUMN adj_close numeric;
 UPDATE daily_bars SET adj_close = close WHERE adj_close IS NULL;
 ```
+
+The system will automatically detect and start using adjusted prices on next restart.
 
 ### Daily pipeline (unchanged)
 ```bash
