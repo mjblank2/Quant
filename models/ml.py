@@ -42,6 +42,10 @@ TCA_COLS = ["vol_21", "adv_usd_21"]
 # forward return instead, change this constant to 'fwd_ret'.
 TARGET_VARIABLE = 'fwd_ret_resid'
 
+# Coverage fallback configuration
+MIN_TARGET_COVERAGE = float(os.getenv("MIN_TARGET_COVERAGE", "0.6"))  # 60% minimum coverage
+FALLBACK_TARGET = 'fwd_ret'  # Fallback target when primary coverage is low
+
 def _latest_feature_date():
     try:
         df = pd.read_sql_query(text("SELECT MAX(ts) AS max_ts FROM features"), engine, parse_dates=["max_ts"])
@@ -167,7 +171,69 @@ def _parse_blend_weights(s: str) -> Dict[str, float]:
     t = sum(out.values()) or 1.0
     return {k: v/t for k,v in out.items()}
 
-def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,float]:
+def _calculate_target_coverage(df: pd.DataFrame, target_col: str) -> float:
+    """
+    Calculate coverage rate for a target variable.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing the target column
+    target_col : str
+        Name of the target column to check coverage for
+        
+    Returns
+    -------
+    float
+        Coverage rate between 0.0 and 1.0
+    """
+    if df.empty or target_col not in df.columns:
+        return 0.0
+    
+    total_rows = len(df)
+    non_null_rows = df[target_col].notna().sum()
+    
+    return non_null_rows / total_rows if total_rows > 0 else 0.0
+
+def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback_target: str, min_coverage: float) -> str:
+    """
+    Select the best target variable based on coverage thresholds.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Training DataFrame
+    primary_target : str
+        Preferred target variable (e.g., 'fwd_ret_resid')
+    fallback_target : str
+        Fallback target variable (e.g., 'fwd_ret')
+    min_coverage : float
+        Minimum coverage threshold (0.0 to 1.0)
+        
+    Returns
+    -------
+    str
+        Selected target variable name
+    """
+    primary_coverage = _calculate_target_coverage(df, primary_target)
+    fallback_coverage = _calculate_target_coverage(df, fallback_target)
+    
+    log.info(f"Target coverage analysis:")
+    log.info(f"  {primary_target}: {primary_coverage:.1%}")
+    log.info(f"  {fallback_target}: {fallback_coverage:.1%}")
+    log.info(f"  Minimum threshold: {min_coverage:.1%}")
+    
+    if primary_coverage >= min_coverage:
+        log.info(f"Using primary target: {primary_target}")
+        return primary_target
+    elif fallback_coverage >= min_coverage:
+        log.warning(f"Primary target coverage too low, falling back to: {fallback_target}")
+        return fallback_target
+    else:
+        log.warning(f"Both targets have low coverage, using primary anyway: {primary_target}")
+        return primary_target
+
+def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variable: str = TARGET_VARIABLE) -> Dict[str,float]:
     """
     Compute information coefficients (IC) for each model over a recent evaluation window.
 
@@ -199,14 +265,14 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,fl
     # Define evaluation window: last ~6 months
     recent_mask = train_df['ts'] >= (train_df['ts'].max() - pd.Timedelta(days=180))
     Xr = train_df.loc[recent_mask, ['ts'] + feature_cols]
-    yr = train_df.loc[recent_mask, TARGET_VARIABLE]
+    yr = train_df.loc[recent_mask, target_variable]
     if Xr.empty:
         # fallback to full data
         Xr = train_df[['ts'] + feature_cols]
-        yr = train_df[TARGET_VARIABLE]
+        yr = train_df[target_variable]
     # Prepare full training matrices (used for fitting models)
     X_train = train_df[['ts'] + feature_cols]
-    y_train = train_df[TARGET_VARIABLE]  # Keep as Series for proper indexing
+    y_train = train_df[target_variable]  # Keep as Series for proper indexing
     # For LTR models, compute group sizes: sorted by ts
     sorted_idx = X_train.sort_values('ts').index
     group_sizes = X_train.loc[sorted_idx].groupby('ts').size().values
@@ -268,8 +334,14 @@ def train_and_predict_all_models(window_years: int = 4):
     except Exception as e:
         log.info(f"Universe gating skipped: {e}")
 
+    # Select target variable with coverage fallback
+    selected_target = _select_target_with_fallback(
+        feats, TARGET_VARIABLE, FALLBACK_TARGET, MIN_TARGET_COVERAGE
+    )
+    log.info(f"Selected target variable: {selected_target}")
+
     # Identify training and latest sets
-    train_df = feats.dropna(subset=[TARGET_VARIABLE]).copy()
+    train_df = feats.dropna(subset=[selected_target]).copy()
     latest_df = feats[feats['ts'] == latest_ts].copy()
     if train_df.empty or latest_df.empty:
         log.warning("Training or prediction sets are empty.")
@@ -285,7 +357,7 @@ def train_and_predict_all_models(window_years: int = 4):
     # Prepare training matrix and target
     ID_COLS = ['ts', 'symbol']
     X = train_df[ID_COLS + FEATURE_COLS]
-    y = train_df[TARGET_VARIABLE].values
+    y = train_df[selected_target].values
     X_latest = latest_df[FEATURE_COLS]
 
     # Apply time-decay sample weights (half-life = 120 days)
@@ -304,7 +376,7 @@ def train_and_predict_all_models(window_years: int = 4):
     if not X.index.equals(X.sort_values('ts').index):
         sorted_idx = X.sort_values('ts').index
         X_train_sorted = X.loc[sorted_idx, FEATURE_COLS]
-        y_train_sorted = train_df.loc[sorted_idx, TARGET_VARIABLE].values
+        y_train_sorted = train_df.loc[sorted_idx, selected_target].values
         sample_weights = sample_weights.loc[sorted_idx]
     else:
         sorted_idx = X.index
@@ -321,7 +393,7 @@ def train_and_predict_all_models(window_years: int = 4):
     # Compute blend weights from config and adaptive IC weighting
     from config import BLEND_WEIGHTS, REGIME_GATING
     blend_w = _parse_blend_weights(BLEND_WEIGHTS)
-    ic_w = _ic_by_model(train_df[['ts','symbol', TARGET_VARIABLE] + FEATURE_COLS], FEATURE_COLS)
+    ic_w = _ic_by_model(train_df[['ts','symbol', selected_target] + FEATURE_COLS], FEATURE_COLS, selected_target)
     if ic_w:
         keys = set(blend_w) | set(ic_w)
         combined = {k: 0.5 * blend_w.get(k, 0) + 0.5 * ic_w.get(k, 0) for k in keys}
