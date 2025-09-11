@@ -20,6 +20,7 @@ except Exception:
 from db import engine, upsert_dataframe, Prediction, BacktestEquity  # type: ignore
 from models.transformers import CrossSectionalNormalizer
 from models.regime import classify_regime, gate_blend_weights
+from utils.price_utils import price_expr
 
 try:
     from config import (BACKTEST_START, TARGET_HORIZON_DAYS, PREFERRED_MODEL,
@@ -61,7 +62,7 @@ def _load_features_window(start_ts, end_ts):
 
 def _load_prices_window(start_ts, end_ts):
     try:
-        return pd.read_sql_query(text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
+        return pd.read_sql_query(text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
                                  engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['symbol','ts'])
     except Exception:
         return pd.DataFrame(columns=['symbol','ts','px'])
@@ -240,7 +241,7 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
         return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
     with engine.connect() as con:
         px = pd.read_sql_query(
-            text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars"),
+            text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars"),
             con, parse_dates=['ts']
         )
     if px.empty:

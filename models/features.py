@@ -4,6 +4,7 @@ import pandas as pd
 from sqlalchemy import text, bindparam
 from typing import List
 from db import engine, upsert_dataframe, Feature
+from utils.price_utils import price_expr
 import logging
 
 log = logging.getLogger(__name__)
@@ -37,42 +38,27 @@ def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFra
     if not symbols:
         return pd.DataFrame(columns=['symbol', 'ts', 'open', 'close', 'adj_close', 'volume'])
 
-    # First try with adj_close column (preferred if available)
-    sql_with_adj = (
-        'SELECT symbol, ts, open, close, COALESCE(adj_close, close) as adj_close, volume '
+    # Use dynamic price expression based on column availability
+    sql = (
+        f'SELECT symbol, ts, open, close, {price_expr()} as adj_close, volume '
         'FROM daily_bars '
         'WHERE ts >= :start AND symbol IN :syms '
         'ORDER BY symbol, ts'
     )
 
-    # Fallback SQL for databases without adj_close column
-    sql_fallback = (
-        'SELECT symbol, ts, open, close, close as adj_close, volume '
-        'FROM daily_bars '
-        'WHERE ts >= :start AND symbol IN :syms '
-        'ORDER BY symbol, ts'
-    )
-
-    stmt_with_adj = text(sql_with_adj).bindparams(bindparam('syms', expanding=True))
-    stmt_fallback = text(sql_fallback).bindparams(bindparam('syms', expanding=True))
+    stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     params = {'start': start_ts.date(), 'syms': tuple(symbols)}
 
     try:
-        # Try with adj_close first
-        return pd.read_sql_query(stmt_with_adj, engine, params=params, parse_dates=['ts'])
+        return pd.read_sql_query(stmt, engine, params=params, parse_dates=['ts'])
     except Exception as e:
-        # If adj_close column doesn't exist, fall back to using close as adj_close
-        if "adj_close" in str(e) and ("no such column" in str(e) or "does not exist" in str(e)):
-            log.warning("adj_close column not found in daily_bars table, using close price instead")
-            return pd.read_sql_query(stmt_fallback, engine, params=params, parse_dates=['ts'])
-        else:
-            # Re-raise other exceptions
-            raise
+        log.error(f"Failed to load price data: {e}")
+        return pd.DataFrame(columns=['symbol', 'ts', 'open', 'close', 'adj_close', 'volume'])
 
 def _load_market_returns(market_symbol: str = "IWM") -> pd.DataFrame:
     try:
-        df = pd.read_sql_query(text("""
-            SELECT ts, COALESCE(adj_close, close) AS px
+        df = pd.read_sql_query(text(f"""
+            SELECT ts, {price_expr()} AS px
             FROM daily_bars WHERE symbol=:m ORDER BY ts
         """), engine, params={'m': market_symbol}, parse_dates=['ts'])
         if df.empty:
