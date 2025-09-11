@@ -15,6 +15,7 @@ from risk.sector import build_sector_dummies
 from risk.risk_model import neutralize_with_sectors
 from models.regime import classify_regime, gate_blend_weights
 from data.universe_history import gate_training_with_universe
+from utils.price_utils import price_expr
 log = logging.getLogger(__name__)
 
 # Feature set used for model training and prediction.  Extended to include
@@ -91,7 +92,7 @@ def _load_features_window(start_ts, end_ts):
 
 def _load_prices_window(start_ts, end_ts):
     try:
-        return pd.read_sql_query(text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
+        return pd.read_sql_query(text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
                                  engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['symbol','ts'])
     except Exception:
         return pd.DataFrame(columns=['symbol','ts','px'])
@@ -205,7 +206,7 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,fl
         yr = train_df[TARGET_VARIABLE]
     # Prepare full training matrices (used for fitting models)
     X_train = train_df[['ts'] + feature_cols]
-    y_train = train_df[TARGET_VARIABLE].values
+    y_train = train_df[TARGET_VARIABLE]  # Keep as Series for proper indexing
     # For LTR models, compute group sizes: sorted by ts
     sorted_idx = X_train.sort_values('ts').index
     group_sizes = X_train.loc[sorted_idx].groupby('ts').size().values
@@ -220,10 +221,10 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,fl
             # Fit on full training set (sorted by timestamp for LTR)
             if len(sorted_idx) == len(X_train):
                 X_train_sorted = X_train.loc[sorted_idx, feature_cols]
-                y_train_sorted = y_train[sorted_idx]
+                y_train_sorted = y_train.loc[sorted_idx].values  # Use .loc for label-based indexing, then convert to array
             else:
                 X_train_sorted = X_train[feature_cols]
-                y_train_sorted = y_train
+                y_train_sorted = y_train.values
             p2.fit(X_train_sorted, y_train_sorted, **fit_params)
             # Predict on evaluation window
             X_eval = Xr[feature_cols]
@@ -434,7 +435,7 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
     # Compute realized forward returns
     with engine.connect() as con:
         px = pd.read_sql_query(
-            text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars"),
+            text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars"),
             con, parse_dates=['ts']
         )
     if px.empty:

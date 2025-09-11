@@ -17,6 +17,19 @@ and **wider options overlays** (collars/put-spreads). Includes a cron **back-com
 alembic upgrade head
 ```
 
+### Optional adj_close Column Support
+The pipeline now supports optional `adj_close` column in the `daily_bars` table with automatic fallback to `close` prices. 
+
+- If `adj_close` column exists: Uses `COALESCE(adj_close, close)` for price queries
+- If `adj_close` column is missing: Automatically falls back to `close` column only
+- Single INFO log message on startup indicates which mode is active
+
+To add `adj_close` column to existing database:
+```sql
+ALTER TABLE daily_bars ADD COLUMN adj_close numeric;
+UPDATE daily_bars SET adj_close = close WHERE adj_close IS NULL;
+```
+
 ### Daily pipeline (unchanged)
 ```bash
 python run_pipeline.py

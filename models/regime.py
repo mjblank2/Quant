@@ -5,11 +5,12 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from db import engine  # type: ignore
+from utils.price_utils import price_expr
 
 def _load_series(symbol: str, end_ts: pd.Timestamp, lookback: int = 252) -> pd.Series:
     with engine.connect() as con:
-        df = pd.read_sql_query(text("""
-            SELECT ts, COALESCE(adj_close, close) AS px FROM daily_bars
+        df = pd.read_sql_query(text(f"""
+            SELECT ts, {price_expr()} AS px FROM daily_bars
             WHERE symbol=:s AND ts<=:e ORDER BY ts DESC LIMIT :lim
         """), con, params={'s': symbol, 'e': end_ts.date(), 'lim': lookback+5}, parse_dates=['ts']).sort_values('ts')
     if df.empty: return pd.Series(dtype=float)
