@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text, bindparam
 from db import engine
+from utils.price_utils import select_price_as
 
 def neutralize_with_sectors(pred: pd.Series, factors: pd.DataFrame | None, sector_dummies: pd.DataFrame | None) -> pd.Series:
     """Cross-sectional neutralization of predictions versus factors (+ optional sector buckets)."""
@@ -36,8 +37,8 @@ def est_beta_asof(symbols: list[str], as_of, market_symbol: str = "IWM", lookbac
     if not symbols:
         return pd.Series(dtype=float)
     # Load prices
-    sql = """
-        SELECT symbol, ts, COALESCE(adj_close, close) AS px
+    sql = f"""
+        SELECT symbol, ts, {select_price_as('px')}
         FROM daily_bars
         WHERE (symbol IN :syms) OR symbol = :mkt
         ORDER BY symbol, ts

@@ -4,6 +4,7 @@ from datetime import date
 from sqlalchemy import text
 from db import engine, upsert_dataframe, OptionOverlay
 from hedges.options import PutHedgeSpec, choose_put_strike
+from utils.price_utils import select_price_as
 
 def _latest_book(as_of: date | None = None) -> pd.Series:
     as_of = as_of or pd.Timestamp('today').normalize().date()
@@ -28,9 +29,9 @@ def propose_collars(as_of: date | None = None, spec: PutHedgeSpec | None = None)
     picks = w[w>0].sort_values(ascending=False).head(10)
     rows = []
     with engine.connect() as con:
-        df_px = pd.read_sql_query(text("""
+        df_px = pd.read_sql_query(text(f"""
             WITH latest AS (SELECT symbol, MAX(ts) ts FROM daily_bars WHERE symbol IN :syms GROUP BY symbol)
-            SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
+            SELECT b.symbol, {select_price_as('px')}
             FROM daily_bars b JOIN latest l ON b.symbol=l.symbol AND b.ts=l.ts
         """), con, params={'syms': tuple(picks.index.tolist())})
     px = df_px.set_index('symbol')['px'] if not df_px.empty else pd.Series(dtype=float)

@@ -5,10 +5,11 @@ import logging
 from typing import List
 import numpy as np
 import pandas as pd
-from sqlalchemy import text, bindparam, inspect
+from sqlalchemy import text, bindparam
 
 from db import engine, upsert_dataframe, Feature  # type: ignore
 from config import TARGET_HORIZON_DAYS
+from utils.price_utils import price_expr, select_price_as
 
 log = logging.getLogger(__name__)
 
@@ -35,48 +36,26 @@ def _symbols() -> list[str]:
     except Exception:
         return []
 
-_HAS_ADJ_CLOSE: bool | None = None
-
-def _has_adj_close() -> bool:
-    global _HAS_ADJ_CLOSE
-    if _HAS_ADJ_CLOSE is None:
-        try:
-            insp = inspect(engine)
-            cols = {c['name'] for c in insp.get_columns('daily_bars')}
-            _HAS_ADJ_CLOSE = 'adj_close' in cols
-        except Exception:
-            _HAS_ADJ_CLOSE = False
-    return bool(_HAS_ADJ_CLOSE)
 
 def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame(columns=['symbol', 'ts', 'open', 'close', 'adj_close', 'volume'])
 
-    has_adj = _has_adj_close()
-    sql = (
-        'SELECT symbol, ts, open, close, '
-        + ('COALESCE(adj_close, close)' if has_adj else 'close')
-        + ' as adj_close, volume '
-        'FROM daily_bars '
-        'WHERE ts >= :start AND symbol IN :syms '
-        'ORDER BY symbol, ts'
-    )
+    sql = f"""
+        SELECT symbol, ts, open, close, {select_price_as('adj_close')}, volume 
+        FROM daily_bars 
+        WHERE ts >= :start AND symbol IN :syms 
+        ORDER BY symbol, ts
+    """
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     params = {'start': start_ts.date(), 'syms': tuple(symbols)}
-    if not has_adj:
-        log.warning("adj_close column not found in daily_bars table, using close price instead")
     return pd.read_sql_query(stmt, engine, params=params, parse_dates=['ts'])
 
 def _load_market_returns(market_symbol: str = "IWM") -> pd.DataFrame:
     """Return market prices and daily returns for the benchmark symbol."""
     try:
         df = pd.read_sql_query(
-            text(
-                """
-            SELECT ts, COALESCE(adj_close, close) AS px
-            FROM daily_bars WHERE symbol=:m ORDER BY ts
-                """
-            ),
+            text(f"SELECT ts, {select_price_as('px')} FROM daily_bars WHERE symbol=:m ORDER BY ts"),
             engine,
             params={"m": market_symbol},
             parse_dates=["ts"],

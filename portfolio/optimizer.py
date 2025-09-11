@@ -5,6 +5,7 @@ from sqlalchemy import text, bindparam
 from db import engine
 from risk.sector import sector_asof
 from risk.risk_model import portfolio_beta
+from utils.price_utils import select_price_as
 import logging
 
 log = logging.getLogger(__name__)
@@ -18,9 +19,9 @@ from config import (
 
 def _latest_prices(symbols: list[str]) -> pd.Series:
     if not symbols: return pd.Series(dtype=float)
-    stmt = text("""
+    stmt = text(f"""
         WITH latest AS (SELECT symbol, MAX(ts) ts FROM daily_bars WHERE symbol IN :syms GROUP BY symbol)
-        SELECT b.symbol, COALESCE(b.adj_close, b.close) AS px
+        SELECT b.symbol, {select_price_as('px')}
         FROM daily_bars b JOIN latest l ON b.symbol=l.symbol AND b.ts=l.ts
     """).bindparams(bindparam("syms", expanding=True))
     df = pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)})

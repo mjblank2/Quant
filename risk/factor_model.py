@@ -8,6 +8,7 @@ from db import engine
 from risk.sector import sector_asof
 from risk.covariance import ewma_cov, robust_cov
 from config import USE_FACTOR_MODEL
+from utils.price_utils import select_price_as
 import logging
 
 log = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ def _load_window(start_ts: date, end_ts: date) -> Tuple[pd.DataFrame, pd.DataFra
         ).sort_values(['ts', 'symbol'])
 
         px = pd.read_sql_query(
-            text("SELECT symbol, ts, COALESCE(adj_close, close) AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
+            text(f"SELECT symbol, ts, {select_price_as('px')} FROM daily_bars WHERE ts>=:s AND ts<=:e"),
             engine,
             params={'s': start_ts, 'e': end_ts},
             parse_dates=['ts']
@@ -164,8 +165,8 @@ def synthesize_covariance(symbols: list[str], as_of: date, lookback_days: int = 
             start_date = end_date - timedelta(days=lookback_days + 50)  # Buffer for weekends
 
             px_data = pd.read_sql_query(
-                text("""
-                SELECT symbol, ts, COALESCE(adj_close, close) AS px
+                text(f"""
+                SELECT symbol, ts, {select_price_as('px')}
                 FROM daily_bars
                 WHERE symbol = ANY(:syms) AND ts BETWEEN :start AND :end
                 ORDER BY ts, symbol

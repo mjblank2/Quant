@@ -8,6 +8,7 @@ from data.universe import rebuild_universe
 from data.ingest import ingest_bars_for_universe
 from data.fundamentals import fetch_fundamentals_for_universe
 from models.features import build_features
+from utils.price_utils import select_price_as
 from models.ml import train_and_predict_all_models, run_walkforward_backtest
 from trading.generate_trades import generate_today_trades
 from trading.broker import sync_trades_to_broker
@@ -349,7 +350,7 @@ with col1:
             sym = st.selectbox("Symbol", syms, index=0)
             with engine.connect() as con:
                 prices_df = pd.read_sql_query(
-                    text("SELECT ts, COALESCE(adj_close, close) AS close FROM daily_bars WHERE symbol = :symbol ORDER BY ts DESC LIMIT 504"),
+                    text(f"SELECT ts, {select_price_as('close')} FROM daily_bars WHERE symbol = :symbol ORDER BY ts DESC LIMIT 504"),
                     con,
                     params={"symbol": sym},
                     parse_dates=["ts"]
