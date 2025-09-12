@@ -354,6 +354,11 @@ def train_and_predict_all_models(window_years: int = 4):
         if c not in latest_df.columns:
             latest_df[c] = 0.0
 
+    # After ensuring all feature columns exist, fill missing values.
+    # This prevents None/NaN from reaching the model.
+    train_df[FEATURE_COLS] = train_df[FEATURE_COLS].fillna(0.0)
+    latest_df[FEATURE_COLS] = latest_df[FEATURE_COLS].fillna(0.0)
+
     # Prepare training matrix and target
     ID_COLS = ['ts', 'symbol']
     X = train_df[ID_COLS + FEATURE_COLS]
