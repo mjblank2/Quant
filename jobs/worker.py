@@ -4,9 +4,13 @@ import logging
 import os
 import sys
 import time
-from data.universe import _list_alpaca_assets as rebuild_universe  # placeholder
+
+# Use the actual function exposed by data.universe
+from data.universe import rebuild_universe
 from data.ingest import ingest_bars_for_universe
-from models.train_predict import train_and_predict_all_models as run_eod_pipeline  # placeholder
+
+# Align with the rest of the codebase (see app.py) which imports from models.ml
+from models.ml import train_and_predict_all_models as run_eod_pipeline
 
 
 def main():
