@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from db import engine
 
 DDL = """
@@ -43,10 +43,14 @@ def sector_asof(symbols: list[str], as_of) -> pd.Series:
     _ensure()
     if not symbols:
         return pd.Series(dtype=object)
+    # Use expanding bind parameter for the IN clause
+    stmt = (
+        text("SELECT symbol, as_of, sector FROM sector_map "
+             "WHERE symbol IN :syms ORDER BY symbol, as_of")
+        .bindparams(bindparam("syms", expanding=True))
+    )
     with engine.connect() as con:
-        df = pd.read_sql_query(text("""
-            SELECT symbol, as_of, sector FROM sector_map WHERE symbol IN :syms ORDER BY symbol, as_of
-        """), con, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
+        df = pd.read_sql_query(stmt, con, params={"syms": symbols}, parse_dates=["as_of"])
     if df.empty:
         return pd.Series(index=symbols, dtype=object)
     as_of = pd.to_datetime(as_of).date()
