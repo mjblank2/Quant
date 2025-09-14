@@ -22,8 +22,15 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
     symbol universe in smaller batches and only keep one batch of results in
     memory at a time.
     """
-    if not POLYGON_API_KEY or not symbols:
+    if not POLYGON_API_KEY:
+        log.warning("POLYGON_API_KEY not set; skipping fundamentals fetch")
         return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
+    
+    if not symbols:
+        log.info("No symbols provided for fundamentals fetch")
+        return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
+    
+    log.info("Starting fundamentals fetch for %d symbols, has_api_key=%s", len(symbols), bool(POLYGON_API_KEY))
 
     async def fetch_one(s: str):
         url = "https://api.polygon.io/vX/reference/financials"
@@ -89,6 +96,7 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
             next_url = js.get("next_url")
             if next_url and "apiKey" not in next_url:
                 next_url = f"{next_url}&apiKey={POLYGON_API_KEY}"
+                log.debug("Added authentication to fundamentals pagination URL for %s", s)
             if fetched >= per_symbol_max or not next_url:
                 break
         if not rows:
