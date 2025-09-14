@@ -10,6 +10,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from .db import Universe, SessionLocal  # Assumes db.py is in same package
 
+# Import robust HTTP utility for reliable API calls
+try:
+    from utils_http import get_json
+    HAS_UTILS_HTTP = True
+except ImportError:
+    HAS_UTILS_HTTP = False
+
 log = logging.getLogger("data.universe")
 
 
@@ -35,6 +42,41 @@ def _get_polygon_api_key() -> str:
             "(e.g., in Render environment variables)."
         )
     return api_key.strip()
+
+
+def _robust_get_json(url: str, params: Dict[str, Any] = None, timeout: float = 60.0) -> Dict[str, Any]:
+    """
+    Robust HTTP GET with retry logic and timeout handling.
+    
+    Uses utils_http.get_json if available (with retry logic), falls back to requests.get.
+    Increased default timeout for large paginated responses.
+    
+    Parameters
+    ----------
+    url : str
+        URL to fetch
+    params : Dict[str, Any], optional
+        Query parameters
+    timeout : float, optional
+        Request timeout in seconds (default: 60s for large responses)
+        
+    Returns
+    -------
+    Dict[str, Any]
+        JSON response data, empty dict on error
+    """
+    if HAS_UTILS_HTTP:
+        # Use robust HTTP utility with retry logic and structured logging
+        return get_json(url, params=params, timeout=timeout, max_tries=3)
+    else:
+        # Fallback to basic requests with improved timeout
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            log.warning("HTTP request failed for %s: %s", url, e)
+            return {}
 
 
 def _add_polygon_auth(url: str, api_key: str) -> str:
@@ -103,24 +145,31 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
                 # Ensure pagination URL includes authentication
                 authenticated_url = _add_polygon_auth(next_url, api_key)
                 log.info("Making paginated request with cursor, has_auth=%s", "apiKey=" in authenticated_url)
-                resp = requests.get(authenticated_url, timeout=30)
+                data = _robust_get_json(authenticated_url, timeout=60.0)
             else:
                 log.info("Making initial request, has_auth=%s", "apiKey" in params)
-                resp = requests.get(base_url, params=params, timeout=30)
+                data = _robust_get_json(base_url, params=params, timeout=60.0)
             
-            resp.raise_for_status()
-            data = resp.json()
+            if not data:
+                log.error("Failed to fetch data from Polygon API")
+                break
 
             for result in data.get("results", []):
                 symbol = result.get("ticker")
                 name = result.get("name")
-                # Fetch ticker details to retrieve market_cap
-                detail_url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
-                detail_resp = requests.get(detail_url, params={"apiKey": api_key}, timeout=30)
-                if detail_resp.status_code != 200:
-                    log.warning("Polygon details request failed for %s: %s", symbol, detail_resp.text)
+                
+                # Skip if basic info is missing
+                if not symbol or not name:
                     continue
-                details = detail_resp.json()
+                
+                # Fetch ticker details to retrieve market_cap using robust HTTP
+                detail_url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
+                details = _robust_get_json(detail_url, params={"apiKey": api_key}, timeout=60.0)
+                
+                if not details:
+                    log.warning("Polygon details request failed for %s", symbol)
+                    continue
+                    
                 market_cap = (
                     details.get("results", {}).get("market_cap")
                     if details.get("results") is not None
@@ -129,22 +178,24 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
                 # Only include if market cap exists and is below threshold
                 if market_cap is not None and market_cap < max_market_cap:
                     tickers.append({"symbol": symbol, "name": name})
+                    log.debug("Added %s (market_cap: $%.2fB)", symbol, market_cap / 1_000_000_000)
+                
+                # Log progress every 100 symbols processed for long-running operations
+                if len(data.get("results", [])) > 50 and len(tickers) % 50 == 0:
+                    log.info("Progress: processed %d tickers, found %d small-cap symbols so far", 
+                             len(data.get("results", [])), len(tickers))
 
             next_url = data.get("next_url")
             if not next_url:
                 break
-    except requests.exceptions.HTTPError as e:
-        if e.response and e.response.status_code == 401:
-            log.error(
-                "Polygon returned 401 Unauthorized. Check POLYGON_API_KEY in the environment "
-                "for this runtime (e.g., Render) and ensure auth is included on paginated requests."
-            )
-        log.error("HTTP error while fetching small cap tickers: %s", e, exc_info=True)
-        return []
+                
     except Exception as e:
+        # Since we're using robust HTTP utility, most HTTP errors are already handled
+        # This catches any remaining exceptions like JSON parsing or logic errors
         log.error("Error while fetching small cap tickers: %s", e, exc_info=True)
         return []
 
+    log.info("Completed small cap fetch: found %d symbols total", len(tickers))
     return tickers
 
 def test_polygon_api_connection() -> bool:
@@ -160,7 +211,7 @@ def test_polygon_api_connection() -> bool:
         api_key = _get_polygon_api_key()
         log.info("Testing Polygon API connection, has_api_key=%s", bool(api_key))
         
-        # Make a minimal request to test connectivity
+        # Make a minimal request to test connectivity using robust HTTP
         base_url = "https://api.polygon.io/v3/reference/tickers"
         params = {
             "market": "stocks",
@@ -169,22 +220,18 @@ def test_polygon_api_connection() -> bool:
             "apiKey": api_key,
         }
         
-        resp = requests.get(base_url, params=params, timeout=30)
-        resp.raise_for_status()
+        data = _robust_get_json(base_url, params=params, timeout=30.0)
         
-        data = resp.json()
+        if not data:
+            log.error("Polygon API test failed: no data received")
+            return False
+            
         results_count = len(data.get("results", []))
         log.info("Polygon API test successful, received %d results", results_count)
         return True
         
     except RuntimeError as e:
         log.warning("Polygon API test skipped: %s", e)
-        return False
-    except requests.exceptions.HTTPError as e:
-        if e.response and e.response.status_code == 401:
-            log.error("Polygon API test failed: 401 Unauthorized - check POLYGON_API_KEY")
-        else:
-            log.error("Polygon API test failed with HTTP error: %s", e)
         return False
     except Exception as e:
         log.error("Polygon API test failed: %s", e)
