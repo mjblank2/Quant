@@ -588,15 +588,15 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 is_param_limit = ("too many variables" in msg) or ("too many sql variables" in msg) or ("bind parameter" in msg and "limit" in msg)
                 is_txn_abort = ("infailedsqltransaction" in msg) or ("cannot operate on closed transaction" in msg)
                 is_cardinality = ("cardinalityviolation" in msg) or ("on conflict do update command cannot affect row a second time" in msg)
-                
+
                 # Don't treat readonly database errors as parameter limits
                 is_readonly = ("readonly database" in msg) or ("attempt to write a readonly database" in msg)
-                
+
                 if (is_param_limit or (is_txn_abort and not is_readonly) or is_cardinality) and len(records) > 1:
                     if is_param_limit:
                         log.warning(f"Parameter limit error with {len(records)} records, retrying with smaller batches")
                     elif is_txn_abort:
-                        log.warning(f"Transaction abort error with {len(records)} records, retrying with smaller batches")  
+                        log.warning(f"Transaction abort error with {len(records)} records, retrying with smaller batches")
                     if is_cardinality:
                         log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and "
                                     f"retrying in smaller batches")
