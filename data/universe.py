@@ -236,10 +236,10 @@ def rebuild_universe() -> List[Dict[str, Any]]:
     Returns
     -------
     List[Dict[str, Any]]
-        A list of symbols (dicts with 'symbol' and 'name' keys) that were 
-        successfully added to the universe. Returns an empty list if no 
+        A list of symbols (dicts with 'symbol' and 'name' keys) that were
+        successfully added to the universe. Returns an empty list if no
         symbols are found.
-        
+
     Raises
     ------
     Exception
@@ -300,7 +300,7 @@ if __name__ == "__main__":
 
         log.info("Starting universe rebuild...")
         result = rebuild_universe()
-        
+
         # Log the results and exit successfully if no exception was raised
         log.info("Universe rebuild completed successfully with %d symbols", len(result))
         sys.exit(0)
