@@ -223,7 +223,10 @@ def _fetch_from_polygon(symbols: List[str], start: date, end: date) -> pd.DataFr
     Fetch daily bars from Polygon across the symbol list (synchronous).
     """
     if not POLYGON_API_KEY:
+        log.warning("POLYGON_API_KEY not set; skipping Polygon data fetch")
         return pd.DataFrame()
+
+    log.info("Starting Polygon data fetch for %d symbols, has_api_key=%s", len(symbols), bool(POLYGON_API_KEY))
 
     import time
     import requests
@@ -239,7 +242,13 @@ def _fetch_from_polygon(symbols: List[str], start: date, end: date) -> pd.DataFr
                 r = requests.get(url, params=params, timeout=15)
 
             if r.status_code != 200:
-                log.warning("Polygon %s returned %s", sym, r.status_code)
+                if r.status_code == 401:
+                    log.error(
+                        "Polygon returned 401 Unauthorized for %s. Check POLYGON_API_KEY in the environment "
+                        "for this runtime (e.g., Render) and ensure auth is included on requests.", sym
+                    )
+                else:
+                    log.warning("Polygon %s returned %s", sym, r.status_code)
                 continue
 
             data = r.json()
@@ -366,6 +375,7 @@ def _bars_from_alpaca_batch(symbols: list[str], start: date, end: date) -> pd.Da
 
 async def _fetch_polygon_daily_one(symbol: str, start: date, end: date) -> pd.DataFrame:
     if not POLYGON_API_KEY:
+        log.debug("POLYGON_API_KEY not set; skipping Polygon data fetch for %s", symbol)
         return pd.DataFrame()
     url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start.isoformat()}/{end.isoformat()}"
     try:

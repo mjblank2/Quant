@@ -12,6 +12,52 @@ from .db import Universe, SessionLocal  # Assumes db.py is in same package
 
 log = logging.getLogger("data.universe")
 
+
+def _get_polygon_api_key() -> str:
+    """
+    Get and validate the Polygon API key from environment.
+    
+    Returns
+    -------
+    str
+        The API key if valid
+        
+    Raises
+    ------
+    RuntimeError
+        If POLYGON_API_KEY is not set or empty
+    """
+    api_key = os.getenv("POLYGON_API_KEY")
+    if not api_key or not api_key.strip():
+        raise RuntimeError(
+            "POLYGON_API_KEY environment variable is required but not set. "
+            "Please set your Polygon.io API key in the environment "
+            "(e.g., in Render environment variables)."
+        )
+    return api_key.strip()
+
+
+def _add_polygon_auth(url: str, api_key: str) -> str:
+    """
+    Ensure a Polygon.io URL includes authentication.
+    
+    Parameters
+    ----------
+    url : str
+        The URL to authenticate
+    api_key : str
+        The API key to use
+        
+    Returns
+    -------
+    str
+        URL with API key parameter added if not already present
+    """
+    if "apiKey=" not in url:
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}apiKey={api_key}"
+    return url
+
 def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dict[str, Any]]:
     """
     Return a list of symbols and names for all active stocks with a market cap
@@ -28,10 +74,15 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
     List[Dict[str, Any]]
         A list of dictionaries with 'symbol' and 'name' keys.
     """
-    api_key = os.getenv("POLYGON_API_KEY")
-    if not api_key:
-        log.error("POLYGON_API_KEY is not set in the environment.")
+    # Validate API key early and fail fast if missing
+    try:
+        api_key = _get_polygon_api_key()
+        has_api_key = True
+    except RuntimeError as e:
+        log.error(str(e))
         return []
+
+    log.info("Starting small cap ticker fetch, has_api_key=%s", has_api_key)
 
     base_url = "https://api.polygon.io/v3/reference/tickers"
     params = {
@@ -47,11 +98,16 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
     next_url: str | None = None
     try:
         while True:
-            # If Polygon provides a pagination URL, use it; otherwise, use base_url with params.
+            # If Polygon provides a pagination URL, ensure it has auth; otherwise, use base_url with params.
             if next_url:
-                resp = requests.get(next_url)
+                # Ensure pagination URL includes authentication
+                authenticated_url = _add_polygon_auth(next_url, api_key)
+                log.info("Making paginated request with cursor, has_auth=%s", "apiKey=" in authenticated_url)
+                resp = requests.get(authenticated_url, timeout=30)
             else:
-                resp = requests.get(base_url, params=params)
+                log.info("Making initial request, has_auth=%s", "apiKey" in params)
+                resp = requests.get(base_url, params=params, timeout=30)
+            
             resp.raise_for_status()
             data = resp.json()
 
@@ -60,7 +116,7 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
                 name = result.get("name")
                 # Fetch ticker details to retrieve market_cap
                 detail_url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
-                detail_resp = requests.get(detail_url, params={"apiKey": api_key})
+                detail_resp = requests.get(detail_url, params={"apiKey": api_key}, timeout=30)
                 if detail_resp.status_code != 200:
                     log.warning("Polygon details request failed for %s: %s", symbol, detail_resp.text)
                     continue
@@ -77,14 +133,65 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
             next_url = data.get("next_url")
             if not next_url:
                 break
+    except requests.exceptions.HTTPError as e:
+        if e.response and e.response.status_code == 401:
+            log.error(
+                "Polygon returned 401 Unauthorized. Check POLYGON_API_KEY in the environment "
+                "for this runtime (e.g., Render) and ensure auth is included on paginated requests."
+            )
+        log.error("HTTP error while fetching small cap tickers: %s", e, exc_info=True)
+        return []
     except Exception as e:
         log.error("Error while fetching small cap tickers: %s", e, exc_info=True)
         return []
 
     return tickers
 
+def test_polygon_api_connection() -> bool:
+    """
+    Simple smoke test to verify Polygon API connectivity and authentication.
+    
+    Returns
+    -------
+    bool
+        True if the API connection works, False otherwise
+    """
+    try:
+        api_key = _get_polygon_api_key()
+        log.info("Testing Polygon API connection, has_api_key=%s", bool(api_key))
+        
+        # Make a minimal request to test connectivity
+        base_url = "https://api.polygon.io/v3/reference/tickers"
+        params = {
+            "market": "stocks",
+            "active": "true",
+            "limit": 1,
+            "apiKey": api_key,
+        }
+        
+        resp = requests.get(base_url, params=params, timeout=30)
+        resp.raise_for_status()
+        
+        data = resp.json()
+        results_count = len(data.get("results", []))
+        log.info("Polygon API test successful, received %d results", results_count)
+        return True
+        
+    except RuntimeError as e:
+        log.warning("Polygon API test skipped: %s", e)
+        return False
+    except requests.exceptions.HTTPError as e:
+        if e.response and e.response.status_code == 401:
+            log.error("Polygon API test failed: 401 Unauthorized - check POLYGON_API_KEY")
+        else:
+            log.error("Polygon API test failed with HTTP error: %s", e)
+        return False
+    except Exception as e:
+        log.error("Polygon API test failed: %s", e)
+        return False
 
-async def _poly_ticker_info(symbol: str) -> Dict[str, Any]:
+
+def _poly_ticker_info() -> Dict[str, Any]:
     """Fetch ticker info from Polygon (placeholder kept for compatibility)."""
     return {}
 
@@ -148,6 +255,13 @@ if __name__ == "__main__":
     )
 
     try:
+        # Test API connection first
+        log.info("Testing Polygon API connection...")
+        if test_polygon_api_connection():
+            log.info("API connection test passed")
+        else:
+            log.warning("API connection test failed - proceeding anyway")
+
         log.info("Starting universe rebuild...")
         result = rebuild_universe()
 
