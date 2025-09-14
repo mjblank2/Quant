@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, Any, List
 import requests
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -253,29 +253,26 @@ def rebuild_universe() -> List[Dict[str, Any]]:
         return []
 
     try:
-        # Insert/Update into the database
-        with SessionLocal() as db:
-            values = []
-            for item in symbols:
-                values.append(
-                    {
-                        "symbol": item["symbol"],
-                        "name": item["name"],
-                        "included": True,
-                    }
-                )
-            stmt = pg_insert(Universe).values(values)
-            update_cols = {
-                "name": stmt.excluded.name,
+        # Convert symbols to DataFrame for batch processing
+        import pandas as pd
+        import db
+        
+        df_data = []
+        for item in symbols:
+            df_data.append({
+                "symbol": item["symbol"],
+                "name": item["name"],
                 "included": True,
-            }
-            on_conflict_stmt = stmt.on_conflict_do_update(
-                index_elements=[Universe.symbol],
-                set_=update_cols,
-            )
-            db.execute(on_conflict_stmt)
-            db.commit()
+                "last_updated": datetime.utcnow(),
+            })
+        
+        df = pd.DataFrame(df_data)
+        
+        # Use upsert_dataframe which handles parameter limits automatically
+        db.upsert_dataframe(df, Universe, conflict_cols=["symbol"])
+        
         log.info("Universe rebuild completed successfully with %d symbols.", len(symbols))
+        return symbols
         return symbols
     except Exception as e:
         log.error("Failed to rebuild universe: %s", e, exc_info=True)
