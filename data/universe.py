@@ -191,6 +191,7 @@ def test_polygon_api_connection() -> bool:
         return False
 
 
+def _poly_ticker_info() -> Dict[str, Any]:
     """Fetch ticker info from Polygon (placeholder kept for compatibility)."""
     return {}
 
