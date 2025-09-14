@@ -7,7 +7,6 @@ from datetime import date
 from typing import Dict, Any, List
 import requests
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
 from .db import Universe, SessionLocal  # Assumes db.py is in same package
 
 # Import robust HTTP utility for reliable API calls
@@ -23,12 +22,12 @@ log = logging.getLogger("data.universe")
 def _get_polygon_api_key() -> str:
     """
     Get and validate the Polygon API key from environment.
-    
+
     Returns
     -------
     str
         The API key if valid
-        
+
     Raises
     ------
     RuntimeError
@@ -47,10 +46,10 @@ def _get_polygon_api_key() -> str:
 def _robust_get_json(url: str, params: Dict[str, Any] = None, timeout: float = 60.0) -> Dict[str, Any]:
     """
     Robust HTTP GET with retry logic and timeout handling.
-    
+
     Uses utils_http.get_json if available (with retry logic), falls back to requests.get.
     Increased default timeout for large paginated responses.
-    
+
     Parameters
     ----------
     url : str
@@ -59,7 +58,7 @@ def _robust_get_json(url: str, params: Dict[str, Any] = None, timeout: float = 6
         Query parameters
     timeout : float, optional
         Request timeout in seconds (default: 60s for large responses)
-        
+
     Returns
     -------
     Dict[str, Any]
@@ -82,14 +81,14 @@ def _robust_get_json(url: str, params: Dict[str, Any] = None, timeout: float = 6
 def _add_polygon_auth(url: str, api_key: str) -> str:
     """
     Ensure a Polygon.io URL includes authentication.
-    
+
     Parameters
     ----------
     url : str
         The URL to authenticate
     api_key : str
         The API key to use
-        
+
     Returns
     -------
     str
@@ -99,6 +98,7 @@ def _add_polygon_auth(url: str, api_key: str) -> str:
         separator = "&" if "?" in url else "?"
         url = f"{url}{separator}apiKey={api_key}"
     return url
+
 
 def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dict[str, Any]]:
     """
@@ -149,7 +149,7 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
             else:
                 log.info("Making initial request, has_auth=%s", "apiKey" in params)
                 data = _robust_get_json(base_url, params=params, timeout=60.0)
-            
+
             if not data:
                 log.error("Failed to fetch data from Polygon API")
                 break
@@ -157,19 +157,19 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
             for result in data.get("results", []):
                 symbol = result.get("ticker")
                 name = result.get("name")
-                
+
                 # Skip if basic info is missing
                 if not symbol or not name:
                     continue
-                
+
                 # Fetch ticker details to retrieve market_cap using robust HTTP
                 detail_url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
                 details = _robust_get_json(detail_url, params={"apiKey": api_key}, timeout=60.0)
-                
+
                 if not details:
                     log.warning("Polygon details request failed for %s", symbol)
                     continue
-                    
+
                 market_cap = (
                     details.get("results", {}).get("market_cap")
                     if details.get("results") is not None
@@ -179,16 +179,16 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
                 if market_cap is not None and market_cap < max_market_cap:
                     tickers.append({"symbol": symbol, "name": name})
                     log.debug("Added %s (market_cap: $%.2fB)", symbol, market_cap / 1_000_000_000)
-                
+
                 # Log progress every 100 symbols processed for long-running operations
                 if len(data.get("results", [])) > 50 and len(tickers) % 50 == 0:
-                    log.info("Progress: processed %d tickers, found %d small-cap symbols so far", 
+                    log.info("Progress: processed %d tickers, found %d small-cap symbols so far",
                              len(data.get("results", [])), len(tickers))
 
             next_url = data.get("next_url")
             if not next_url:
                 break
-                
+
     except Exception as e:
         # Since we're using robust HTTP utility, most HTTP errors are already handled
         # This catches any remaining exceptions like JSON parsing or logic errors
@@ -198,10 +198,11 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
     log.info("Completed small cap fetch: found %d symbols total", len(tickers))
     return tickers
 
+
 def test_polygon_api_connection() -> bool:
     """
     Simple smoke test to verify Polygon API connectivity and authentication.
-    
+
     Returns
     -------
     bool
@@ -210,7 +211,7 @@ def test_polygon_api_connection() -> bool:
     try:
         api_key = _get_polygon_api_key()
         log.info("Testing Polygon API connection, has_api_key=%s", bool(api_key))
-        
+
         # Make a minimal request to test connectivity using robust HTTP
         base_url = "https://api.polygon.io/v3/reference/tickers"
         params = {
@@ -219,17 +220,17 @@ def test_polygon_api_connection() -> bool:
             "limit": 1,
             "apiKey": api_key,
         }
-        
+
         data = _robust_get_json(base_url, params=params, timeout=30.0)
-        
+
         if not data:
             log.error("Polygon API test failed: no data received")
             return False
-            
+
         results_count = len(data.get("results", []))
         log.info("Polygon API test successful, received %d results", results_count)
         return True
-        
+
     except RuntimeError as e:
         log.warning("Polygon API test skipped: %s", e)
         return False
@@ -242,9 +243,11 @@ def _poly_ticker_info() -> Dict[str, Any]:
     """Fetch ticker info from Polygon (placeholder kept for compatibility)."""
     return {}
 
+
 async def _poly_adv(symbol: str, start: date, end: date) -> float | None:
     """Fetch average daily volume from Polygon (placeholder kept for compatibility)."""
     return None
+
 
 def rebuild_universe() -> bool:
     """
