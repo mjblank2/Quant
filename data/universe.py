@@ -227,7 +227,7 @@ async def _poly_adv(symbol: str, start: date, end: date) -> float | None:
     return None
 
 
-def rebuild_universe() -> bool:
+def rebuild_universe() -> List[Dict[str, Any]]:
     """
     Rebuild the universe table by inserting/updating all symbols with market
     capitalisation below $3B. For each symbol, the function upserts the record
@@ -235,14 +235,22 @@ def rebuild_universe() -> bool:
 
     Returns
     -------
-    bool
-        True if the universe was rebuilt successfully, False otherwise.
+    List[Dict[str, Any]]
+        A list of symbols (dicts with 'symbol' and 'name' keys) that were 
+        successfully added to the universe. Returns an empty list if no 
+        symbols are found.
+        
+    Raises
+    ------
+    Exception
+        Re-raises any database or connectivity errors for proper error handling
+        by callers.
     """
     log.info("Starting universe rebuild: fetching small cap symbols.")
     symbols = _list_small_cap_symbols()
     if not symbols:
         log.warning("No symbols retrieved for universe rebuild.")
-        return False
+        return []
 
     try:
         # Insert/Update into the database
@@ -268,10 +276,10 @@ def rebuild_universe() -> bool:
             db.execute(on_conflict_stmt)
             db.commit()
         log.info("Universe rebuild completed successfully with %d symbols.", len(symbols))
-        return True
+        return symbols
     except Exception as e:
         log.error("Failed to rebuild universe: %s", e, exc_info=True)
-        return False
+        raise
 
 
 if __name__ == "__main__":
@@ -292,13 +300,10 @@ if __name__ == "__main__":
 
         log.info("Starting universe rebuild...")
         result = rebuild_universe()
-
-        if result is True or result is None:
-            log.info("Universe rebuild completed successfully")
-            sys.exit(0)
-        else:
-            log.error("Universe rebuild failed")
-            sys.exit(1)
+        
+        # Log the results and exit successfully if no exception was raised
+        log.info("Universe rebuild completed successfully with %d symbols", len(result))
+        sys.exit(0)
 
     except Exception as e:
         log.error(f"Universe rebuild failed with exception: {e}", exc_info=True)
