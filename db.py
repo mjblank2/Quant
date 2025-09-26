@@ -553,9 +553,9 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         # Get dynamic parameter limits based on connection type
         max_bind_params = _max_bind_params_for_connection(connection)
         # rows per statement bounded by max_bind_params / num_columns
-        # Add additional safety: ensure we don't exceed reasonable batch sizes
+        # Remove hard-coded 1000 row cap to respect actual database parameter limits
         theoretical_max_rows = max_bind_params // max(1, len(cols_all))
-        per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows, 1000))  # Cap at 1000 rows max
+        per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows))
 
         for start in range(0, len(df), per_stmt_rows):
             part = df.iloc[start:start + per_stmt_rows]
