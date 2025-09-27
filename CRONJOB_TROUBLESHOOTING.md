@@ -92,7 +92,17 @@ Resolution (recommended):
 
 This removes the dependency on the API/Celery path for scheduled operations. Keep curl-based triggers only for ad‑hoc/manual runs.
 
-### Parameter Limit Errors (f405)
+### Parameter Limit Errors (f405) - FIXED
+
+**Issue**: SQL parameter limit exceeded with parameters like `%(symbol_m795)s::VARCHAR`
+**Root Cause**: Hard-coded 1000 row cap in `upsert_dataframe` could exceed database parameter limits for tables with many columns
+**Fix Applied**: Removed hard cap and rely on calculated `theoretical_max_rows` based on actual database limits
+
+**Details**:
+- SQLite limit: 999 parameters  
+- PostgreSQL limit: 16,000 parameters
+- Fix ensures batches respect `max_params / num_columns` calculation
+- No longer artificially limited to 1000 rows regardless of column count
 
 **Symptoms:**
 - Error message mentioning "f405" 
