@@ -50,7 +50,8 @@ def test_large_universe_insert():
             
             df = pd.DataFrame(df_data)
             print(f"   DataFrame created with {len(df)} records, {len(df.columns)} columns")
-            print(f"   Theoretical parameters needed: {len(df) * len(df.columns)} = {len(df) * len(df.columns)}")
+            param_count = len(df) * len(df.columns)
+            print(f"   Theoretical parameters needed: {param_count} = {param_count}")
             print(f"   SQLite parameter limit: 999")
             
             try:
