@@ -1,6 +1,7 @@
 from __future__ import annotations
 from contextlib import nullcontext
 from sqlalchemy import create_engine, String, Date, DateTime, Integer, Float, Boolean, BigInteger, Index, text
+import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.types import JSON
@@ -39,7 +40,7 @@ class DailyBar(Base):
 class Universe(Base):
     __tablename__ = "universe"
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
-    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     exchange: Mapped[str | None] = mapped_column(String(12), nullable=True)
     market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # added to match migrations & code usage
     adv_usd_20: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -373,6 +374,94 @@ def _should_log_column_warning(table_name: str, missing_columns: set) -> bool:
     return True
 
 
+def _sanitize_and_truncate_strings(df: pd.DataFrame, table, connection) -> pd.DataFrame:
+    """
+    Sanitize and truncate string columns in DataFrame based on model and DB constraints.
+    
+    Args:
+        df: DataFrame to sanitize
+        table: SQLAlchemy table model
+        connection: Database connection for schema inspection
+    
+    Returns:
+        DataFrame with sanitized and truncated strings
+    """
+    import unicodedata
+    
+    df_copy = df.copy()
+    truncated_count = 0
+    
+    # Get model column definitions
+    model_string_limits = {}
+    for column_name, column in table.__table__.columns.items():
+        if hasattr(column.type, 'length') and column.type.length is not None:
+            model_string_limits[column_name] = column.type.length
+    
+    # Get actual DB column limits
+    db_string_limits = {}
+    try:
+        insp = sa.inspect(connection)
+        db_columns = {c['name']: c for c in insp.get_columns(table.__tablename__)}
+        for col_name, col_info in db_columns.items():
+            col_type = col_info.get('type')
+            if hasattr(col_type, 'length') and col_type.length is not None:
+                db_string_limits[col_name] = col_type.length
+    except Exception as e:
+        log.debug(f"Could not inspect DB column limits for {table.__tablename__}: {e}")
+    
+    # Process each string column in the DataFrame
+    for col_name in df_copy.columns:
+        if col_name not in df_copy.select_dtypes(include=['object']).columns:
+            continue
+            
+        # Get the stricter of model and DB limits
+        model_limit = model_string_limits.get(col_name)
+        db_limit = db_string_limits.get(col_name)
+        
+        if model_limit is None and db_limit is None:
+            continue
+            
+        # Use the stricter limit
+        limit = None
+        if model_limit is not None and db_limit is not None:
+            limit = min(model_limit, db_limit)
+        elif model_limit is not None:
+            limit = model_limit
+        elif db_limit is not None:
+            limit = db_limit
+            
+        if limit is None:
+            continue
+            
+        # Sanitize and truncate the column
+        original_values = df_copy[col_name].dropna()
+        if len(original_values) == 0:
+            continue
+            
+        def sanitize_string(value):
+            if pd.isna(value) or not isinstance(value, str):
+                return value
+                
+            # Normalize Unicode (NFKC) and collapse whitespace
+            normalized = unicodedata.normalize('NFKC', str(value))
+            collapsed = ' '.join(normalized.split())
+            
+            # Truncate if too long
+            if len(collapsed) > limit:
+                nonlocal truncated_count
+                truncated_count += 1
+                return collapsed[:limit]
+                
+            return collapsed
+        
+        df_copy[col_name] = df_copy[col_name].apply(sanitize_string)
+    
+    if truncated_count > 0:
+        log.warning(f"Sanitized and truncated {truncated_count} string values in {table.__tablename__}")
+    
+    return df_copy
+
+
 def _get_table_columns(connection, table):
     """Get table columns with caching to avoid repeated database queries"""
     table_name = table.__tablename__
@@ -539,6 +628,9 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
 
         if df.empty:
             return
+
+        # Sanitize and truncate string columns based on model and DB constraints
+        df = _sanitize_and_truncate_strings(df, table, connection)
 
         # Proactive deduplication to prevent CardinalityViolation errors
         # Remove any duplicate rows based on conflict columns before any INSERT attempt
