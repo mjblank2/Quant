@@ -313,8 +313,9 @@ def _max_bind_params_for_connection(connection) -> int:
             return 999
         elif "postgresql" in url_str:
             # PostgreSQL varies by configuration, default is often 32767
-            # But some hosted services may have lower limits, use conservative value
-            return 16000
+            # But some hosted services may have lower limits, and ON CONFLICT DO UPDATE
+            # can significantly increase parameter usage. Use very conservative value.
+            return 8000
         elif "mysql" in url_str:
             # MySQL limit is typically 65535
             return 32000
@@ -552,10 +553,24 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         cols_all = list(df.columns)
         # Get dynamic parameter limits based on connection type
         max_bind_params = _max_bind_params_for_connection(connection)
-        # rows per statement bounded by max_bind_params / num_columns
-        # Remove hard-coded 1000 row cap to respect actual database parameter limits
-        theoretical_max_rows = max_bind_params // max(1, len(cols_all))
+        
+        # Calculate parameters per row accounting for ON CONFLICT DO UPDATE overhead
+        # For upsert operations, we need parameters for:
+        # 1. VALUES clause: all columns
+        # 2. UPDATE SET clause: all columns except conflict columns
+        update_cols_count = len(cols_all) - len(conflict_cols) if conflict_cols else 0
+        params_per_row = len(cols_all) + update_cols_count
+        
+        # Add safety margin to prevent edge cases where SQLAlchemy uses additional parameters
+        safety_margin = max(10, params_per_row // 10)  # 10% safety margin, minimum 10
+        effective_limit = max_bind_params - safety_margin
+        
+        # Calculate maximum rows per statement
+        theoretical_max_rows = effective_limit // max(1, params_per_row)
         per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows))
+        
+        log.debug(f"Parameter calculation: {params_per_row} params/row, limit {max_bind_params}, "
+                  f"effective limit {effective_limit}, max rows/stmt {theoretical_max_rows}")
 
         for start in range(0, len(df), per_stmt_rows):
             part = df.iloc[start:start + per_stmt_rows]
@@ -585,7 +600,14 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
             except Exception as e:
                 msg = str(e).lower()
                 # More specific parameter limit detection to avoid false positives
-                is_param_limit = ("too many variables" in msg) or ("too many sql variables" in msg) or ("bind parameter" in msg and "limit" in msg)
+                is_param_limit = (
+                    ("too many variables" in msg) or 
+                    ("too many sql variables" in msg) or 
+                    ("bind parameter" in msg and "limit" in msg) or
+                    ("parameter limit" in msg) or
+                    ("maximum bind parameters" in msg) or
+                    ("too many parameters" in msg)
+                )
                 is_txn_abort = ("infailedsqltransaction" in msg) or ("cannot operate on closed transaction" in msg)
                 is_cardinality = ("cardinalityviolation" in msg) or ("on conflict do update command cannot affect row a second time" in msg)
                 
