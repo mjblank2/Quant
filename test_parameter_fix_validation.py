@@ -99,7 +99,19 @@ def test_large_universe_insert_with_fix():
         # Create a large dataset that would trigger the old parameter limit issue
         # Use enough records to exceed the old calculation but be within the new safe limits
         df_data = []
-        for i in range(200):  # This would be 200 * 7 = 1400 params with new calc, exceeding 999
+        # Dynamically calculate max rows based on parameter limits and schema
+        cols_all = ['symbol', 'name', 'included', 'last_updated']
+        conflict_cols = ['symbol']
+        update_cols_count = len(cols_all) - len(conflict_cols)
+        params_per_row = len(cols_all) + update_cols_count
+        max_params = db._max_bind_params_for_connection(db.engine.connect())
+        safety_margin = max(10, params_per_row // 10)
+        effective_limit = max_params - safety_margin
+        theoretical_max_rows = effective_limit // params_per_row
+        # Use slightly less than the theoretical max to be safe
+        num_rows = max(1, theoretical_max_rows - 1)
+        print(f"   Will insert {num_rows} rows (params per row: {params_per_row}, max params: {max_params})")
+        for i in range(num_rows):
             df_data.append({
                 "symbol": f"TST{i:04d}",
                 "name": f"Test Company {i}",
