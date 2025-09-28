@@ -268,7 +268,7 @@ def rebuild_universe() -> List[Dict[str, Any]]:
         df = pd.DataFrame(df_data)
 
         # Use upsert_dataframe which handles parameter limits automatically
-        db.upsert_dataframe(df, Universe, conflict_cols=["symbol"])
+        db.upsert_dataframe(df, Universe, conflict_cols=["symbol"], chunk_size=1000)
 
         log.info("Universe rebuild completed successfully with %d symbols.", len(symbols))
         return symbols
