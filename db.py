@@ -39,7 +39,8 @@ class DailyBar(Base):
 class Universe(Base):
     __tablename__ = "universe"
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
-    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # widened from 128 -> 256
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     exchange: Mapped[str | None] = mapped_column(String(12), nullable=True)
     market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # added to match migrations & code usage
     adv_usd_20: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -550,6 +551,38 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 # Use DEBUG level since this is expected behavior during normal data processing
                 log.debug(f"Proactively removed {original_size - dedupe_size} duplicate rows to prevent CardinalityViolation on conflict cols {conflict_cols}")
 
+        # NEW: sanitize and truncate string columns to their defined max lengths
+        try:
+            # Build map of column -> max length from SQLAlchemy model
+            col_limits: dict[str, int] = {}
+            for c in table.__table__.columns:
+                t = getattr(c, "type", None)
+                maxlen = getattr(t, "length", None)
+                if maxlen:
+                    try:
+                        col_limits[c.name] = int(maxlen)
+                    except Exception:
+                        pass
+            if col_limits:
+                import unicodedata as _ud
+                import re as _re
+                for col, maxlen in col_limits.items():
+                    if col in df.columns:
+                        s = df[col]
+                        null_mask = pd.isna(s)
+                        # normalize and collapse whitespace
+                        s = s.astype(str).map(lambda x: _ud.normalize("NFKC", x))
+                        s = s.str.replace(r"\s+", " ", regex=True).str.strip()
+                        over_mask = s.str.len() > maxlen
+                        if over_mask.any():
+                            log.warning(f"Truncating {int(over_mask.sum())} values in column '{col}' to {maxlen} chars")
+                            s.loc[over_mask] = s.loc[over_mask].str.slice(0, maxlen)
+                        # restore nulls
+                        s.loc[null_mask] = None
+                        df[col] = s
+        except Exception as _e:
+            log.debug(f"String length sanitization skipped: {_e}")
+
         cols_all = list(df.columns)
         # Get dynamic parameter limits based on connection type
         max_bind_params = _max_bind_params_for_connection(connection)
@@ -651,14 +684,14 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                                     log.warning(f"Removed {removed_count} duplicate rows during retry (significant duplication detected)")
                                 else:
                                     log.debug(f"Removed {removed_count} duplicate rows during retry to prevent CardinalityViolation")
-                        if dedupe_size < original_size:
-                            # Use DEBUG level for retry deduplication since this is expected behavior
-                            # Only log as WARNING if we're removing a significant number of duplicates
-                            removed_count = original_size - dedupe_size
-                            if removed_count > original_size * 0.5:  # More than 50% are duplicates
-                                log.warning(f"Removed {removed_count} duplicate rows during retry (significant duplication detected)")
-                            else:
-                                log.debug(f"Removed {removed_count} duplicate rows during retry to prevent CardinalityViolation")
+                    if dedupe_size < original_size:
+                        # Use DEBUG level for retry deduplication since this is expected behavior
+                        # Only log as WARNING if we're removing a significant number of duplicates
+                        removed_count = original_size - dedupe_size
+                        if removed_count > original_size * 0.5:  # More than 50% are duplicates
+                            log.warning(f"Removed {removed_count} duplicate rows during retry (significant duplication detected)")
+                        else:
+                            log.debug(f"Removed {removed_count} duplicate rows during retry to prevent CardinalityViolation")
 
                     # Retry with smaller chunks using recursive call outside current transaction
                     # This handles the parameter limit case by starting fresh with a new transaction
