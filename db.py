@@ -377,26 +377,26 @@ def _should_log_column_warning(table_name: str, missing_columns: set) -> bool:
 def _sanitize_and_truncate_strings(df: pd.DataFrame, table, connection) -> pd.DataFrame:
     """
     Sanitize and truncate string columns in DataFrame based on model and DB constraints.
-    
+
     Args:
         df: DataFrame to sanitize
         table: SQLAlchemy table model
         connection: Database connection for schema inspection
-    
+
     Returns:
         DataFrame with sanitized and truncated strings
     """
     import unicodedata
-    
+
     df_copy = df.copy()
     truncated_count = 0
-    
+
     # Get model column definitions
     model_string_limits = {}
     for column_name, column in table.__table__.columns.items():
         if hasattr(column.type, 'length') and column.type.length is not None:
             model_string_limits[column_name] = column.type.length
-    
+
     # Get actual DB column limits
     db_string_limits = {}
     try:
@@ -408,19 +408,19 @@ def _sanitize_and_truncate_strings(df: pd.DataFrame, table, connection) -> pd.Da
                 db_string_limits[col_name] = col_type.length
     except Exception as e:
         log.debug(f"Could not inspect DB column limits for {table.__tablename__}: {e}")
-    
+
     # Process each string column in the DataFrame
     for col_name in df_copy.columns:
         if col_name not in df_copy.select_dtypes(include=['object']).columns:
             continue
-            
+
         # Get the stricter of model and DB limits
         model_limit = model_string_limits.get(col_name)
         db_limit = db_string_limits.get(col_name)
-        
+
         if model_limit is None and db_limit is None:
             continue
-            
+
         # Use the stricter limit
         limit = None
         if model_limit is not None and db_limit is not None:
@@ -429,36 +429,36 @@ def _sanitize_and_truncate_strings(df: pd.DataFrame, table, connection) -> pd.Da
             limit = model_limit
         elif db_limit is not None:
             limit = db_limit
-            
+
         if limit is None:
             continue
-            
+
         # Sanitize and truncate the column
         original_values = df_copy[col_name].dropna()
         if len(original_values) == 0:
             continue
-            
+
         def sanitize_string(value):
             if pd.isna(value) or not isinstance(value, str):
                 return value
-                
+
             # Normalize Unicode (NFKC) and collapse whitespace
             normalized = unicodedata.normalize('NFKC', str(value))
             collapsed = ' '.join(normalized.split())
-            
+
             # Truncate if too long
             if len(collapsed) > limit:
                 nonlocal truncated_count
                 truncated_count += 1
                 return collapsed[:limit]
-                
+
             return collapsed
-        
+
         df_copy[col_name] = df_copy[col_name].apply(sanitize_string)
-    
+
     if truncated_count > 0:
         log.warning(f"Sanitized and truncated {truncated_count} string values in {table.__tablename__}")
-    
+
     return df_copy
 
 
@@ -645,22 +645,22 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
         cols_all = list(df.columns)
         # Get dynamic parameter limits based on connection type
         max_bind_params = _max_bind_params_for_connection(connection)
-        
+
         # Calculate parameters per row accounting for ON CONFLICT DO UPDATE overhead
         # For upsert operations, we need parameters for:
         # 1. VALUES clause: all columns
         # 2. UPDATE SET clause: all columns except conflict columns
         update_cols_count = len(cols_all) - len(conflict_cols) if conflict_cols else 0
         params_per_row = len(cols_all) + update_cols_count
-        
+
         # Add safety margin to prevent edge cases where SQLAlchemy uses additional parameters
         safety_margin = max(10, params_per_row // 10)  # 10% safety margin, minimum 10
         effective_limit = max_bind_params - safety_margin
-        
+
         # Calculate maximum rows per statement
         theoretical_max_rows = effective_limit // max(1, params_per_row)
         per_stmt_rows = max(1, min(chunk_size, theoretical_max_rows))
-        
+
         log.debug(f"Parameter calculation: {params_per_row} params/row, limit {max_bind_params}, "
                   f"effective limit {effective_limit}, max rows/stmt {theoretical_max_rows}")
 
@@ -693,8 +693,8 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 msg = str(e).lower()
                 # More specific parameter limit detection to avoid false positives
                 is_param_limit = (
-                    ("too many variables" in msg) or 
-                    ("too many sql variables" in msg) or 
+                    ("too many variables" in msg) or
+                    ("too many sql variables" in msg) or
                     ("bind parameter" in msg and "limit" in msg) or
                     ("parameter limit" in msg) or
                     ("maximum bind parameters" in msg) or
@@ -702,15 +702,15 @@ def upsert_dataframe(df: pd.DataFrame, table, conflict_cols: list[str], chunk_si
                 )
                 is_txn_abort = ("infailedsqltransaction" in msg) or ("cannot operate on closed transaction" in msg)
                 is_cardinality = ("cardinalityviolation" in msg) or ("on conflict do update command cannot affect row a second time" in msg)
-                
+
                 # Don't treat readonly database errors as parameter limits
                 is_readonly = ("readonly database" in msg) or ("attempt to write a readonly database" in msg)
-                
+
                 if (is_param_limit or (is_txn_abort and not is_readonly) or is_cardinality) and len(records) > 1:
                     if is_param_limit:
                         log.warning(f"Parameter limit error with {len(records)} records, retrying with smaller batches")
                     elif is_txn_abort:
-                        log.warning(f"Transaction abort error with {len(records)} records, retrying with smaller batches")  
+                        log.warning(f"Transaction abort error with {len(records)} records, retrying with smaller batches")
                     if is_cardinality:
                         log.warning(f"CardinalityViolation with {len(records)} records, deduping on conflict cols {conflict_cols} and "
                                     f"retrying in smaller batches")
