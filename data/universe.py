@@ -255,15 +255,35 @@ def rebuild_universe() -> List[Dict[str, Any]]:
         # Convert symbols to DataFrame for batch processing
         import pandas as pd
         import db
+        import unicodedata
 
         df_data = []
+        truncated_names = 0
+        
         for item in symbols:
+            # Sanitize the company name
+            name = item.get("name")
+            if name and isinstance(name, str):
+                # Normalize Unicode (NFKC) and collapse whitespace
+                normalized = unicodedata.normalize('NFKC', name)
+                collapsed = ' '.join(normalized.split())
+                
+                # Truncate if longer than 256 characters (with a warning)
+                if len(collapsed) > 256:
+                    collapsed = collapsed[:256]
+                    truncated_names += 1
+                    
+                name = collapsed
+            
             df_data.append({
                 "symbol": item["symbol"],
-                "name": item["name"],
+                "name": name,
                 "included": True,
                 "last_updated": datetime.utcnow(),
             })
+        
+        if truncated_names > 0:
+            log.warning("Truncated %d company names longer than 256 characters during universe rebuild.", truncated_names)
 
         df = pd.DataFrame(df_data)
 
