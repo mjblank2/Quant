@@ -118,7 +118,8 @@ def test_direct_sqlalchemy_insert():
             })
         
         print(f"   Testing with {len(records)} records")
-        print(f"   Expected parameters: {len(records) * 4} = {len(records) * 4}")
+        num_columns = len(records[0].keys()) if records else 0
+        print(f"   Expected parameters: {len(records) * num_columns} = {len(records)} records × {num_columns} columns")
         
         with db.engine.connect() as conn:
             from sqlalchemy import insert
