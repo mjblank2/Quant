@@ -134,3 +134,12 @@ def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[st
     if gross > 0:
         weights *= (tgt_gross / gross)
     return weights.sort_values(ascending=False)
+
+    # Assume 'features_df' has your features indexed by (symbol, ts).
+def compute_vol_weights(selected_symbols, features_df, alpha_scores):
+    vols = features_df.loc[selected_symbols, "vol_63"].abs().replace(0, np.nan)
+    base_weights = alpha_scores[selected_symbols] / vols
+    base_weights = base_weights.fillna(0.0)
+    # scale to target gross leverage (e.g., 1.0)
+    gross = base_weights.abs().sum()
+    return base_weights / gross
