@@ -5,8 +5,10 @@ from typing import Dict, Any
 from sqlalchemy import text, inspect
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import Ridge
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
 from db import engine, upsert_dataframe, Prediction
 from models.transformers import CrossSectionalNormalizer
 from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS,
@@ -174,6 +176,73 @@ def _model_specs() -> Dict[str, Pipeline]:
             n_jobs=_xgb_threads(),
             tree_method="hist"
         ))
+
+        # LightGBM regression model
+        specs["lgbm"] = _define_pipeline(LGBMRegressor(
+            n_estimators=500,
+            num_leaves=31,
+            max_depth=-1,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=_xgb_threads()
+        ))
+
+        # CatBoost regression model (set verbose=0 to silence output)
+        specs["cat"] = _define_pipeline(CatBoostRegressor(
+            iterations=300,
+            depth=6,
+            learning_rate=0.05,
+            loss_function='RMSE',
+            random_seed=42,
+            verbose=False
+        ))
+
+        # Stacking ensemble combining tree-based models
+        # Use base estimators from the above specs directly in the stacker
+        # Only include a subset to avoid excessive complexity
+        stack_estimators = []
+        # We'll pull out the underlying estimators (not pipelines) because
+        # StackingRegressor expects estimators without preprocessing.  The
+        # CrossSectionalNormalizer is applied by the outer pipeline created by
+        # _define_pipeline.
+        stack_estimators.append(("xgb", XGBRegressor(
+            n_estimators=500,
+            max_depth=4,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=_xgb_threads(),
+            tree_method="hist"
+        )))
+        stack_estimators.append(("lgbm", LGBMRegressor(
+            n_estimators=500,
+            num_leaves=31,
+            max_depth=-1,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=_xgb_threads()
+        )))
+        stack_estimators.append(("cat", CatBoostRegressor(
+            iterations=300,
+            depth=6,
+            learning_rate=0.05,
+            loss_function='RMSE',
+            random_seed=42,
+            verbose=False
+        )))
+
+        stack_model = StackingRegressor(
+            estimators=stack_estimators,
+            final_estimator=Ridge(alpha=1.0),
+            n_jobs=_xgb_threads(),
+            passthrough=False
+        )
+        specs["stack"] = _define_pipeline(stack_model)
     return specs
 
 
