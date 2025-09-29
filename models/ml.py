@@ -17,7 +17,7 @@ from models.regime import classify_regime, gate_blend_weights
 from data.universe_history import gate_training_with_universe
 from utils.price_utils import price_expr
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
-from xgboost import XGBRegressor  # ensure xgboost is in your requirements
+# from xgboost import XGBRegressor  # ensure xgboost is in your requirements
 log = logging.getLogger(__name__)
 
 # Feature set used for model training and prediction.  Extended to include
@@ -427,10 +427,10 @@ def train_and_predict_all_models(window_years: int = 4):
         regime = classify_regime(latest_ts)
         blend_w = gate_blend_weights(blend_w, regime)
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
-
-    # Fit & predict base models
-    for name, (model, grid) in _model_specs().items():
-    best_model = train_with_cv(X_train, y_train, model, grid)
+# 
+#     # Fit & predict base models
+#     for name, (model, grid) in _model_specs().items():
+#     # best_model = train_with_cv(X_train, y_train, model, grid)
     for name, pipe in models.items():
         p2 = copy.deepcopy(pipe)
         # Prepare fit parameters
@@ -509,15 +509,15 @@ def train_and_predict_all_models(window_years: int = 4):
     log.info("Live training and prediction complete.")
     return outputs
 
-def _model_specs():
-    return {
-        "ridge": (Ridge(), {"alpha": [0.1, 1.0, 10.0]}),
-        "random_forest": (RandomForestRegressor(), {"n_estimators": [200, 400], "max_depth": [3, 5, None]}),
-        "xgb": (XGBRegressor(objective="reg:squarederror"), {
-            "n_estimators": [200, 300],
-            "max_depth": [3, 5],
-            "learning_rate": [0.05, 0.1],
-            "subsample": [0.8, 1.0]
+# def _model_specs():
+    # return {
+        # "ridge": (Ridge(), {"alpha": [0.1, 1.0, 10.0]}),
+        # "random_forest": (RandomForestRegressor(), {"n_estimators": [200, 400], "max_depth": [3, 5, None]}),
+        # "xgb": (XGBRegressor(objective="reg:squarederror"), {
+            # "n_estimators": [200, 300],
+            # "max_depth": [3, 5],
+            # # "learning_rate": [0.05, 0.1],
+            # # "subsample": [0.8, 1.0]
         })
     }
 
@@ -566,9 +566,17 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
         .dropna()
         .sort_index()
     )
-    if port.empty:
+
         return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
-    equity = (1.0 + port).cumprod()
+          
+
+                # Compute and log backtest metrics
+        from performance.metrics import compute_all_metrics
+        metrics = compute_all_metrics(port)
+        log.info(f"Backtest metrics: {metrics}")
+
+
+equity = (1.0 + port).cumprod()
     dd = equity / equity.cummax() - 1.0
     out = pd.DataFrame({'ts': port.index.normalize(), 'equity': equity.values, 'daily_return': port.values, 'drawdown': dd.values, 'tcost_impact': 0.0})
     # Persist
