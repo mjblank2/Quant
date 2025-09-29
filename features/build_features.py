@@ -36,15 +36,21 @@ def _symbols() -> list[str]:
     except Exception:
         return []
 
-
 def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
+    """
+    Load raw price data for a batch of symbols, including open, high, low, close,
+    adjusted close, and volume.  The high/low fields are needed for ATR and
+    spread calculations.
+    """
     if not symbols:
-        return pd.DataFrame(columns=['symbol', 'ts', 'open', 'close', 'adj_close', 'volume'])
+        # return DataFrame with all expected columns when no symbols are provided
+        return pd.DataFrame(columns=['symbol','ts','open','high','low','close','adj_close','volume'])
 
     sql = f"""
-        SELECT symbol, ts, open, close, {select_price_as('adj_close')}, volume 
-        FROM daily_bars 
-        WHERE ts >= :start AND symbol IN :syms 
+        SELECT symbol, ts, open, high, low, close,
+               {select_price_as('adj_close')}, volume
+        FROM daily_bars
+        WHERE ts >= :start AND symbol IN :syms
         ORDER BY symbol, ts
     """
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
@@ -71,7 +77,8 @@ def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame(columns=['symbol','as_of'])
     sql = (
-        'SELECT symbol, as_of, pe_ttm, pb, ps_ttm, debt_to_equity, return_on_assets, gross_margins, profit_margins, current_ratio '
+        'SELECT symbol, as_of, pe_ttm, pb, ps_ttm, debt_to_equity, return_on_assets, '
+        'gross_margins, profit_margins, current_ratio '
         'FROM fundamentals WHERE symbol IN :syms ORDER BY symbol, as_of'
     )
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
@@ -99,7 +106,14 @@ def _load_alt_signals(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFram
     return piv
 
 def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame:
-    """Incremental, point-in-time feature building with duplicate-safe upsert."""
+    """
+    Incremental point‑in‑time feature builder.  Retrieves price, fundamental,
+    shares‑outstanding and alternative signal data; computes a broad set of
+    technical indicators (returns, momentum, volatility, RSI, MACD, long‑term
+    momentum/volatility, spread ratios, ATR, OBV, etc.), as well as microstructure
+    features and fundamental signals; and persists them to the database using
+    an upsert pattern.
+    """
     log.info("Starting feature build process (Incremental, PIT).")
     syms = _symbols()
     if not syms:
@@ -108,20 +122,28 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
     last_map = _last_feature_dates()
     new_rows: list[pd.DataFrame] = []
+    # Load market data once for beta calculations
     mkt = _load_market_returns("IWM")
     if not mkt.empty:
-        mkt = mkt.rename(columns={"px": "mkt_px", "mret": "mkt_ret"})
+        mkt = mkt.rename(columns={"px":"mkt_px", "mret":"mkt_ret"})
 
+    # Process symbols in batches to control memory usage
     for i in range(0, len(syms), batch_size):
         bsyms = syms[i:i+batch_size]
-        log.info(f"Processing batch {i//batch_size + 1} / {int(np.ceil(len(syms)/batch_size))} (Symbols: {len(bsyms)})")
+        log.info(f"Processing batch {i//batch_size + 1} / {int(np.ceil(len(syms)/batch_size))} "
+                 f"(Symbols: {len(bsyms)})")
 
+        # Determine earliest timestamp to load for each symbol (for warmup)
         starts = []
         for s in bsyms:
             last_ts = last_map.get(s)
-            starts.append(pd.Timestamp('1900-01-01') if (last_ts is None or pd.isna(last_ts)) else pd.Timestamp(last_ts) - pd.Timedelta(days=warmup_days))
-        start_ts = min(starts) if starts else pd.Timestamp('1900-01-01')
+            if last_ts is None or pd.isna(last_ts):
+                starts.append(pd.Timestamp("1900-01-01"))
+            else:
+                starts.append(pd.Timestamp(last_ts) - pd.Timedelta(days=warmup_days))
+        start_ts = min(starts) if starts else pd.Timestamp("1900-01-01")
 
+        # Load price data, fundamentals, shares outstanding, alt signals
         px = _load_prices_batch(bsyms, start_ts)
         if px.empty:
             continue
@@ -130,6 +152,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
         shs = _load_shares_outstanding(bsyms)
         alts = _load_alt_signals(bsyms, start_ts)
 
+        # Merge alternative signals into price data; fill missing alt columns with zeros
         if not alts.empty:
             px = px.merge(alts, on=['symbol','ts'], how='left')
         for c in ['pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout']:
@@ -138,19 +161,21 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             else:
                 px[c] = px[c].fillna(0.0)
 
+        # Choose adjusted close when available, else close
         px['price_feat'] = px['adj_close'].where(px['adj_close'].notna(), px['close'])
 
-        # Merge market data once for beta and residual calculations
+        # Merge market returns (for beta and residual calculations)
         if not mkt.empty:
             px = px.merge(mkt, on='ts', how='left')
 
         out_frames: list[pd.DataFrame] = []
 
+        # Compute features per symbol
         for sym, g in px.groupby('symbol'):
             g = g.sort_values('ts').copy()
-            p = g['price_feat']
+            p = g['price_feat']  # price series for technical calculations
 
-            # Price/Momentum/Vol
+            # Price/momentum/volatility features
             g['ret_1d'] = p.pct_change(1)
             g['ret_5d'] = p.pct_change(5)
             g['ret_21d'] = p.pct_change(21)
@@ -159,20 +184,49 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['vol_21'] = g['ret_1d'].rolling(21).std()
             g['rsi_14'] = _compute_rsi(p, 14)
 
-            # Robust short-term reversal (vol-adjusted) on 5-day returns
-            # Lagged volatility is used to avoid look-ahead bias.  Multiply by sqrt(5)
-            # so that the denominator is the volatility of a 5-day sum under independence.
+            # Volatility‑adjusted short‑term reversal (5‑day)
             lagged_vol = g['vol_21'].shift(1)
             denom = (lagged_vol * np.sqrt(5)).replace(0, np.nan)
             g['reversal_5d_z'] = -(g['ret_5d'] / denom)
 
-            # Microstructure: overnight gap and Amihud illiquidity
+            # Microstructure: overnight gap, average daily dollar volume & Amihud illiquidity
             g['overnight_gap'] = (g['open'] / g['price_feat'].shift(1)) - 1.0
             dollar_volume = g['price_feat'] * g['volume']
             g['adv_usd_21'] = dollar_volume.rolling(21).mean()
-            g['illiq_21'] = (g['ret_1d'].abs() / dollar_volume.replace(0, np.nan)).rolling(21).mean()
+            g['illiq_21'] = (g['ret_1d'].abs() / dollar_volume.replace(0,np.nan)).rolling(21).mean()
 
-            # PIT Shares → Market Cap
+            # **New technical indicators**
+
+            # Exponential moving averages & MACD
+            g['ema_12'] = p.ewm(span=12, adjust=False).mean()
+            g['ema_26'] = p.ewm(span=26, adjust=False).mean()
+            g['macd'] = g['ema_12'] - g['ema_26']
+            g['ema_50'] = p.ewm(span=50, adjust=False).mean()
+            g['ema_200'] = p.ewm(span=200, adjust=False).mean()
+            g['ma_ratio_50_200'] = g['ema_50'] / g['ema_200']
+
+            # Long‑term volatility and momentum
+            g['vol_63'] = g['ret_1d'].rolling(63).std()
+            g['vol_252'] = g['ret_1d'].rolling(252).std()
+            g['mom_252'] = (p / p.shift(252)) - 1.0
+
+            # Intraday spread ratio & its 21‑day average
+            g['spread_ratio'] = (g['high'] - g['low']) / g['price_feat']
+            g['spread_21'] = g['spread_ratio'].rolling(21).mean()
+
+            # Average True Range (ATR) over 14 days
+            tr = pd.concat([
+                g['high'] - g['low'],
+                (g['high'] - g['price_feat'].shift(1)).abs(),
+                (g['low'] - g['price_feat'].shift(1)).abs()
+            ], axis=1).max(axis=1)
+            g['atr_14'] = tr.rolling(14).mean()
+
+            # On‑Balance Volume (OBV)
+            direction = np.where(g['ret_1d'] >= 0, 1, -1)
+            g['obv'] = (direction * g['volume']).fillna(0).cumsum()
+
+            # Shares outstanding → market cap & turnover
             shs_sym = shs[shs['symbol'] == sym][['as_of','shares']].sort_values('as_of')
             if not shs_sym.empty:
                 g = pd.merge_asof(
@@ -182,15 +236,16 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 )
                 g['market_cap_pit'] = g['price_feat'] * g['shares']
             else:
+                # fallback: estimate shares from median volume (very conservative)
                 median_volume = g['volume'].median()
-                estimated_shares = median_volume * 10  # Conservative estimate (fallback)
+                estimated_shares = median_volume * 10
                 g['market_cap_pit'] = g['price_feat'] * estimated_shares
 
             mc = g['market_cap_pit']
             g['size_ln'] = np.log(mc.clip(lower=1.0))
             g['turnover_21'] = g['adv_usd_21'] / mc.replace(0, np.nan)
 
-            # PIT Fundamentals
+            # Point‑in‑time fundamentals (merge as of most recent available date)
             f_sym = fnd[fnd['symbol'] == sym].drop(columns=['symbol']).sort_values('as_of')
             if not f_sym.empty:
                 g = pd.merge_asof(
@@ -198,11 +253,12 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                     f_sym.rename(columns={'as_of':'ts_fnd'}).sort_values('ts_fnd'),
                     left_on='ts', right_on='ts_fnd', direction='backward'
                 )
+            # Ensure fundamental columns exist
             for col in ['pe_ttm','pb','ps_ttm','debt_to_equity','return_on_assets','gross_margins','profit_margins','current_ratio']:
                 if col not in g.columns:
                     g[col] = np.nan
 
-            # Rolling beta vs market (if available)
+            # Rolling beta vs. market
             if 'mkt_ret' in g.columns and not g['mkt_ret'].isna().all():
                 cov = g['ret_1d'].rolling(63).cov(g['mkt_ret'])
                 var = g['mkt_ret'].rolling(63).var()
@@ -210,14 +266,14 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             else:
                 g['beta_63'] = 1.0
 
-            # Idiosyncratic volatility based on residual daily returns
+            # Idiosyncratic volatility
             if 'mkt_ret' in g.columns and not g['mkt_ret'].isna().all():
                 resid = g['ret_1d'] - g['beta_63'] * g['mkt_ret']
                 g['ivol_63'] = resid.rolling(63).std()
             else:
                 g['ivol_63'] = g['ret_1d'].rolling(63).std()
 
-            # Forward returns and market-neutral residuals
+            # Forward returns & residual returns
             g['px_fwd'] = g['price_feat'].shift(-TARGET_HORIZON_DAYS)
             g['fwd_ret'] = (g['px_fwd'] / g['price_feat']) - 1.0
             if 'mkt_px' in g.columns:
@@ -227,19 +283,25 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             else:
                 g['fwd_ret_resid'] = g['fwd_ret']
 
+            # Filter out already‑processed timestamps for incremental build
             last_ts = last_map.get(sym)
             if last_ts is not None and not pd.isna(last_ts):
                 g = g[g['ts'] > pd.Timestamp(last_ts)]
 
+            # Column list for upsert
             fcols = [
                 'symbol','ts','ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14',
                 'reversal_5d_z','ivol_63','turnover_21','size_ln','adv_usd_21','overnight_gap',
                 'illiq_21','beta_63','fwd_ret','fwd_ret_resid',
                 'pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout',
-                'f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio'
+                # fundamental columns mapped below
+                'f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio',
+                # new technical features
+                'ema_12','ema_26','macd','ema_50','ema_200','ma_ratio_50_200',
+                'vol_63','vol_252','mom_252','spread_ratio','spread_21','atr_14','obv'
             ]
 
-            # map PIT fund columns to unified names used by downstream model
+            # Map PIT fundamental fields to unified names
             g['f_pe_ttm'] = g.get('pe_ttm')
             g['f_pb'] = g.get('pb')
             g['f_ps_ttm'] = g.get('ps_ttm')
@@ -249,20 +311,17 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['f_profit_margin'] = g.get('profit_margins')
             g['f_current_ratio'] = g.get('current_ratio')
 
-            core_features = ['ret_1d', 'ret_5d', 'vol_21']
+            # Drop rows with missing core features to avoid NaNs in training
+            core_features = ['ret_1d','ret_5d','vol_21']
             g2 = g.dropna(subset=core_features)[fcols].copy()
             if len(g2) > 0:
-                # Defensive: remove duplicate keys to avoid ON CONFLICT hitting same row twice
                 g2 = g2.drop_duplicates(subset=['symbol','ts'], keep='last')
                 out_frames.append(g2)
 
+        # Upsert new rows for this batch
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
-            feats = (
-                feats.sort_values('ts')
-                .drop_duplicates(['symbol','ts'], keep='last')
-                .reset_index(drop=True)
-            )
+            feats = feats.sort_values('ts').drop_duplicates(['symbol','ts'], keep='last').reset_index(drop=True)
             upsert_dataframe(feats, Feature, ['symbol','ts'], chunk_size=200)
             new_rows.append(feats)
             log.info(f"Batch completed. New rows upserted: {len(feats)}")
@@ -272,3 +331,4 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     build_features()
+
