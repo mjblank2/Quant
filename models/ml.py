@@ -16,6 +16,8 @@ from risk.risk_model import neutralize_with_sectors
 from models.regime import classify_regime, gate_blend_weights
 from data.universe_history import gate_training_with_universe
 from utils.price_utils import price_expr
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from xgboost import XGBRegressor  # ensure xgboost is in your requirements
 log = logging.getLogger(__name__)
 
 # Feature set used for model training and prediction.  Extended to include
