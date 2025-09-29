@@ -9,6 +9,7 @@ from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
+from sklearn.neural_network import MLPRegressor
 from db import engine, upsert_dataframe, Prediction
 from models.transformers import CrossSectionalNormalizer
 from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS,
@@ -243,6 +244,23 @@ def _model_specs() -> Dict[str, Pipeline]:
             passthrough=False
         )
         specs["stack"] = _define_pipeline(stack_model)
+
+        # Feedforward neural network (MLP) model
+        # Uses two hidden layers with early stopping and L2 regularization to
+        # reduce overfitting.  Note: MLPRegressor supports sample_weight in
+        # sklearn >=1.0; if unsupported, training without weights will be
+        # attempted by the calling code.
+        specs["mlp"] = _define_pipeline(MLPRegressor(
+            hidden_layer_sizes=(128, 64),
+            activation='relu',
+            solver='adam',
+            alpha=1e-4,
+            learning_rate_init=1e-3,
+            max_iter=500,
+            early_stopping=True,
+            validation_fraction=0.1,
+            random_state=42
+        ))
     return specs
 
 
