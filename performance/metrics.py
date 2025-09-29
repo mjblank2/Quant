@@ -37,6 +37,62 @@ def max_drawdown(equity_curve: pd.Series) -> float:
     return drawdowns.min()
 
 
+def value_at_risk(returns: pd.Series, confidence: float = 0.95) -> float:
+    """
+    Compute the one‑period Value at Risk (VaR) at a given confidence level.
+
+    VaR at level `confidence` is defined as the percentile of the return
+    distribution below which a specified proportion of observations falls.  A
+    negative VaR indicates the potential loss.  This function assumes the
+    returns series contains percentage returns (e.g., 0.01 for 1%).
+
+    Parameters
+    ----------
+    returns : pd.Series
+        A series of asset or strategy returns.
+    confidence : float, optional
+        The confidence level for VaR (e.g., 0.95 for 95% VaR).  Defaults to 0.95.
+
+    Returns
+    -------
+    float
+        The VaR estimate.  If the series is empty, returns NaN.
+    """
+    if returns.empty:
+        return np.nan
+    # compute the quantile corresponding to the (1 - confidence) tail
+    return returns.quantile(1 - confidence)
+
+
+def expected_shortfall(returns: pd.Series, confidence: float = 0.95) -> float:
+    """
+    Compute the Expected Shortfall (a.k.a. Conditional VaR) at a given
+    confidence level.
+
+    Expected shortfall is the average of the returns that fall below the
+    Value at Risk threshold.  Like VaR, a negative value indicates a loss.
+
+    Parameters
+    ----------
+    returns : pd.Series
+        A series of asset or strategy returns.
+    confidence : float, optional
+        The confidence level for ES (e.g., 0.95).  Defaults to 0.95.
+
+    Returns
+    -------
+    float
+        The Expected Shortfall estimate.  If the series is empty, returns NaN.
+    """
+    if returns.empty:
+        return np.nan
+    var_threshold = value_at_risk(returns, confidence)
+    tail_losses = returns[returns <= var_threshold]
+    if tail_losses.empty:
+        return np.nan
+    return tail_losses.mean()
+
+
 def compute_all_metrics(returns: pd.Series) -> dict:
     """Compute a suite of performance metrics for a return series."""
     eq_curve = (1.0 + returns).cumprod()
@@ -45,5 +101,7 @@ def compute_all_metrics(returns: pd.Series) -> dict:
         "sortino": sortino_ratio(returns),
         "profit_factor": profit_factor(returns),
         "win_rate": win_rate(returns),
-        "max_drawdown": max_drawdown(eq_curve)
+        "max_drawdown": max_drawdown(eq_curve),
+        "VaR_95": value_at_risk(returns, 0.95),
+        "ES_95": expected_shortfall(returns, 0.95)
     }
