@@ -17,7 +17,8 @@ from models.regime import classify_regime, gate_blend_weights
 from data.universe_history import gate_training_with_universe
 from utils.price_utils import price_expr
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
-from xgboost import XGBRegressor  # ensure xgboost is in your requirements
+import logging
+
 log = logging.getLogger(__name__)
 
 # Feature set used for model training and prediction.  Extended to include
@@ -52,12 +53,14 @@ TARGET_VARIABLE = 'fwd_ret_resid'
 MIN_TARGET_COVERAGE = float(os.getenv("MIN_TARGET_COVERAGE", "0.6"))  # 60% minimum coverage
 FALLBACK_TARGET = 'fwd_ret'  # Fallback target when primary coverage is low
 
+
 def _latest_feature_date():
     try:
         df = pd.read_sql_query(text("SELECT MAX(ts) AS max_ts FROM features"), engine, parse_dates=["max_ts"])
-        return df.iloc[0,0]
+        return df.iloc[0, 0]
     except Exception:
         return None
+
 
 def _load_features_window(start_ts, end_ts):
     """
@@ -100,31 +103,37 @@ def _load_features_window(start_ts, end_ts):
         log.error(f"Failed to load features window: {e}")
         return pd.DataFrame(columns=cols)
 
+
 def _load_prices_window(start_ts, end_ts):
     try:
         return pd.read_sql_query(text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
-                                 engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['symbol','ts'])
+                                 engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['symbol', 'ts'])
     except Exception:
-        return pd.DataFrame(columns=['symbol','ts','px'])
+        return pd.DataFrame(columns=['symbol', 'ts', 'px'])
+
 
 def _load_altsignals(start_ts, end_ts):
     try:
         df = pd.read_sql_query(text("SELECT symbol, ts, name, value FROM alt_signals WHERE ts>=:s AND ts<=:e"),
                                engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts'])
     except Exception:
-        return pd.DataFrame(columns=['symbol','ts','name','value'])
-    if df.empty: return df
+        return pd.DataFrame(columns=['symbol', 'ts', 'name', 'value'])
+    if df.empty:
+        return df
     # pivot sparse signals
-    piv = df.pivot_table(index=['symbol','ts'], columns='name', values='value', aggfunc='last').reset_index()
+    piv = df.pivot_table(index=['symbol', 'ts'], columns='name', values='value', aggfunc='last').reset_index()
     return piv
+
 
 def _xgb_threads() -> int:
     c = cpu_count() or 2
-    return max(1, c-1)
+    return max(1, c - 1)
+
 
 def _define_pipeline(estimator: Any) -> Pipeline:
     return Pipeline([("normalizer", CrossSectionalNormalizer(winsorize_tails=0.05)),
                      ("model", estimator)])
+
 
 def _model_specs() -> Dict[str, Pipeline]:
     """
@@ -167,27 +176,31 @@ def _model_specs() -> Dict[str, Pipeline]:
         ))
     return specs
 
+
 def _parse_blend_weights(s: str) -> Dict[str, float]:
-    out = {}
+    out: Dict[str, float] = {}
     for part in s.split(","):
         if ":" in part:
-            k,v = part.split(":",1)
-            try: out[k.strip()] = float(v)
-            except: pass
+            k, v = part.split(":", 1)
+            try:
+                out[k.strip()] = float(v)
+            except:
+                pass
     t = sum(out.values()) or 1.0
-    return {k: v/t for k,v in out.items()}
+    return {k: v / t for k, v in out.items()}
+
 
 def _calculate_target_coverage(df: pd.DataFrame, target_col: str) -> float:
     """
     Calculate coverage rate for a target variable.
-    
+
     Parameters
     ----------
     df : pd.DataFrame
         DataFrame containing the target column
     target_col : str
         Name of the target column to check coverage for
-        
+
     Returns
     -------
     float
@@ -195,14 +208,13 @@ def _calculate_target_coverage(df: pd.DataFrame, target_col: str) -> float:
     """
     if df.empty or target_col not in df.columns:
         return 0.0
-    
     total_rows = len(df)
     non_null_rows = df[target_col].notna().sum()
-    
     return non_null_rows / total_rows if total_rows > 0 else 0.0
 
+
 def train_with_cv(X_train, y_train, base_model, param_grid):
-    """Train a model using time‑series cross‑validation and return the best estimator."""
+    """Train a model using time-series cross-validation and return the best estimator."""
     if param_grid:
         cv = TimeSeriesSplit(n_splits=5)
         search = GridSearchCV(base_model, param_grid, cv=cv,
@@ -212,10 +224,11 @@ def train_with_cv(X_train, y_train, base_model, param_grid):
     else:
         return base_model.fit(X_train, y_train)
 
+
 def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback_target: str, min_coverage: float) -> str:
     """
     Select the best target variable based on coverage thresholds.
-    
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -226,7 +239,7 @@ def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback
         Fallback target variable (e.g., 'fwd_ret')
     min_coverage : float
         Minimum coverage threshold (0.0 to 1.0)
-        
+
     Returns
     -------
     str
@@ -234,12 +247,10 @@ def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback
     """
     primary_coverage = _calculate_target_coverage(df, primary_target)
     fallback_coverage = _calculate_target_coverage(df, fallback_target)
-    
     log.info(f"Target coverage analysis:")
     log.info(f"  {primary_target}: {primary_coverage:.1%}")
     log.info(f"  {fallback_target}: {fallback_coverage:.1%}")
     log.info(f"  Minimum threshold: {min_coverage:.1%}")
-    
     if primary_coverage >= min_coverage:
         log.info(f"Using primary target: {primary_target}")
         return primary_target
@@ -250,7 +261,8 @@ def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback
         log.warning(f"Both targets have low coverage, using primary anyway: {primary_target}")
         return primary_target
 
-def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variable: str = TARGET_VARIABLE) -> Dict[str,float]:
+
+def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variable: str = TARGET_VARIABLE) -> Dict[str, float]:
     """
     Compute information coefficients (IC) for each model over a recent evaluation window.
 
@@ -297,14 +309,14 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variabl
     for name, pipe in models.items():
         try:
             p2 = copy.deepcopy(pipe)
-            fit_params = {}
+            fit_params: Dict[str, Any] = {}
             # For LTR models (identified by 'ltr' in name), pass group parameter
             if 'ltr' in name:
                 fit_params['model__group'] = group_sizes
             # Fit on full training set (sorted by timestamp for LTR)
             if len(sorted_idx) == len(X_train):
                 X_train_sorted = X_train.loc[sorted_idx, feature_cols]
-                y_train_sorted = y_train.loc[sorted_idx].values  # Use .loc for label-based indexing, then convert to array
+                y_train_sorted = y_train.loc[sorted_idx].values
             else:
                 X_train_sorted = X_train[feature_cols]
                 y_train_sorted = y_train.values
@@ -326,7 +338,8 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variabl
     # Normalize: floor negative ICs at zero and scale to sum to one
     pos = {k: max(0.0, v) for k, v in ics.items()}
     s = sum(pos.values()) or 1.0
-    return {k: v/s for k, v in pos.items()}
+    return {k: v / s for k, v in pos.items()}
+
 
 def train_and_predict_all_models(window_years: int = 4):
     log.info("Starting live training and prediction (v17).")
@@ -334,54 +347,44 @@ def train_and_predict_all_models(window_years: int = 4):
     if latest_ts is None or pd.isna(latest_ts):
         log.warning("No features available. Cannot train models.")
         return {}
-
     start_ts = max(pd.Timestamp(BACKTEST_START), latest_ts - pd.DateOffset(years=window_years))
     feats = _load_features_window(start_ts, latest_ts)
     if feats.empty:
         return {}
-
     # Merge sparse AltSignals (if any)
     alts = _load_altsignals(start_ts, latest_ts)
     if not alts.empty:
         feats = feats.merge(alts, on=['symbol', 'ts'], how='left')
-
     # Survivorship gating using historical universe snapshots
     try:
         feats = gate_training_with_universe(feats)
     except Exception as e:
         log.info(f"Universe gating skipped: {e}")
-
     # Select target variable with coverage fallback
     selected_target = _select_target_with_fallback(
         feats, TARGET_VARIABLE, FALLBACK_TARGET, MIN_TARGET_COVERAGE
     )
     log.info(f"Selected target variable: {selected_target}")
-
     # Identify training and latest sets
     train_df = feats.dropna(subset=[selected_target]).copy()
     latest_df = feats[feats['ts'] == latest_ts].copy()
     if train_df.empty or latest_df.empty:
         log.warning("Training or prediction sets are empty.")
         return {}
-
     # Fill missing feature columns with zeros (for sparse features)
     for c in FEATURE_COLS:
         if c not in train_df.columns:
             train_df[c] = 0.0
         if c not in latest_df.columns:
             latest_df[c] = 0.0
-
     # After ensuring all feature columns exist, fill missing values.
-    # This prevents None/NaN from reaching the model.
     train_df[FEATURE_COLS] = train_df[FEATURE_COLS].fillna(0.0)
     latest_df[FEATURE_COLS] = latest_df[FEATURE_COLS].fillna(0.0)
-
     # Prepare training matrix and target
     ID_COLS = ['ts', 'symbol']
     X = train_df[ID_COLS + FEATURE_COLS]
     y = train_df[selected_target].values
     X_latest = latest_df[FEATURE_COLS]
-
     # Apply time-decay sample weights (half-life = 120 days)
     HALF_LIFE_DAYS = 120
     decay_factor = np.log(2) / HALF_LIFE_DAYS
@@ -392,7 +395,6 @@ def train_and_predict_all_models(window_years: int = 4):
     sample_weights = (sample_weights / sample_weights.sum() * len(sample_weights))
     sample_weights.index = X.index  # ensure alignment
     log.info(f"Applied time-decay sample weights (Half-life={HALF_LIFE_DAYS}d).")
-
     # For LTR models, X must be sorted by ts and group sizes specified
     # Sort training data by ts to compute group sizes
     if not X.index.equals(X.sort_values('ts').index):
@@ -404,38 +406,29 @@ def train_and_predict_all_models(window_years: int = 4):
         sorted_idx = X.index
         X_train_sorted = X[FEATURE_COLS]
         y_train_sorted = y
-
     # Group sizes: number of samples per date in sorted training set
     group_sizes = X.loc[sorted_idx].groupby('ts').size().values
-
     models = _model_specs()
     outputs: Dict[str, Any] = {}
     preds_dict: Dict[str, pd.Series] = {}
-
     # Compute blend weights from config and adaptive IC weighting
     from config import BLEND_WEIGHTS, REGIME_GATING
     blend_w = _parse_blend_weights(BLEND_WEIGHTS)
-    ic_w = _ic_by_model(train_df[['ts','symbol', selected_target] + FEATURE_COLS], FEATURE_COLS, selected_target)
+    ic_w = _ic_by_model(train_df[['ts', 'symbol', selected_target] + FEATURE_COLS], FEATURE_COLS, selected_target)
     if ic_w:
         keys = set(blend_w) | set(ic_w)
         combined = {k: 0.5 * blend_w.get(k, 0) + 0.5 * ic_w.get(k, 0) for k in keys}
         s = sum(combined.values()) or 1.0
         blend_w = {k: v / s for k, v in combined.items()}
-
     # Regime gating (optional)
     if REGIME_GATING:
         regime = classify_regime(latest_ts)
         blend_w = gate_blend_weights(blend_w, regime)
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
-
     # Fit & predict base models
-    for name, (model, grid) in _model_specs().items():
-    best_model = train_with_cv(X_train, y_train, model, grid)
     for name, pipe in models.items():
         p2 = copy.deepcopy(pipe)
-        # Prepare fit parameters
         fit_params: Dict[str, Any] = {}
-        # Sample weights (if supported)
         fit_params['model__sample_weight'] = sample_weights.values
         # Group sizes for LTR models
         if 'ltr' in name:
@@ -468,8 +461,7 @@ def train_and_predict_all_models(window_years: int = 4):
         preds_dict[name] = out.set_index('symbol')['y_pred']
         outputs[name] = out.copy()
         # Persist predictions
-        upsert_dataframe(out[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
-
+        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
     # Create blended predictions (raw and neutralized)
     if blend_w:
         sym_index = latest_df['symbol']
@@ -484,7 +476,7 @@ def train_and_predict_all_models(window_years: int = 4):
         out['y_pred'] = blend.astype(float)
         out['model_version'] = 'blend_raw_v1'
         outputs['blend_raw'] = out.copy()
-        upsert_dataframe(out[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
         # Sector/factor neutralization
         try:
             # Factor exposures used for neutralization; fallback to just size_ln, mom_21, turnover_21
@@ -500,30 +492,20 @@ def train_and_predict_all_models(window_years: int = 4):
             out2['y_pred'] = resid.values
             out2['model_version'] = 'blend_v1'
             outputs['blend'] = out2.copy()
-            upsert_dataframe(out2[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+            upsert_dataframe(out2[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
         except Exception as e:
             log.warning(f"Neutralization failed: {e}; fallback to raw blend.")
             out_fallback = out.copy()
             out_fallback['model_version'] = 'blend_v1'
-            upsert_dataframe(out_fallback[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+            upsert_dataframe(out_fallback[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
     log.info("Live training and prediction complete.")
     return outputs
 
-def _model_specs():
-    return {
-        "ridge": (Ridge(), {"alpha": [0.1, 1.0, 10.0]}),
-        "random_forest": (RandomForestRegressor(), {"n_estimators": [200, 400], "max_depth": [3, 5, None]}),
-        "xgb": (XGBRegressor(objective="reg:squarederror"), {
-            "n_estimators": [200, 300],
-            "max_depth": [3, 5],
-            "learning_rate": [0.05, 0.1],
-            "subsample": [0.8, 1.0]
-        })
-    }
 
-# --- Minimal walk-forward backtest (used by Streamlit app) ---
 from config import PREFERRED_MODEL
 from db import BacktestEquity
+from performance.metrics import compute_all_metrics
+
 
 def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) -> pd.DataFrame:
     """
@@ -539,7 +521,7 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
         )
     if preds.empty:
         log.warning("No predictions found for backtest.")
-        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
+        return pd.DataFrame(columns=['ts', 'equity', 'daily_return', 'drawdown', 'tcost_impact'])
     # Compute realized forward returns
     with engine.connect() as con:
         px = pd.read_sql_query(
@@ -548,18 +530,18 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
         )
     if px.empty:
         log.warning("No prices for backtest.")
-        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
-    px = px.sort_values(['symbol','ts'])
+        return pd.DataFrame(columns=['ts', 'equity', 'daily_return', 'drawdown', 'tcost_impact'])
+    px = px.sort_values(['symbol', 'ts'])
     px['px_fwd'] = px.groupby('symbol')['px'].shift(-TARGET_HORIZON_DAYS)
-    px['fwd_ret'] = (px['px_fwd']/px['px']) - 1.0
-    df = preds.merge(px[['symbol','ts','fwd_ret']], on=['symbol','ts'], how='left')
+    px['fwd_ret'] = (px['px_fwd'] / px['px']) - 1.0
+    df = preds.merge(px[['symbol', 'ts', 'fwd_ret']], on=['symbol', 'ts'], how='left')
     if df['fwd_ret'].isna().all():
         log.warning("No fwd returns matched for backtest.")
-        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
+        return pd.DataFrame(columns=['ts', 'equity', 'daily_return', 'drawdown', 'tcost_impact'])
     # Pick top-N positive per ts
     port = (
         df[df['y_pred'] > 0]
-        .sort_values(['ts','y_pred'], ascending=[True, False])
+        .sort_values(['ts', 'y_pred'], ascending=[True, False])
         .groupby('ts')
         .head(top_n)
         .groupby('ts')['fwd_ret'].mean()
@@ -567,10 +549,13 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
         .sort_index()
     )
     if port.empty:
-        return pd.DataFrame(columns=['ts','equity','daily_return','drawdown','tcost_impact'])
+        return pd.DataFrame(columns=['ts', 'equity', 'daily_return', 'drawdown', 'tcost_impact'])
     equity = (1.0 + port).cumprod()
     dd = equity / equity.cummax() - 1.0
     out = pd.DataFrame({'ts': port.index.normalize(), 'equity': equity.values, 'daily_return': port.values, 'drawdown': dd.values, 'tcost_impact': 0.0})
     # Persist
     upsert_dataframe(out, BacktestEquity, ['ts'])
+    # Compute and log performance metrics
+    metrics = compute_all_metrics(port)
+    log.info(f"Backtest metrics: {metrics}")
     return out
