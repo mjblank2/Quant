@@ -12,6 +12,7 @@ from catboost import CatBoostRegressor
 from sklearn.neural_network import MLPRegressor
 from db import engine, upsert_dataframe, Prediction
 from models.transformers import CrossSectionalNormalizer
+from models.rl_models import QTableRegressor
 from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS,
                     SECTOR_NEUTRALIZE,)
 from risk.sector import build_sector_dummies
@@ -261,6 +262,15 @@ def _model_specs() -> Dict[str, Pipeline]:
             validation_fraction=0.1,
             random_state=42
         ))
+
+        # Simple reinforcement-learning inspired Q-table model
+        # This model discretizes the training returns into quantile bins and
+        # learns expected rewards for long/hold/short actions.  At prediction
+        # time it infers a state from the first feature (e.g. 1‑day return)
+        # and outputs a signal in {‑1, 0, +1}.  While primitive compared to
+        # full RL algorithms, it provides a reinforcement‑learning flavour
+        # within the available package constraints.
+        specs["q_table"] = _define_pipeline(QTableRegressor(n_bins=10, random_state=42))
     return specs
 
 
