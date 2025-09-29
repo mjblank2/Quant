@@ -6,6 +6,11 @@ from sqlalchemy import text
 from db import engine, upsert_dataframe, Fundamentals
 from config import POLYGON_API_KEY
 from utils_http import get_json_async
+import logging
+log = logging.getLogger("data.fundamentals")
+
+
+
 
 def _as_date(x):
     try:
