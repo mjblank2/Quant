@@ -201,6 +201,17 @@ def _calculate_target_coverage(df: pd.DataFrame, target_col: str) -> float:
     
     return non_null_rows / total_rows if total_rows > 0 else 0.0
 
+def train_with_cv(X_train, y_train, base_model, param_grid):
+    """Train a model using time‑series cross‑validation and return the best estimator."""
+    if param_grid:
+        cv = TimeSeriesSplit(n_splits=5)
+        search = GridSearchCV(base_model, param_grid, cv=cv,
+                              scoring='neg_mean_absolute_error', n_jobs=-1)
+        search.fit(X_train, y_train)
+        return search.best_estimator_
+    else:
+        return base_model.fit(X_train, y_train)
+
 def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback_target: str, min_coverage: float) -> str:
     """
     Select the best target variable based on coverage thresholds.
@@ -495,6 +506,18 @@ def train_and_predict_all_models(window_years: int = 4):
             upsert_dataframe(out_fallback[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
     log.info("Live training and prediction complete.")
     return outputs
+
+def _model_specs():
+    return {
+        "ridge": (Ridge(), {"alpha": [0.1, 1.0, 10.0]}),
+        "random_forest": (RandomForestRegressor(), {"n_estimators": [200, 400], "max_depth": [3, 5, None]}),
+        "xgb": (XGBRegressor(objective="reg:squarederror"), {
+            "n_estimators": [200, 300],
+            "max_depth": [3, 5],
+            "learning_rate": [0.05, 0.1],
+            "subsample": [0.8, 1.0]
+        })
+    }
 
 # --- Minimal walk-forward backtest (used by Streamlit app) ---
 from config import PREFERRED_MODEL
