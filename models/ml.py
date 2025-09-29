@@ -429,6 +429,8 @@ def train_and_predict_all_models(window_years: int = 4):
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
 
     # Fit & predict base models
+    for name, (model, grid) in _model_specs().items():
+    best_model = train_with_cv(X_train, y_train, model, grid)
     for name, pipe in models.items():
         p2 = copy.deepcopy(pipe)
         # Prepare fit parameters
