@@ -26,9 +26,13 @@ log = logging.getLogger(__name__)
 FEATURE_COLS = [
     "ret_1d", "ret_5d", "ret_21d", "mom_21", "mom_63", "vol_21", "rsi_14",
     "turnover_21", "size_ln", "overnight_gap", "illiq_21", "beta_63",
-    # New cross-sectional/technical features
+    # Volatility-adjusted reversal and idiosyncratic volatility
     "reversal_5d_z", "ivol_63",
-    # Fundamentals
+    # New technical indicators
+    "ema_12", "ema_26", "macd", "ema_50", "ema_200", "ma_ratio_50_200",
+    "vol_63", "vol_252", "mom_252",
+    "spread_ratio", "spread_21", "atr_14", "obv",
+    # Fundamental ratios
     "f_pe_ttm", "f_pb", "f_ps_ttm", "f_debt_to_equity", "f_roa", "f_gm",
     "f_profit_margin", "f_current_ratio",
     # Sparse high-impact event features
