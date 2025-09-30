@@ -85,7 +85,7 @@ class QTableRegressor:
         # Ensure unique bin edges by adding a tiny jitter if necessary.
         # This prevents ``digitize`` from assigning all points to the
         # highest bin when duplicates are present.
-        eps = 1e‑8
+        eps = 1e-8
         for i in range(1, len(bins)):
             if bins[i] <= bins[i - 1]:
                 bins[i] = bins[i - 1] + eps
@@ -129,7 +129,7 @@ class QTableRegressor:
             hold_reward = 0.0
             # Expected reward when going short: negative of negative returns
             neg = ys[ys < 0.0]
-            short_reward = (‑neg).mean() if neg.size > 0 else 0.0
+            short_reward = (-neg).mean() if neg.size > 0 else 0.0
             q_table[s, 0] = long_reward
             q_table[s, 1] = hold_reward
             q_table[s, 2] = short_reward
@@ -151,14 +151,14 @@ class QTableRegressor:
         Returns
         -------
         signals : ndarray, shape (n_samples,)
-            Signals taking values {‑1, 0, +1}, where +1 indicates a
-            recommendation to go long, ‑1 short, and 0 hold.
+            Signals taking values {-1, 0, +1}, where +1 indicates a
+            recommendation to go long, -1 short, and 0 hold.
         """
         if self.bins_ is None or self.q_table_ is None:
             raise ValueError("QTableRegressor must be fitted before calling predict().")
         X = np.asarray(X)
         if X.ndim == 1:
-            X = X.reshape(‑1, 1)
+            X = X.reshape(-1, 1)
         # Use first feature (e.g. recent return) to infer state
         x_vals = X[:, 0]
         # Assign states based on the fitted bins; clip to valid range
@@ -166,13 +166,13 @@ class QTableRegressor:
         # Map states to actions and then to signal values
         signals = np.zeros(len(states), dtype=float)
         for i, s in enumerate(states):
-            s_idx = max(0, min(int(s), self.n_bins ‑ 1))
+            s_idx = max(0, min(int(s), self.n_bins - 1))
             # action 0=long, 1=hold, 2=short
             a = int(np.argmax(self.q_table_[s_idx]))
             if a == 0:
                 signals[i] = 1.0
             elif a == 2:
-                signals[i] = ‑1.0
+                signals[i] = -1.0
             else:
                 signals[i] = 0.0
         return signals
