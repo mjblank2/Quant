@@ -28,6 +28,7 @@ except Exception:
 from sklearn.neural_network import MLPRegressor
 from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor
 from sklearn.linear_model import ElasticNet
+from sklearn.ensemble import HistGradientBoostingRegressor
 from db import engine, upsert_dataframe, Prediction
 from models.transformers import CrossSectionalNormalizer
 from models.rl_models import QTableRegressor
@@ -334,6 +335,40 @@ def _model_specs() -> Dict[str, Pipeline]:
             random_state=42
         ))
 
+        # Deep feedforward neural network with three hidden layers.  This
+        # expands model capacity to capture more complex patterns while
+        # retaining early stopping and L2 regularization to mitigate
+        # overfitting.  Note: training may take longer than the shallow MLP.
+        specs["deep_mlp"] = _define_pipeline(MLPRegressor(
+            hidden_layer_sizes=(256, 128, 64),
+            activation='relu',
+            solver='adam',
+            alpha=1e-4,
+            learning_rate_init=1e-3,
+            max_iter=800,
+            early_stopping=True,
+            validation_fraction=0.1,
+            random_state=42
+        ))
+
+        # HistGradientBoostingRegressor: a fast, tree‑based gradient boosting
+        # implementation that can approximate deeper tree interactions.  It
+        # handles missing values internally and may offer better performance
+        # than GBDT on tabular data.  Only include it if scikit‑learn
+        # provides the class (imported above).
+        try:
+            _ = HistGradientBoostingRegressor
+            specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
+                loss='least_squares',
+                max_depth=6,
+                learning_rate=0.05,
+                max_iter=300,
+                l2_regularization=0.0,
+                random_state=42
+            ))
+        except Exception:
+            pass
+
         # Simple reinforcement-learning inspired Q-table model
         # This model discretizes the training returns into quantile bins and
         # learns expected rewards for long/hold/short actions.  At prediction
@@ -395,6 +430,24 @@ PARAM_GRIDS: Dict[str, Dict[str, list]] = {
         'model__hidden_layer_sizes': [(128, 64), (256, 128)],
         'model__alpha': [1e-4, 1e-3],
         'model__learning_rate_init': [1e-3, 5e-3]
+    }
+    ,
+    # Deeper MLP parameter grid.  We test different layer configurations
+    # and regularization strengths.  The deeper network may capture
+    # higher‑order interactions but risks overfitting; cross‑validation
+    # chooses the best configuration.
+    'deep_mlp': {
+        'model__hidden_layer_sizes': [(256, 128, 64), (512, 256, 128)],
+        'model__alpha': [1e-4, 1e-3, 1e-2],
+        'model__learning_rate_init': [1e-3, 5e-3]
+    },
+    # HistGradientBoostingRegressor parameter grid.  Tune learning rate,
+    # maximum tree depth and number of iterations.  The library handles
+    # missing values automatically so we don't need to set min_samples.
+    'hgb': {
+        'model__learning_rate': [0.03, 0.1],
+        'model__max_depth': [4, 6, 8],
+        'model__max_iter': [200, 400]
     }
 }
 
