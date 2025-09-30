@@ -249,6 +249,41 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 .drop_duplicates(['symbol', 'ts'], keep='last')
                 .reset_index(drop=True)
             )
+
+            # ------------------------------------------------------------------
+            # Cross‑sectional z‑scores
+            #
+            # To augment the feature set with cross‑sectional information, compute
+            # a z‑score for selected features within each timestamp.  These
+            # standardised values capture a stock’s position relative to the
+            # universe on that day (e.g. a high momentum rank vs. peers).  The
+            # resulting columns are prefixed with ``cs_z_``.  This is optional
+            # and computed here so downstream models can leverage relative
+            # rankings.  We only compute z‑scores when there are at least 10
+            # securities available on a given date to avoid unstable statistics.
+            # ------------------------------------------------------------------
+            features_for_cs = [
+                'mom_21', 'mom_63', 'vol_21', 'rsi_14', 'turnover_21',
+                'size_ln', 'adv_usd_21', 'beta_63',
+                'f_pe_ttm', 'f_pb', 'f_ps_ttm', 'f_debt_to_equity',
+                'f_roa', 'f_roe', 'f_gm', 'f_profit_margin', 'f_current_ratio'
+            ]
+            # Ensure all columns exist before attempting to compute z‑scores
+            missing_cols = [c for c in features_for_cs if c not in feats.columns]
+            for c in missing_cols:
+                feats[c] = np.nan
+            def _zscore(x: pd.Series) -> pd.Series:
+                m = x.mean()
+                s = x.std(ddof=0)
+                return (x - m) / (s + 1e-8)
+            # Group by timestamp and apply z‑score; only compute when group size
+            # >= 10 to avoid small‑sample noise.  Otherwise fill with NaN.
+            for col in features_for_cs:
+                zcol = f'cs_z_{col}'
+                feats[zcol] = feats.groupby('ts')[col].transform(
+                    lambda s: _zscore(s) if len(s) >= 10 else pd.Series(np.nan, index=s.index)
+                )
+
             upsert_dataframe(feats, Feature, ['symbol', 'ts'], chunk_size=200)
             new_rows.append(feats)
             log.info(f"Batch completed. New rows: {len(feats)}")

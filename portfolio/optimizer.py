@@ -7,6 +7,7 @@ from risk.sector import sector_asof
 from risk.risk_model import portfolio_beta
 from utils.price_utils import select_price_as
 import logging
+import os
 from config import (
     LONG_COUNT_MIN, LONG_COUNT_MAX, MAX_PER_SECTOR,
     GROSS_LEVERAGE, NET_EXPOSURE, MAX_POSITION_WEIGHT,
@@ -14,6 +15,20 @@ from config import (
     MAX_NAME_CORR, SECTOR_NEUTRALIZE, USE_QP_OPTIMIZER, QP_CORR_PENALTY,
     USE_MVO
 )
+
+# Optional risk-parity settings driven by environment variables.
+# If USE_RISK_PARITY is set to 'true' (case-insensitive) then the
+# portfolio construction will employ a risk parity weighting scheme rather
+# than simple volatility weighting or quadratic programming.  The
+# TARGET_VOL environment variable controls the annualised volatility
+# objective used when computing the risk parity portfolio.  If omitted,
+# a default of 0.10 (10% vol) is used.  These settings can be
+# configured in Render via environment variables.
+USE_RISK_PARITY = os.getenv('USE_RISK_PARITY', 'false').lower() == 'true'
+try:
+    TARGET_VOL = float(os.getenv('TARGET_VOL', '0.10'))
+except Exception:
+    TARGET_VOL = 0.10
 
 log = logging.getLogger(__name__)
 
@@ -106,34 +121,48 @@ def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[st
     long_syms = long_bucket[:nL]
     if not long_syms:
         return pd.Series(dtype=float)
-    # Determine volatility-adjusted weights
+    # Determine weights for long positions
     alpha = pred_df.set_index('symbol')['y_pred']
-    # Compute base volatility-adjusted weights using vol_63 column
-    vol_weights = compute_vol_weights(long_syms, pred_df.set_index('symbol'), alpha)
-    weights = vol_weights * GROSS_LEVERAGE
-    # Optionally apply QP sizing on selected longs to penalize factor crowding
-    if USE_QP_OPTIMIZER and len(long_syms) >= 5:
+    weights = pd.Series(dtype=float)
+    if USE_RISK_PARITY:
+        # Risk parity weighting with dynamic volatility targeting
         try:
-            from portfolio.qp_optimizer import solve_qp
-            # Build a simple factor-similarity matrix C from standardized columns
-            cols = [c for c in ['size_ln', 'mom_21', 'turnover_21', 'beta_63'] if c in pred_df.columns]
-            Z = pred_df[pred_df['symbol'].isin(long_syms)][['symbol'] + cols].set_index('symbol').fillna(0.0)
-            # cosine similarity → positive semidefinite approximation
-            X = Z.values
-            norm = np.linalg.norm(X, axis=1, keepdims=True) + 1e-12
-            Xn = X / norm
-            C = (Xn @ Xn.T) * QP_CORR_PENALTY
-            mu = pred_df.set_index('symbol').loc[long_syms, 'y_pred']
-            qp_w = solve_qp(mu, C, gross=GROSS_LEVERAGE, w_cap=MAX_POSITION_WEIGHT)
-            if qp_w is not None:
-                w = qp_w.clip(lower=0.0)  # long-only
-                # rescale to gross leverage
-                s = float(w.abs().sum()) or 1.0
-                w = w * (GROSS_LEVERAGE / s)
-                weights = w
-        except Exception:
-            # fall back to volatility-adjusted weights
-            pass
+            from portfolio.risk_parity import build_portfolio_risk_parity
+            features = pred_df.set_index('symbol')
+            rp_w = build_portfolio_risk_parity(alpha.loc[long_syms], features.loc[long_syms], target_vol=TARGET_VOL)
+            # Scale to gross leverage
+            if rp_w is not None and not rp_w.empty:
+                s = rp_w.abs().sum()
+                weights = rp_w * (GROSS_LEVERAGE / s) if s > 0 else rp_w
+        except Exception as e:
+            log.warning(f"Risk-parity sizing failed, falling back to vol weights: {e}")
+    if weights.empty:
+        # Fallback: volatility-adjusted weights using vol_63 column
+        vol_weights = compute_vol_weights(long_syms, pred_df.set_index('symbol'), alpha)
+        weights = vol_weights * GROSS_LEVERAGE
+        # Optionally apply QP sizing on selected longs to penalize factor crowding
+        if USE_QP_OPTIMIZER and len(long_syms) >= 5:
+            try:
+                from portfolio.qp_optimizer import solve_qp
+                # Build a simple factor-similarity matrix C from standardized columns
+                cols = [c for c in ['size_ln', 'mom_21', 'turnover_21', 'beta_63'] if c in pred_df.columns]
+                Z = pred_df[pred_df['symbol'].isin(long_syms)][['symbol'] + cols].set_index('symbol').fillna(0.0)
+                # cosine similarity → positive semidefinite approximation
+                X = Z.values
+                norm = np.linalg.norm(X, axis=1, keepdims=True) + 1e-12
+                Xn = X / norm
+                C = (Xn @ Xn.T) * QP_CORR_PENALTY
+                mu = pred_df.set_index('symbol').loc[long_syms, 'y_pred']
+                qp_w = solve_qp(mu, C, gross=GROSS_LEVERAGE, w_cap=MAX_POSITION_WEIGHT)
+                if qp_w is not None:
+                    w = qp_w.clip(lower=0.0)  # long-only
+                    # rescale to gross leverage
+                    s = float(w.abs().sum()) or 1.0
+                    w = w * (GROSS_LEVERAGE / s)
+                    weights = w
+            except Exception:
+                # fall back to volatility-adjusted weights
+                pass
     # Beta hedge
     try:
         b = portfolio_beta(weights, as_of, BETA_HEDGE_SYMBOL, lookback=63)
