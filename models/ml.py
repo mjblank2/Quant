@@ -26,6 +26,8 @@ except Exception:
     CatBoostRegressor = None  # type: ignore[assignment]
 
 from sklearn.neural_network import MLPRegressor
+from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor
+from sklearn.linear_model import ElasticNet
 from db import engine, upsert_dataframe, Prediction
 from models.transformers import CrossSectionalNormalizer
 from models.rl_models import QTableRegressor
@@ -169,6 +171,26 @@ def _model_specs() -> Dict[str, Pipeline]:
         "rf": _define_pipeline(RandomForestRegressor(n_estimators=350, max_depth=10,
                                                      random_state=42, n_jobs=_xgb_threads())),
         "ridge": _define_pipeline(Ridge(alpha=1.0)),
+        # ExtraTrees model: extremely randomized trees for robust non‑linear patterns
+        "extra_trees": _define_pipeline(ExtraTreesRegressor(
+            n_estimators=400,
+            max_depth=10,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            bootstrap=False,
+            random_state=42,
+            n_jobs=_xgb_threads()
+        )),
+        # Gradient Boosting Regressor: additive tree boosting (lighter alternative to XGB)
+        "gbr": _define_pipeline(GradientBoostingRegressor(
+            n_estimators=300,
+            learning_rate=0.05,
+            max_depth=3,
+            subsample=0.8,
+            random_state=42
+        )),
+        # ElasticNet linear model: combines L1 and L2 regularization; can capture sparse relationships
+        "elasticnet": _define_pipeline(ElasticNet(alpha=0.1, l1_ratio=0.5, random_state=42))
     }
     # Only include XGBoost models if the import succeeded.  The
     # presence of XGBRegressor is used as a proxy for all optional models,
