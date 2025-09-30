@@ -2,7 +2,7 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from db import create_tables, engine
 from data.universe import rebuild_universe
 from data.ingest import ingest_bars_for_universe
@@ -53,7 +53,10 @@ def load_universe():
 @st.cache_data(ttl=60)
 def load_trades():
     with engine.connect() as con:
-        return pd.read_sql_query(text("SELECT id, trade_date, symbol, side, quantity, price, status, broker_order_id, client_order_id, ts FROM trades ORDER BY id DESC LIMIT 200"), con, parse_dates=["ts","trade_date"])
+        return pd.read_sql_query(text(
+            "SELECT id, trade_date, symbol, side, quantity, price, status, broker_order_id, client_order_id, ts "
+            "FROM trades ORDER BY id DESC LIMIT 200"
+        ), con, parse_dates=["ts", "trade_date"])
 
 @st.cache_data(ttl=60)
 def load_symbols():
@@ -105,12 +108,13 @@ st.divider()
 
 with st.sidebar:
     st.header("Controls")
-    
     # Toggle between task queue and direct execution
-    use_task_queue = st.checkbox("Use Task Queue (async)", value=TASK_QUEUE_AVAILABLE, disabled=not TASK_QUEUE_AVAILABLE)
+    use_task_queue = st.checkbox(
+        "Use Task Queue (async)", value=TASK_QUEUE_AVAILABLE, disabled=not TASK_QUEUE_AVAILABLE
+    )
     if not TASK_QUEUE_AVAILABLE and use_task_queue:
         st.warning("Task queue not available. Install Redis and run Celery worker.")
-    
+
     if st.button("🔁 Rebuild Universe"):
         if use_task_queue and TASK_QUEUE_AVAILABLE:
             try:
@@ -169,7 +173,7 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            with st.spinner("Building features incrementally (batched)..."):
+            with st.spinner("Building features incrementally (batched)…"):
                 try:
                     feat = build_features()
                     st.toast(f"New feature rows: {len(feat):,}", icon="✅")
@@ -180,12 +184,12 @@ with st.sidebar:
         if use_task_queue and TASK_QUEUE_AVAILABLE:
             try:
                 task_id = dispatch_task(train_and_predict_task)
-                st.success(f"Training task dispatched: {task_id[:8]}...")
+                st.success(f"Training task dispatched: {task_id[:8]}…")
                 st.session_state[f"task_{task_id}"] = {"name": "Train & Predict", "id": task_id}
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            with st.spinner("Training models & blending..."):
+            with st.spinner("Training models & blending…"):
                 try:
                     outs = train_and_predict_all_models()
                     total = sum(len(v) for v in outs.values()) if outs else 0
@@ -197,12 +201,12 @@ with st.sidebar:
         if use_task_queue and TASK_QUEUE_AVAILABLE:
             try:
                 task_id = dispatch_task(run_backtest_task)
-                st.success(f"Backtest task dispatched: {task_id[:8]}...")
+                st.success(f"Backtest task dispatched: {task_id[:8]}…")
                 st.session_state[f"task_{task_id}"] = {"name": "Walk-Forward Backtest", "id": task_id}
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            with st.spinner("Running walk-forward backtest with exposure scaling..."):
+            with st.spinner("Running walk-forward backtest with exposure scaling…"):
                 try:
                     bt = run_walkforward_backtest()
                     st.session_state["backtest"] = bt
@@ -214,12 +218,12 @@ with st.sidebar:
         if use_task_queue and TASK_QUEUE_AVAILABLE:
             try:
                 task_id = dispatch_task(generate_trades_task)
-                st.success(f"Trade generation task dispatched: {task_id[:8]}...")
+                st.success(f"Trade generation task dispatched: {task_id[:8]}…")
                 st.session_state[f"task_{task_id}"] = {"name": "Generate Trades", "id": task_id}
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            with st.spinner("Generating trades + writing today's target positions..."):
+            with st.spinner("Generating trades + writing today's target positions…"):
                 try:
                     trades = generate_today_trades()
                     st.session_state["generated_trades"] = trades
@@ -231,15 +235,18 @@ with st.sidebar:
         if use_task_queue and TASK_QUEUE_AVAILABLE:
             try:
                 task_id = dispatch_task(sync_broker_task)
-                st.success(f"Broker sync task dispatched: {task_id[:8]}...")
+                st.success(f"Broker sync task dispatched: {task_id[:8]}…")
                 st.session_state[f"task_{task_id}"] = {"name": "Sync with Broker", "id": task_id}
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            with st.spinner("Submitting to broker..."):
+            with st.spinner("Submitting to broker…"):
                 try:
                     with engine.connect() as con:
-                        recent = pd.read_sql_query(text("SELECT id FROM trades WHERE status='generated' ORDER BY id DESC LIMIT 2000"), con)
+                        recent = pd.read_sql_query(
+                            text("SELECT id FROM trades WHERE status='generated' ORDER BY id DESC LIMIT 2000"),
+                            con
+                        )
                     ids = recent["id"].tolist()
                     if not ids:
                         st.warning("No 'generated' trades to submit.")
@@ -248,19 +255,18 @@ with st.sidebar:
                         st.toast(f"Submitted {len(res)} trades.", icon="✅")
                 except Exception as e:
                     st.error(f"Broker sync failed: {e}")
-    
+
     # Full pipeline button
     st.divider()
     if st.button("🚀 Run Full Pipeline"):
         if use_task_queue and TASK_QUEUE_AVAILABLE:
             try:
                 task_id = dispatch_task(run_full_pipeline_task, False)  # Don't sync broker by default
-                st.success(f"Full pipeline task dispatched: {task_id[:8]}...")
+                st.success(f"Full pipeline task dispatched: {task_id[:8]}…")
                 st.session_state[f"task_{task_id}"] = {"name": "Full Pipeline", "id": task_id}
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            # If Celery/task queue is unavailable, run the pipeline synchronously.
             try:
                 from run_pipeline import main as run_full_pipeline_main  # type: ignore
             except Exception:
@@ -270,7 +276,6 @@ with st.sidebar:
             else:
                 with st.spinner("Running full pipeline (this may take several minutes)…"):
                     try:
-                        # sync_broker=False avoids sending trades directly to broker
                         success = run_full_pipeline_main(sync_broker=False)
                         if success:
                             st.success("Pipeline completed successfully.")
@@ -291,19 +296,16 @@ except Exception:
 if TASK_QUEUE_AVAILABLE:
     st.subheader("Task Monitoring")
     col_left, col_right = st.columns([2, 1])
-    
+
     with col_left:
         try:
             recent_tasks = get_recent_tasks(10)
             if recent_tasks:
-                # Convert to DataFrame for better display
                 task_df = pd.DataFrame(recent_tasks)
-                task_df['duration'] = task_df.apply(lambda row: 
-                    str(row['completed_at'] - row['started_at']) if row['completed_at'] and row['started_at'] else 'Running', 
+                task_df['duration'] = task_df.apply(lambda row:
+                    str(row['completed_at'] - row['started_at']) if row['completed_at'] and row['started_at'] else 'Running',
                     axis=1
                 )
-                
-                # Display with status colors
                 for _, task in task_df.iterrows():
                     status = task['status']
                     if status == 'SUCCESS':
@@ -318,12 +320,10 @@ if TASK_QUEUE_AVAILABLE:
                 st.info("No recent tasks")
         except Exception as e:
             st.error(f"Could not load task status: {e}")
-    
+
     with col_right:
         if st.button("🔄 Refresh Tasks"):
             st.rerun()
-        
-        # Show individual task status for tasks in session state
         for key, task_info in st.session_state.items():
             if key.startswith("task_") and isinstance(task_info, dict):
                 task_id = task_info.get("id")
@@ -380,6 +380,115 @@ st.subheader("Trade Log (latest 200)")
 try:
     trades = load_trades()
     st.dataframe(trades, width='stretch')
-    st.download_button("Download Trades CSV", trades.to_csv(index=False).encode(), "trades.csv", "text/csv", key="download_trades_main")
+    st.download_button(
+        "Download Trades CSV",
+        trades.to_csv(index=False).encode(),
+        "trades.csv",
+        "text/csv",
+        key="download_trades_main"
+    )
 except Exception:
     st.info("No trades yet.")
+
+# =============================================================================
+# Enhanced Model Predictions & Suggested Trades Section
+# =============================================================================
+
+@st.cache_data(ttl=300)
+def load_latest_predictions_with_features(n_top: int = 20) -> pd.DataFrame:
+    """
+    Load latest predictions for the preferred model and merge with select features.
+    Returns the top n rows sorted by predicted return.
+    """
+    from config import PREFERRED_MODEL
+    sql = text("""
+        WITH target AS (
+            SELECT MAX(ts) AS mx
+            FROM predictions
+            WHERE model_version = :mv
+        )
+        SELECT symbol, ts, y_pred
+        FROM predictions
+        WHERE model_version = :mv
+          AND ts = (SELECT mx FROM target)
+        ORDER BY y_pred DESC
+        LIMIT :limit;
+    """)
+    with engine.connect() as con:
+        preds = pd.read_sql_query(
+            sql,
+            con,
+            params={"mv": PREFERRED_MODEL, "limit": n_top * 5},
+        )
+    if preds.empty:
+        return preds
+    syms = preds["symbol"].tolist()
+    stmt_feats = text("""
+        SELECT symbol, ts, vol_21, adv_usd_21, size_ln, mom_21,
+               turnover_21, beta_63
+        FROM features
+        WHERE symbol IN :syms
+          AND ts = (SELECT MAX(ts) FROM features);
+    """).bindparams(bindparam("syms", expanding=True))
+    with engine.connect() as con:
+        feats = pd.read_sql_query(stmt_feats, con, params={"syms": tuple(syms)})
+    merged = preds.merge(feats, on="symbol", how="left")
+    return merged.sort_values("y_pred", ascending=False).head(n_top)
+
+def compute_display_weights(df: pd.DataFrame) -> pd.Series:
+    """Normalise predicted returns to positive weights for display."""
+    preds = df["y_pred"].astype(float)
+    min_pred = preds.min()
+    shifted = preds - min_pred if min_pred < 0 else preds
+    total = shifted.sum()
+    return shifted / total if total else pd.Series(0.0, index=df.index)
+
+st.subheader("Top Predictions & Suggested Trades")
+top_n = st.slider(
+    "Select number of top signals to display",
+    min_value=5,
+    max_value=30,
+    value=10,
+    step=5,
+    help="Controls how many high-confidence names are shown."
+)
+
+try:
+    preds_df = load_latest_predictions_with_features(top_n)
+    if preds_df.empty:
+        st.info("No predictions available. Run the training pipeline to generate signals.")
+    else:
+        preds_df["weight"] = compute_display_weights(preds_df)
+        # round numeric columns for display
+        for col in preds_df.select_dtypes(include=["float", "int"]).columns:
+            preds_df[col] = preds_df[col].round(4)
+
+        st.dataframe(preds_df.set_index("symbol"), use_container_width=True)
+
+        fig_preds = px.bar(
+            preds_df,
+            x="symbol",
+            y="y_pred",
+            title="Predicted Returns for Top Signals",
+            labels={"y_pred": "Predicted Return", "symbol": "Symbol"},
+        )
+        st.plotly_chart(fig_preds, use_container_width=True)
+
+        with st.expander("What do these numbers mean?"):
+            st.markdown("""
+- **Predicted Return (`y_pred`)** – The ensemble model’s forecast of next-period return.  Higher values imply stronger expected outperformance.
+- **Weight** – A normalised representation of each signal’s relative strength.  The actual trading algorithm may apply a more sophisticated optimiser, but this gives a sense of conviction.
+- **Volatility (21d)** – Rolling 21-day standard deviation of returns.
+- **ADV USD (21d)** – Average dollar volume over 21 days (liquidity proxy).
+- **Size (ln MV)** – Natural log of market capitalisation.
+- **Momentum (21d)** – Short-term momentum indicator.
+- **Turnover (21d)** – Volume relative to shares outstanding.
+- **Beta (63d)** – Beta versus the market.
+""")
+
+        with st.expander("Model & Process Overview"):
+            st.markdown("""
+The small‑cap quant system uses an ensemble of machine‑learning models—gradient boosting (XGBoost, LightGBM, CatBoost), random forests, neural networks and a simple reinforcement‑learning‑inspired model—to forecast expected returns.  Models are trained on historical price, volume, momentum, volatility and fundamental factors, and blended according to their information coefficient in the current regime.  A risk‑aware optimiser then translates signals into portfolio weights.  This section helps you see not just the final ranking but also the underlying features, so you understand why each stock appears in the list.
+""")
+except Exception as e:
+    st.error(f"Failed to load predictions: {e}")
