@@ -691,6 +691,8 @@ def train_and_predict_all_models(window_years: int = 4):
     models = _model_specs()
     outputs: Dict[str, Any] = {}
     preds_dict: Dict[str, pd.Series] = {}
+    # Collect training predictions from each base model for meta blending.
+    train_preds_dict: Dict[str, np.ndarray] = {}
     # Compute blend weights from config and adaptive IC weighting
     from config import BLEND_WEIGHTS, REGIME_GATING
     blend_w = _parse_blend_weights(BLEND_WEIGHTS)
@@ -767,6 +769,14 @@ def train_and_predict_all_models(window_years: int = 4):
         except Exception as e:
             log.error(f"Prediction failed for model {name}: {e}")
             continue
+        # Predict on the training set for meta-model training
+        try:
+            train_pred_vals = p2.predict(X_train_sorted)
+            train_preds_dict[name] = train_pred_vals.astype(float)
+        except Exception as e:
+            # If a model cannot produce training predictions (e.g. due to
+            # incompatible input shape), skip it from meta blending.
+            log.warning(f"Training prediction failed for model {name}: {e}; model will be excluded from meta blend.")
         out = latest_df[['symbol']].copy()
         out['ts'] = latest_ts
         out['y_pred'] = pred_vals.astype(float)
@@ -811,6 +821,41 @@ def train_and_predict_all_models(window_years: int = 4):
             out_fallback = out.copy()
             out_fallback['model_version'] = 'blend_v1'
             upsert_dataframe(out_fallback[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+
+    # ----------------------------------------------------------------------
+    # Meta‑model blending.  Combine base model predictions via a linear
+    # meta‑model (Ridge regression) trained on the out-of-sample predictions
+    # from each base model.  This approach automatically learns weights
+    # rather than relying solely on heuristic blending.  Only perform
+    # meta blending if we have collected predictions for at least two models.
+    if train_preds_dict and len(train_preds_dict) >= 2:
+        try:
+            from sklearn.linear_model import RidgeCV
+            # Build matrix of training predictions (rows correspond to
+            # y_train_sorted).  The order of columns is defined by keys.
+            meta_keys = list(train_preds_dict.keys())
+            meta_X_train = np.column_stack([train_preds_dict[k] for k in meta_keys])
+            # Time-series cross-validation for meta model
+            tscv_meta = TimeSeriesSplit(n_splits=5)
+            meta_reg = RidgeCV(alphas=[0.1, 1.0, 10.0], cv=tscv_meta, scoring='neg_mean_absolute_error')
+            meta_reg.fit(meta_X_train, y_train_sorted)
+            # Log learned coefficients for transparency
+            coeffs = {k: float(c) for k, c in zip(meta_keys, meta_reg.coef_)}
+            log.info(f"Meta blend coefficients (alpha={meta_reg.alpha_}): {coeffs}")
+            # Prepare matrix of latest predictions using the same keys
+            meta_X_latest = np.column_stack([
+                preds_dict[k].reindex(latest_df['symbol']).fillna(0.0).values
+                for k in meta_keys
+            ])
+            meta_pred = meta_reg.predict(meta_X_latest)
+            meta_out = latest_df[['symbol']].copy()
+            meta_out['ts'] = latest_ts
+            meta_out['y_pred'] = meta_pred.astype(float)
+            meta_out['model_version'] = 'blend_meta_v1'
+            outputs['blend_meta'] = meta_out.copy()
+            upsert_dataframe(meta_out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+        except Exception as e:
+            log.warning(f"Meta blending failed: {e}")
     log.info("Live training and prediction complete.")
     return outputs
 
