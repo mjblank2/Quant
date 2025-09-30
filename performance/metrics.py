@@ -271,6 +271,102 @@ def information_ratio(returns: pd.Series, benchmark_returns: pd.Series) -> float
     return active.mean() / tracking_error
 
 
+def tail_ratio(returns: pd.Series, high: float = 0.95, low: float = 0.05) -> float:
+    """Compute the tail ratio of a return series.
+
+    The tail ratio is the ratio of the magnitude of extreme gains to extreme
+    losses.  It is defined as::
+
+        tail_ratio = percentile(returns, high) / abs(percentile(returns, low))
+
+    where ``high`` and ``low`` denote upper and lower quantile levels (defaults
+    to 95th and 5th percentiles).  A tail ratio greater than 1 indicates that
+    the largest gains outweigh the largest losses, while a ratio below 1
+    indicates that losses dominate.
+
+    Parameters
+    ----------
+    returns : pd.Series
+        Return series.
+    high : float, default 0.95
+        Upper quantile for extreme gains.
+    low : float, default 0.05
+        Lower quantile for extreme losses.
+
+    Returns
+    -------
+    float
+        The tail ratio, or NaN if the series is empty or the lower percentile
+        is zero.
+    """
+    if returns.empty:
+        return np.nan
+    upper = returns.quantile(high)
+    lower = returns.quantile(low)
+    if lower >= 0 or np.isclose(lower, 0.0):
+        return np.nan
+    return upper / abs(lower)
+
+
+def ulcer_index(equity_curve: pd.Series) -> float:
+    """Compute the Ulcer Index of an equity curve.
+
+    The Ulcer Index measures the depth and duration of drawdowns by taking the
+    square root of the mean squared percentage drawdowns.  It is defined as::
+
+        UI = sqrt( mean( drawdown^2 ) )
+
+    where drawdown is computed relative to the running maximum of the equity
+    curve.  Lower values indicate smoother equity growth, while higher values
+    indicate prolonged or severe drawdowns.
+
+    Parameters
+    ----------
+    equity_curve : pd.Series
+        Cumulative equity series (e.g., cumulative product of returns).
+
+    Returns
+    -------
+    float
+        The Ulcer Index, or NaN if the series is empty.
+    """
+    if equity_curve.empty:
+        return np.nan
+    running_max = equity_curve.cummax()
+    dd = (equity_curve - running_max) / running_max
+    return np.sqrt((dd ** 2).mean())
+
+
+def gain_to_pain_ratio(returns: pd.Series) -> float:
+    """Compute the gain-to-pain ratio of a return series.
+
+    The gain-to-pain ratio (GPR) divides the cumulative return by the sum
+    of absolute losses.  Unlike the profit factor, which compares total
+    gains to total losses, GPR compares total net profit to the total pain
+    endured (absolute losses).  It is defined as::
+
+        GPR = (sum(returns)) / sum(|returns| where returns < 0)
+
+    If there are no losing periods, the function returns infinity.
+
+    Parameters
+    ----------
+    returns : pd.Series
+        Return series.
+
+    Returns
+    -------
+    float
+        Gain-to-pain ratio, or NaN if the series is empty.
+    """
+    if returns.empty:
+        return np.nan
+    losses = returns[returns < 0].abs().sum()
+    if losses == 0:
+        return np.inf
+    return returns.sum() / losses
+
+
 def compute_all_metrics(returns: pd.Series, market_returns: pd.Series | None = None) -> dict:
     """
     Compute a suite of performance metrics for a return series.
@@ -305,12 +401,16 @@ def compute_all_metrics(returns: pd.Series, market_returns: pd.Series | None = N
         "max_drawdown": max_drawdown(eq_curve),
         "VaR_95": value_at_risk(returns, 0.95),
         "ES_95": expected_shortfall(returns, 0.95),
+        "ES_99": expected_shortfall(returns, 0.99),
         "calmar": calmar_ratio(returns),
         "omega": omega_ratio(returns),
         "skew": skewness(returns),
         "kurtosis": kurtosis(returns),
         "roi": roi(returns),
         "cagr": cagr(returns),
+        "tail_ratio": tail_ratio(returns),
+        "ulcer_index": ulcer_index(eq_curve),
+        "gain_to_pain": gain_to_pain_ratio(returns),
     }
     # Additional ratios requiring benchmark returns
     if market_returns is not None:
