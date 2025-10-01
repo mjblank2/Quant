@@ -58,12 +58,15 @@ def _universe_symbols(limit: Optional[int] = None) -> List[str]:
     """
     try:
         with SessionLocal() as session:
-            q = session.query(Universe.symbol).filter(Universe.included.is_(True))
+            q = session.query(Universe.symbol)
+            if hasattr(Universe, "included"):
+                q = q.filter(Universe.included.is_(True))
             if limit and limit > 0:
                 q = q.limit(limit)
-            rows = q.all()
-            syms = [r[0] for r in rows]
-            if syms:
+                        rows = q.all()
+        
+                        syms = [r[0] for r in rows]
+                 if syms:
                 return syms
     except Exception as e:
         log.warning("Failed to load universe from DB: %s", e)
