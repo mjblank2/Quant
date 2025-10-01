@@ -6,23 +6,17 @@ from typing import Any, Optional
 
 import pandas as pd
 from sqlalchemy import (
-    Column,
-    Date,
-    Float,
-    Integer,
-    String,
-    Index,
-    create_engine,
+    Column, Date, Float, Integer, String, Index, create_engine
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # ---------------------------------------------------------------------------
-# Engine and session
+# Database engine and session factory
 # ---------------------------------------------------------------------------
 
 def _normalise_dsn(url: str) -> str:
-    """Ensure PostgreSQL DSNs use the psycopg driver."""
+    """Ensure PostgreSQL DSNs use the psycopg dialect."""
     if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql+psycopg://", 1)
     elif url.startswith("postgresql://") and "+psycopg" not in url:
@@ -32,7 +26,7 @@ def _normalise_dsn(url: str) -> str:
 def _create_engine_from_env() -> Any:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
-        raise RuntimeError("DATABASE_URL environment variable is not set")
+        raise RuntimeError("DATABASE_URL environment variable must be set")
     dsn = _normalise_dsn(dsn)
     return create_engine(dsn, pool_pre_ping=True)
 
@@ -61,14 +55,14 @@ class DailyBar(Base):
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)
-    adj_close = Column(Float)  # add adjusted close column
+    adj_close = Column(Float)  # Ensure this column exists in the DB
 
 class Feature(Base):
     __tablename__ = "features"
     id = Column(Integer, primary_key=True)
     ts = Column(Date, index=True, nullable=False)
     symbol = Column(String, index=True, nullable=False)
-    # price and momentum metrics
+    # price/momentum/volatility
     ret_1d = Column(Float)
     ret_5d = Column(Float)
     ret_21d = Column(Float)
@@ -79,7 +73,7 @@ class Feature(Base):
     turnover_21 = Column(Float)
     beta_63 = Column(Float)
     size_ln = Column(Float)
-    # fundamental ratios
+    # fundamentals
     f_pe_ttm = Column(Float)
     f_pb = Column(Float)
     f_ps_ttm = Column(Float)
@@ -89,7 +83,7 @@ class Feature(Base):
     f_gross_margin = Column(Float)
     f_profit_margin = Column(Float)
     f_current_ratio = Column(Float)
-    # market macro features (short and long horizons)
+    # market macro features
     mkt_ret_1d = Column(Float)
     mkt_ret_5d = Column(Float)
     mkt_ret_21d = Column(Float)
@@ -100,7 +94,7 @@ class Feature(Base):
     mkt_skew_63 = Column(Float)
     mkt_kurt_21 = Column(Float)
     mkt_kurt_63 = Column(Float)
-    # cross‑sectional z‑scores
+    # cross‑sectional z‑scores (for each feature above)
     cs_z_mom_21 = Column(Float)
     cs_z_mom_63 = Column(Float)
     cs_z_vol_21 = Column(Float)
@@ -125,7 +119,7 @@ class Feature(Base):
     cs_z_mkt_skew_63 = Column(Float)
     cs_z_mkt_kurt_21 = Column(Float)
     cs_z_mkt_kurt_63 = Column(Float)
-    # sentiment/event signals and lags (placeholders)
+    # sentiment/event signals and 1‑day lags (extend as needed)
     signal_a = Column(Float)
     signal_a_lag1 = Column(Float)
     signal_b = Column(Float)
@@ -136,15 +130,13 @@ class Feature(Base):
 
 class Fundamentals(Base):
     """
-    Point‑in‑time fundamentals table.  Each row represents a company’s
-    balance sheet snapshot at a specific date (as_of) and the date
-    when the data became available (available_at).
+    Point‑in‑time fundamentals.  Used by data/fundamentals.py.
     """
     __tablename__ = "fundamentals"
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True, nullable=False)
-    as_of = Column(Date, index=True, nullable=False)      # period end date
-    available_at = Column(Date, nullable=True)            # data release date
+    as_of = Column(Date, index=True, nullable=False)
+    available_at = Column(Date, nullable=True)
     debt_to_equity = Column(Float, nullable=True)
     return_on_assets = Column(Float, nullable=True)
     return_on_equity = Column(Float, nullable=True)
@@ -198,7 +190,7 @@ class Position(Base):
 # ---------------------------------------------------------------------------
 
 def create_tables() -> None:
-    """Create all defined tables; add new columns if needed."""
+    """Create or update all tables defined above."""
     Base.metadata.create_all(bind=engine)
 
 def upsert_dataframe(
@@ -208,12 +200,16 @@ def upsert_dataframe(
     update_cols: Optional[list[str]] = None,
 ) -> None:
     """
-    Upsert (append) a DataFrame into the given table.  Accepts unused
-    conflict and update parameters for backward compatibility.
+    Insert or update a pandas DataFrame into the specified table.
+
+    Accepts ``conflict_cols`` and ``update_cols`` for compatibility, but
+    always performs an append.  Unknown columns are dropped and missing
+    columns are added as NULL.
     """
     if df is None or df.empty:
         return
 
+    # get table name
     if hasattr(table, "name"):
         table_name = table.name
     elif hasattr(table, "__tablename__"):
