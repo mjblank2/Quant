@@ -1,24 +1,3 @@
-"""
-Database models and helper functions for the Quant trading system.
-
-This module defines SQLAlchemy ORM models for all tables used by the
-Quant research and trading pipeline, including the features table.  It
-also provides functions to initialise the database and upsert pandas
-DataFrames into the appropriate tables.
-
-To use this module, set the `DATABASE_URL` environment variable to a
-valid PostgreSQL connection string.  The connection string should use
-`postgresql+psycopg://` as the scheme and include credentials if
-necessary.  See SQLAlchemy documentation for more details.
-
-Example usage:
-
-    from db import Base, engine, create_tables, upsert_dataframe
-
-    create_tables()  # creates tables if they do not exist
-    upsert_dataframe(features_df, Feature.__tablename__)
-"""
-
 from __future__ import annotations
 
 import os
@@ -32,18 +11,18 @@ from sqlalchemy import (
     Float,
     Integer,
     String,
-    create_engine,
     Index,
+    create_engine,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker  # <— uncommented import
+from sqlalchemy.orm import sessionmaker
 
 # ---------------------------------------------------------------------------
 # Engine and session
 # ---------------------------------------------------------------------------
 
 def _normalise_dsn(url: str) -> str:
-    """Normalise PostgreSQL DSNs to include the psycopg dialect."""
+    """Ensure PostgreSQL DSNs use the psycopg driver."""
     if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql+psycopg://", 1)
     elif url.startswith("postgresql://") and "+psycopg" not in url:
@@ -53,9 +32,7 @@ def _normalise_dsn(url: str) -> str:
 def _create_engine_from_env() -> Any:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
-        raise RuntimeError(
-            "DATABASE_URL environment variable must be set to connect to the database"
-        )
+        raise RuntimeError("DATABASE_URL environment variable is not set")
     dsn = _normalise_dsn(dsn)
     return create_engine(dsn, pool_pre_ping=True)
 
@@ -84,15 +61,13 @@ class DailyBar(Base):
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)
-    adj_close = Column(Float)
+    adj_close = Column(Float)  # add adjusted close column
 
 class Feature(Base):
     __tablename__ = "features"
-
     id = Column(Integer, primary_key=True)
     ts = Column(Date, index=True, nullable=False)
     symbol = Column(String, index=True, nullable=False)
-
     # price and momentum metrics
     ret_1d = Column(Float)
     ret_5d = Column(Float)
@@ -104,7 +79,6 @@ class Feature(Base):
     turnover_21 = Column(Float)
     beta_63 = Column(Float)
     size_ln = Column(Float)
-
     # fundamental ratios
     f_pe_ttm = Column(Float)
     f_pb = Column(Float)
@@ -115,7 +89,6 @@ class Feature(Base):
     f_gross_margin = Column(Float)
     f_profit_margin = Column(Float)
     f_current_ratio = Column(Float)
-
     # market macro features (short and long horizons)
     mkt_ret_1d = Column(Float)
     mkt_ret_5d = Column(Float)
@@ -127,8 +100,7 @@ class Feature(Base):
     mkt_skew_63 = Column(Float)
     mkt_kurt_21 = Column(Float)
     mkt_kurt_63 = Column(Float)
-
-    # cross-sectional z‑scores
+    # cross‑sectional z‑scores
     cs_z_mom_21 = Column(Float)
     cs_z_mom_63 = Column(Float)
     cs_z_vol_21 = Column(Float)
@@ -153,15 +125,34 @@ class Feature(Base):
     cs_z_mkt_skew_63 = Column(Float)
     cs_z_mkt_kurt_21 = Column(Float)
     cs_z_mkt_kurt_63 = Column(Float)
-
-    # sentiment/event signals and 1‑day lag (placeholders)
+    # sentiment/event signals and lags (placeholders)
     signal_a = Column(Float)
     signal_a_lag1 = Column(Float)
     signal_b = Column(Float)
     signal_b_lag1 = Column(Float)
-
     __table_args__ = (
         Index("idx_features_symbol_ts", "symbol", "ts", unique=True),
+    )
+
+class Fundamentals(Base):
+    """
+    Point‑in‑time fundamentals table.  Each row represents a company’s
+    balance sheet snapshot at a specific date (as_of) and the date
+    when the data became available (available_at).
+    """
+    __tablename__ = "fundamentals"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, index=True, nullable=False)
+    as_of = Column(Date, index=True, nullable=False)      # period end date
+    available_at = Column(Date, nullable=True)            # data release date
+    debt_to_equity = Column(Float, nullable=True)
+    return_on_assets = Column(Float, nullable=True)
+    return_on_equity = Column(Float, nullable=True)
+    gross_margins = Column(Float, nullable=True)
+    profit_margins = Column(Float, nullable=True)
+    current_ratio = Column(Float, nullable=True)
+    __table_args__ = (
+        Index("idx_fundamentals_symbol_asof", "symbol", "as_of", unique=True),
     )
 
 class Prediction(Base):
@@ -186,7 +177,7 @@ class Trade(Base):
     id = Column(Integer, primary_key=True)
     trade_date = Column(Date, nullable=False)
     symbol = Column(String, nullable=False)
-    side = Column(String, nullable=False)  # 'buy' or 'sell'
+    side = Column(String, nullable=False)
     quantity = Column(Float, nullable=False)
     price = Column(Float)
     status = Column(String)
@@ -207,7 +198,7 @@ class Position(Base):
 # ---------------------------------------------------------------------------
 
 def create_tables() -> None:
-    """Create all tables defined in this module."""
+    """Create all defined tables; add new columns if needed."""
     Base.metadata.create_all(bind=engine)
 
 def upsert_dataframe(
@@ -217,16 +208,12 @@ def upsert_dataframe(
     update_cols: Optional[list[str]] = None,
 ) -> None:
     """
-    Insert or update a pandas DataFrame into the specified table.
-
-    Accepts ``conflict_cols`` and ``update_cols`` for backward compatibility,
-    but ignores them since this helper always performs an append operation.
-    Drops any unknown columns and adds missing columns as NULL.
+    Upsert (append) a DataFrame into the given table.  Accepts unused
+    conflict and update parameters for backward compatibility.
     """
     if df is None or df.empty:
         return
 
-    # Derive the table name (string) from class or Table object
     if hasattr(table, "name"):
         table_name = table.name
     elif hasattr(table, "__tablename__"):
