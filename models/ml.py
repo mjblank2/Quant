@@ -812,7 +812,17 @@ def train_and_predict_all_models(window_years: int = 4):
     feature_cols = list(FEATURE_COLS)
     if include_alt and not alts.empty:
         alt_cols = [c for c in alts.columns if c not in ('symbol', 'ts')]
+        # Append raw alt signal columns
         feature_cols += [c for c in alt_cols if c not in feature_cols]
+        # Compute lag features for each alt signal.  Lagging event-driven
+        # signals captures the short-term reaction to news or events.  The
+        # shift is computed per symbol to avoid forward-looking bias.
+        for c in alt_cols:
+            lag_col = f"{c}_lag1"
+            if lag_col not in feats.columns:
+                feats[lag_col] = feats.groupby('symbol')[c].shift(1)
+            if lag_col not in feature_cols:
+                feature_cols.append(lag_col)
     # Survivorship gating using historical universe snapshots
     try:
         feats = gate_training_with_universe(feats)
