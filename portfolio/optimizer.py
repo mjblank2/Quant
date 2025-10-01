@@ -30,6 +30,25 @@ try:
 except Exception:
     TARGET_VOL = 0.10
 
+# Optional tail‑risk weighting.  If USE_CVAR_WEIGHTS is set to 'true', the
+# portfolio constructor will compute weights inversely proportional to each
+# symbol's expected shortfall (Conditional Value‑at‑Risk) at the specified
+# confidence level.  This encourages allocations to symbols with lower
+# tail risk, scaled by their alpha scores.  The VAR_CONFIDENCE parameter
+# controls the confidence level used for VaR/ES (e.g. 0.95 for 95%).
+USE_CVAR_WEIGHTS = os.getenv('USE_CVAR_WEIGHTS', 'false').lower() == 'true'
+try:
+    VAR_CONFIDENCE = float(os.getenv('VAR_CONFIDENCE', '0.95'))
+except Exception:
+    VAR_CONFIDENCE = 0.95
+
+# Optional factor neutralization.  When USE_FACTOR_NEUTRALIZATION is set to
+# 'true', the optimiser will adjust the initial weights to neutralise
+# exposure to a predefined set of style factors (e.g. size, value,
+# momentum, quality and volatility).  Exposures are computed from
+# cross‑sectional z‑score columns (``cs_z_*``) in the features table.
+USE_FACTOR_NEUTRALIZATION = os.getenv('USE_FACTOR_NEUTRALIZATION', 'false').lower() == 'true'
+
 log = logging.getLogger(__name__)
 
 
@@ -124,7 +143,18 @@ def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[st
     # Determine weights for long positions
     alpha = pred_df.set_index('symbol')['y_pred']
     weights = pd.Series(dtype=float)
-    if USE_RISK_PARITY:
+    # If configured, compute tail‑risk (CVaR) weights before other sizing methods.
+    if USE_CVAR_WEIGHTS:
+        try:
+            cvar_w = compute_cvar_weights(long_syms, pred_df.set_index('symbol'), alpha, as_of, confidence=VAR_CONFIDENCE)
+            if cvar_w is not None and not cvar_w.empty:
+                # Scale to gross leverage
+                s = cvar_w.abs().sum()
+                weights = cvar_w * (GROSS_LEVERAGE / s) if s > 0 else cvar_w
+        except Exception as e:
+            log.warning(f"CVaR weighting failed, falling back to other sizing: {e}")
+    # If CVaR weights not used or failed, check risk parity
+    if weights.empty and USE_RISK_PARITY:
         # Risk parity weighting with dynamic volatility targeting
         try:
             from portfolio.risk_parity import build_portfolio_risk_parity
@@ -163,6 +193,24 @@ def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[st
             except Exception:
                 # fall back to volatility-adjusted weights
                 pass
+    # Factor neutralization if configured
+    if USE_FACTOR_NEUTRALIZATION and not weights.empty:
+        try:
+            # Define factor exposure columns; use cross‑sectional z‑scores where available
+            candidate_cols = [
+                'cs_z_size_ln',  # size factor
+                'cs_z_f_pe_ttm',  # value factor (inverse of PE)
+                'cs_z_mom_63',  # momentum factor
+                'cs_z_f_roe',  # quality factor
+                'cs_z_vol_21'  # volatility factor
+            ]
+            # Keep only columns present in pred_df
+            cols = [c for c in candidate_cols if c in pred_df.columns]
+            if cols:
+                exposures_df = pred_df[pred_df['symbol'].isin(long_syms)][['symbol'] + cols].set_index('symbol')
+                weights = neutralize_factor_exposures(weights, exposures_df)
+        except Exception as e:
+            log.warning(f"Factor neutralization failed: {e}")
     # Beta hedge
     try:
         b = portfolio_beta(weights, as_of, BETA_HEDGE_SYMBOL, lookback=63)
@@ -205,3 +253,134 @@ def compute_vol_weights(selected_symbols, features_df, alpha_scores):
     base_weights = base_weights.fillna(0.0)
     gross = base_weights.abs().sum()
     return base_weights / gross if gross != 0 else base_weights
+
+# ---------------------------------------------------------------------------
+# Tail‑risk (CVaR) weighting
+def compute_cvar_weights(selected_symbols: list[str], features_df: pd.DataFrame, alpha_scores: pd.Series,
+                         as_of: date, confidence: float = VAR_CONFIDENCE) -> pd.Series:
+    """Compute weights inversely proportional to each symbol's expected shortfall.
+
+    For each selected symbol, daily returns over the past year are loaded
+    from the ``daily_bars`` table.  The expected shortfall (ES) at the
+    specified confidence level is calculated as the negative mean of
+    returns below the VaR threshold.  Weights are proportional to the
+    alpha score divided by the ES.  Symbols with lower tail risk (lower
+    ES) receive higher weights.  All weights are normalised to sum to one.
+
+    Parameters
+    ----------
+    selected_symbols : list[str]
+        Long symbols selected for the bucket.
+    features_df : pd.DataFrame
+        DataFrame indexed by symbol containing at least the features used
+        to select symbols (unused here but kept for signature symmetry).
+    alpha_scores : pd.Series
+        Predicted returns indexed by symbol.
+    as_of : date
+        Reference date for computing historical returns (inclusive).
+    confidence : float, optional
+        Confidence level for VaR/ES (e.g. 0.95 for 95% confidence).
+
+    Returns
+    -------
+    pd.Series
+        CVaR‑based weights indexed by symbol that sum to one.  If no
+        valid returns are found, returns an empty Series.
+    """
+    if not selected_symbols:
+        return pd.Series(dtype=float)
+    # Determine lookback window of ~252 trading days
+    lookback_days = 252
+    start_date = pd.Timestamp(as_of) - pd.Timedelta(days=lookback_days)
+    stmt = text(
+        f"""
+        SELECT symbol, ts, {select_price_as('px')} AS px
+        FROM daily_bars
+        WHERE symbol IN :syms AND ts >= :start AND ts <= :end
+        ORDER BY symbol, ts
+        """
+    ).bindparams(bindparam('syms', expanding=True))
+    try:
+        df = pd.read_sql_query(
+            stmt,
+            engine,
+            params={'syms': tuple(selected_symbols), 'start': start_date.date(), 'end': as_of},
+            parse_dates=['ts']
+        )
+    except Exception:
+        return pd.Series(dtype=float)
+    if df.empty:
+        return pd.Series(dtype=float)
+    weights = {}
+    for sym, sub in df.groupby('symbol'):
+        sub = sub.sort_values('ts')
+        rets = sub['px'].pct_change().dropna()
+        if rets.empty:
+            continue
+        # Compute VaR threshold at (1 - confidence)
+        var_thresh = np.nanquantile(rets, 1.0 - confidence)
+        tail = rets[rets <= var_thresh]
+        es = -tail.mean() if not tail.empty else np.nan
+        alpha_val = float(alpha_scores.get(sym, 0.0))
+        if es and not np.isnan(es) and es > 0:
+            weights[sym] = alpha_val / es
+        else:
+            weights[sym] = 0.0
+    if not weights:
+        return pd.Series(dtype=float)
+    w_series = pd.Series(weights)
+    total = w_series.sum()
+    return w_series / total if total else w_series
+
+# ---------------------------------------------------------------------------
+# Factor exposure neutralization
+def neutralize_factor_exposures(weights: pd.Series, exposures: pd.DataFrame) -> pd.Series:
+    """
+    Adjust a weight vector to neutralise exposure to one or more factors.
+
+    The method projects the weight vector onto the null space of the
+    factor‑exposure matrix E (factors × symbols).  The projection is:
+
+    w_neutral = w - E^T (E E^T)^-1 E w
+
+    After projection, negative weights are set to zero and the weights are
+    rescaled to preserve the original gross leverage.  If the projection
+    fails (e.g. due to singular matrix), the original weights are returned.
+
+    Parameters
+    ----------
+    weights : pd.Series
+        Portfolio weights indexed by symbol.  Must include all symbols in
+        exposures.
+    exposures : pd.DataFrame
+        DataFrame indexed by symbol with columns representing factor
+        exposures.  Factors should be standardised (e.g. z‑scores).
+
+    Returns
+    -------
+    pd.Series
+        Adjusted weights indexed by symbol.
+    """
+    syms = weights.index.tolist()
+    # Ensure exposures include same symbols in same order
+    X = exposures.reindex(syms).fillna(0.0).values  # shape (n, k) if factors are columns
+    if X.size == 0:
+        return weights
+    # Factor matrix E^T: shape (k, n)
+    E = X.T
+    # Compute pseudo‑inverse of (E E^T)
+    try:
+        EE = E @ E.T  # shape (k, k)
+        # Add small diagonal for numerical stability
+        EE_inv = np.linalg.pinv(EE + 1e-6 * np.eye(EE.shape[0]))
+        projection = E.T @ (EE_inv @ (E @ weights.values))
+        w_new = weights.values - projection
+    except Exception:
+        return weights
+    # Set negative weights to zero for long‑only portfolio
+    w_new = np.where(w_new < 0, 0.0, w_new)
+    # Rescale to original gross leverage
+    total_old = np.abs(weights).sum() or 1.0
+    total_new = np.abs(w_new).sum() or 1.0
+    w_new = w_new * (total_old / total_new)
+    return pd.Series(w_new, index=weights.index)
