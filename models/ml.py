@@ -11,9 +11,11 @@ from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 # workers) have LightGBM or CatBoost installed.  Import these in try/except
 # blocks so the worker can start even when the dependencies are missing.
 try:
-    from xgboost import XGBRegressor  # type: ignore[attr‑defined]
+    from xgboost import XGBRegressor, XGBRanker  # type: ignore[attr-defined]
+    
 except Exception:
     XGBRegressor = None  # type: ignore[assignment]
+        XGBRanker = None  # type: ignore[assignment]
 
 try:
     from lightgbm import LGBMRegressor  # type: ignore[attr‑defined]
@@ -284,7 +286,20 @@ def _model_specs() -> Dict[str, Pipeline]:
             n_jobs=_xgb_threads(),
             tree_method="hist"
         ))
-        # Learning-to-rank model using NDCG objective
+    # Learning-to-rank model using NDCG objective
+    if XGBRanker is not None:
+        specs["xgb_ltr"] = _define_pipeline(XGBRanker(
+            objective='rank:ndcg',
+            n_estimators=500,
+            max_depth=4,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=_xgb_threads(),
+            tree_method="hist"
+        ))
+    else:
         specs["xgb_ltr"] = _define_pipeline(XGBRegressor(
             objective='rank:ndcg',
             n_estimators=500,
@@ -412,7 +427,7 @@ def _model_specs() -> Dict[str, Pipeline]:
         try:
             _ = HistGradientBoostingRegressor
             specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
-                loss='least_squares',
+                loss='lsquared_error',
                 max_depth=6,
                 learning_rate=0.05,
                 max_iter=300,
