@@ -97,7 +97,7 @@ FEATURE_COLS = [
     "f_pe_ttm", "f_pb", "f_ps_ttm", "f_debt_to_equity", "f_roa", "f_roe", "f_gm",
     "f_profit_margin", "f_current_ratio",
     # Market‑level macro features (from benchmark returns)
-    "mkt_ret_1d", "mkt_ret_5d", "mkt_vol_21",
+    "mkt_ret_1d", "mkt_ret_5d", "mkt_vol_21", "mkt_skew_21", "mkt_kurt_21",
     # Sparse high-impact event features
     "pead_event", "pead_surprise_eps", "pead_surprise_rev", "russell_inout"
 ]

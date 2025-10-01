@@ -216,6 +216,9 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 g['mkt_ret_1d'] = g['mret']
                 g['mkt_ret_5d'] = g['mret'].rolling(5).sum()
                 g['mkt_vol_21'] = g['mret'].rolling(21).std()
+                # Higher‑moment macro features: 21‑day skewness and kurtosis
+                g['mkt_skew_21'] = g['mret'].rolling(21).skew()
+                g['mkt_kurt_21'] = g['mret'].rolling(21).kurt()
             else:
                 # If market returns are missing, fall back to beta=1 and NaNs for macro
                 g['beta_63'] = 1.0
@@ -237,7 +240,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 'f_pe_ttm', 'f_pb', 'f_ps_ttm', 'f_debt_to_equity',
                 'f_roa', 'f_roe', 'f_gm', 'f_profit_margin', 'f_current_ratio',
                 # Market‑level macro features
-                'mkt_ret_1d', 'mkt_ret_5d', 'mkt_vol_21'
+                'mkt_ret_1d', 'mkt_ret_5d', 'mkt_vol_21', 'mkt_skew_21', 'mkt_kurt_21'
             ]
             g['f_pe_ttm'] = g.get('pe_ttm')
             g['f_pb'] = g.get('pb')
