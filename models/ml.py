@@ -65,12 +65,29 @@ try:
     N_RANDOM_SEARCH_ITER = int(os.getenv('N_RANDOM_SEARCH_ITER', '10'))
 except Exception:
     N_RANDOM_SEARCH_ITER = 10
+# Halving random search (successive halving) configuration.  When enabled,
+# the training routine will use HalvingRandomSearchCV to perform adaptive
+# hyper‑parameter search.  This often yields better performance than a
+# fixed‑size random search by allocating more resources to promising
+# configurations.  Set USE_HALVING_SEARCH=true in the environment to
+# activate.  You can optionally override the halving factor via
+# HALVING_FACTOR.  See sklearn.experimental HalvingRandomSearchCV docs.
+USE_HALVING_SEARCH = os.getenv('USE_HALVING_SEARCH', 'false').lower() == 'true'
+try:
+    HALVING_FACTOR = float(os.getenv('HALVING_FACTOR', '3.0'))
+except Exception:
+    HALVING_FACTOR = 3.0
 from risk.sector import build_sector_dummies
 from risk.risk_model import neutralize_with_sectors
 from models.regime import classify_regime, gate_blend_weights
 from data.universe_history import gate_training_with_universe
 from utils.price_utils import price_expr
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV, RandomizedSearchCV
+# Import successive halving search (experimental).  This must be imported
+# via sklearn.experimental to enable the classes.  We alias the import
+# for potential use in hyper‑parameter tuning when USE_HALVING_SEARCH is enabled.
+from sklearn.experimental import enable_halving_search_cv  # noqa: F401
+from sklearn.model_selection import HalvingRandomSearchCV
 import logging
 
 log = logging.getLogger(__name__)
@@ -405,6 +422,22 @@ def _model_specs() -> Dict[str, Pipeline]:
         except Exception:
             pass
 
+        # Very deep feedforward neural network with four hidden layers.  This
+        # model substantially increases capacity at the risk of overfitting;
+        # cross‑validation will decide whether it adds value.  We include it
+        # conditionally so that environments without sufficient compute can skip it.
+        specs["very_deep_mlp"] = _define_pipeline(MLPRegressor(
+            hidden_layer_sizes=(512, 256, 128, 64),
+            activation='relu',
+            solver='adam',
+            alpha=1e-4,
+            learning_rate_init=1e-3,
+            max_iter=1000,
+            early_stopping=True,
+            validation_fraction=0.1,
+            random_state=42
+        ))
+
         # Simple reinforcement-learning inspired Q-table model
         # This model discretizes the training returns into quantile bins and
         # learns expected rewards for long/hold/short actions.  At prediction
@@ -484,6 +517,18 @@ PARAM_GRIDS: Dict[str, Dict[str, list]] = {
         'model__learning_rate': [0.03, 0.1],
         'model__max_depth': [4, 6, 8],
         'model__max_iter': [200, 400]
+    },
+    # Very deep MLP parameter grid: experiment with more layers and
+    # stronger regularization to balance capacity and overfitting risk.  The
+    # final 32‑unit layer provides an additional nonlinearity to capture
+    # nuanced relationships.
+    'very_deep_mlp': {
+        'model__hidden_layer_sizes': [
+            (512, 256, 128, 64),
+            (512, 256, 128, 64, 32)
+        ],
+        'model__alpha': [1e-4, 1e-3, 1e-2],
+        'model__learning_rate_init': [1e-3, 5e-3]
     }
 }
 
@@ -563,7 +608,26 @@ def train_with_cv(X_train: pd.DataFrame, y_train: np.ndarray, base_model: Pipeli
         # combinations; otherwise use deterministic GridSearchCV.  The
         # param_grid is passed directly to param_distributions since lists
         # are valid distributions.
-        if USE_RANDOM_SEARCH:
+        if USE_HALVING_SEARCH:
+            # Successive halving search: adaptively allocates resources to
+            # promising hyper‑parameter configurations.  See HALVING_FACTOR
+            # environment variable for controlling aggressiveness.  This
+            # search uses the number of samples as the resource and stops
+            # early for poor performers.
+            search = HalvingRandomSearchCV(
+                base_model,
+                param_distributions=param_grid,
+                cv=cv,
+                factor=HALVING_FACTOR,
+                resource='n_samples',
+                max_resources='auto',
+                min_resources='auto',
+                scoring='neg_mean_absolute_error',
+                n_jobs=-1,
+                random_state=42,
+                verbose=0
+            )
+        elif USE_RANDOM_SEARCH:
             search = RandomizedSearchCV(
                 base_model,
                 param_distributions=param_grid,
@@ -737,10 +801,18 @@ def train_and_predict_all_models(window_years: int = 4):
     feats = _load_features_window(start_ts, latest_ts)
     if feats.empty:
         return {}
-    # Merge sparse AltSignals (if any)
+    # Merge sparse AltSignals (if any).  These event-driven or sentiment signals
+    # are pivoted into wide columns.  If INCLUDE_ALT_SIGNALS is enabled via
+    # environment variable, we will treat these columns as additional features.
     alts = _load_altsignals(start_ts, latest_ts)
+    include_alt = os.getenv('INCLUDE_ALT_SIGNALS', 'false').lower() in ('1', 'true', 'yes')
     if not alts.empty:
         feats = feats.merge(alts, on=['symbol', 'ts'], how='left')
+    # Determine dynamic feature columns starting from global FEATURE_COLS.
+    feature_cols = list(FEATURE_COLS)
+    if include_alt and not alts.empty:
+        alt_cols = [c for c in alts.columns if c not in ('symbol', 'ts')]
+        feature_cols += [c for c in alt_cols if c not in feature_cols]
     # Survivorship gating using historical universe snapshots
     try:
         feats = gate_training_with_universe(feats)
@@ -757,20 +829,20 @@ def train_and_predict_all_models(window_years: int = 4):
     if train_df.empty or latest_df.empty:
         log.warning("Training or prediction sets are empty.")
         return {}
-    # Fill missing feature columns with zeros (for sparse features)
-    for c in FEATURE_COLS:
+    # Fill missing feature columns with zeros (for sparse features) and NaN with zeros.
+    # Use the dynamic feature_cols list that may include alt signals.
+    for c in feature_cols:
         if c not in train_df.columns:
             train_df[c] = 0.0
         if c not in latest_df.columns:
             latest_df[c] = 0.0
-    # After ensuring all feature columns exist, fill missing values.
-    train_df[FEATURE_COLS] = train_df[FEATURE_COLS].fillna(0.0)
-    latest_df[FEATURE_COLS] = latest_df[FEATURE_COLS].fillna(0.0)
+    train_df[feature_cols] = train_df[feature_cols].fillna(0.0)
+    latest_df[feature_cols] = latest_df[feature_cols].fillna(0.0)
     # Prepare training matrix and target
     ID_COLS = ['ts', 'symbol']
-    X = train_df[ID_COLS + FEATURE_COLS]
+    X = train_df[ID_COLS + feature_cols]
     y = train_df[selected_target].values
-    X_latest = latest_df[FEATURE_COLS]
+    X_latest = latest_df[feature_cols]
     # Apply time-decay sample weights (half-life = 120 days)
     HALF_LIFE_DAYS = 120
     decay_factor = np.log(2) / HALF_LIFE_DAYS
@@ -785,12 +857,12 @@ def train_and_predict_all_models(window_years: int = 4):
     # Sort training data by ts to compute group sizes
     if not X.index.equals(X.sort_values('ts').index):
         sorted_idx = X.sort_values('ts').index
-        X_train_sorted = X.loc[sorted_idx, FEATURE_COLS]
+        X_train_sorted = X.loc[sorted_idx, feature_cols]
         y_train_sorted = train_df.loc[sorted_idx, selected_target].values
         sample_weights = sample_weights.loc[sorted_idx]
     else:
         sorted_idx = X.index
-        X_train_sorted = X[FEATURE_COLS]
+        X_train_sorted = X[feature_cols]
         y_train_sorted = y
     # Group sizes: number of samples per date in sorted training set
     group_sizes = X.loc[sorted_idx].groupby('ts').size().values
@@ -802,7 +874,7 @@ def train_and_predict_all_models(window_years: int = 4):
     # Compute blend weights from config and adaptive IC weighting
     from config import BLEND_WEIGHTS, REGIME_GATING
     blend_w = _parse_blend_weights(BLEND_WEIGHTS)
-    ic_w = _ic_by_model(train_df[['ts', 'symbol', selected_target] + FEATURE_COLS], FEATURE_COLS, selected_target)
+    ic_w = _ic_by_model(train_df[['ts', 'symbol', selected_target] + feature_cols], feature_cols, selected_target)
     if ic_w:
         keys = set(blend_w) | set(ic_w)
         combined = {k: 0.5 * blend_w.get(k, 0) + 0.5 * ic_w.get(k, 0) for k in keys}
