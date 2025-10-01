@@ -37,7 +37,7 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+    # from sqlalchemy.orm import sessionmaker
 
 # ---------------------------------------------------------------------------
 # Engine and session
@@ -67,7 +67,6 @@ def _create_engine_from_env() -> Any:
 engine = _create_engine_from_env()
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
-
 
 # ---------------------------------------------------------------------------
 # ORM model definitions
@@ -104,8 +103,9 @@ class Feature(Base):
     """
     Model representing engineered features.  This table contains one row per
     symbol and date, with columns for momentum, volatility, market
-    statistics, cross‑sectional z‑scores and fundamental ratios.  Update this
-    class whenever you add new feature columns to the pipeline.
+    statistics, cross‑sectional z‑scores, macro features and fundamental
+    ratios.  Update this class whenever you add new feature columns to the
+    pipeline.
     """
 
     __tablename__ = "features"
@@ -180,6 +180,7 @@ class Feature(Base):
     signal_a_lag1 = Column(Float)
     signal_b = Column(Float)
     signal_b_lag1 = Column(Float)
+    # Add more signal and signal_lag1 fields as needed.
 
     __table_args__ = (
         Index("idx_features_symbol_ts", "symbol", "ts", unique=True),
@@ -240,7 +241,6 @@ class Position(Base):
     cost_basis = Column(Float)
     ts = Column(Date, default=date.today)
 
-
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
@@ -254,26 +254,61 @@ def create_tables() -> None:
     """
     Base.metadata.create_all(bind=engine)
 
-
-def upsert_dataframe(df: pd.DataFrame, table_name: str) -> None:
+def upsert_dataframe(
+    df: pd.DataFrame,
+    table: Any,
+    conflict_cols: Optional[list[str]] = None,
+    update_cols: Optional[list[str]] = None,
+) -> None:
     """
-    Insert or update a pandas DataFrame into the specified table.  If the
-    table has a unique index (e.g., on symbol and ts), duplicates will be
-    replaced.  Columns in the DataFrame that do not exist in the table are
-    ignored; missing columns in the DataFrame will be filled with NULL.
+    Insert or update a pandas DataFrame into the specified table.
 
-    :param df: DataFrame containing rows to insert/update.
-    :param table_name: Name of the database table to upsert into.
+    This helper accepts either a table name (string) or a SQLAlchemy Table
+    object.  It also accepts ``conflict_cols`` and ``update_cols`` parameters
+    for backwards compatibility with older ingestion code.  These parameters
+    are currently ignored because this implementation always performs a
+    simple append operation.  Unknown columns in the input DataFrame will be
+    dropped; missing columns will be added with NULL values.
+
+    Args:
+        df: DataFrame containing rows to insert/update.
+        table: Name of the database table (str) or Table object.
+        conflict_cols: Optional list of columns to use for conflict
+            resolution when upserting.  Ignored in this implementation.
+        update_cols: Optional list of columns to update on conflict.
+            Ignored in this implementation.
     """
-    if df.empty:
+    # Do nothing if DataFrame is empty
+    if df is None or df.empty:
         return
-    # Load table metadata to determine valid columns
+
+    # Derive the table name from either a string or a SQLAlchemy Table object
+    if hasattr(table, "name"):
+        table_name = table.name
+    elif hasattr(table, "__tablename__"):
+        table_name = table.__tablename__  # type: ignore
+    else:
+        table_name = str(table)
+
+    # Check the table exists in metadata
+    if table_name not in Base.metadata.tables:
+        raise ValueError(f"Unknown table: {table_name}")
+
+    # Determine valid columns for the target table
     valid_cols = set(c.name for c in Base.metadata.tables[table_name].columns)
+
+    # Keep only valid columns from the DataFrame
     filtered_df = df.copy()[[c for c in df.columns if c in valid_cols]]
-    # Fill any missing columns with None (NULL) so DataFrame columns align
+
+    # Add any missing columns with None (NULL) values so that the DataFrame
+    # aligns with the database schema
     for col in valid_cols:
         if col not in filtered_df.columns:
             filtered_df[col] = None
+
+    # Perform the insert; SQLAlchemy will handle the rest.  Setting
+    # ``if_exists='append'`` will append rows.  We use the multi insert
+    # method to improve performance.
     filtered_df.to_sql(
         table_name,
         con=engine,
