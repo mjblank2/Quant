@@ -42,6 +42,13 @@ try:
 except Exception:
     VAR_CONFIDENCE = 0.95
 
+# Optional factor neutralization.  When USE_FACTOR_NEUTRALIZATION is set to
+# 'true', the optimiser will adjust the initial weights to neutralise
+# exposure to a predefined set of style factors (e.g. size, value,
+# momentum, quality and volatility).  Exposures are computed from
+# cross‑sectional z‑score columns (``cs_z_*``) in the features table.
+USE_FACTOR_NEUTRALIZATION = os.getenv('USE_FACTOR_NEUTRALIZATION', 'false').lower() == 'true'
+
 log = logging.getLogger(__name__)
 
 
@@ -186,6 +193,24 @@ def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[st
             except Exception:
                 # fall back to volatility-adjusted weights
                 pass
+    # Factor neutralization if configured
+    if USE_FACTOR_NEUTRALIZATION and not weights.empty:
+        try:
+            # Define factor exposure columns; use cross‑sectional z‑scores where available
+            candidate_cols = [
+                'cs_z_size_ln',  # size factor
+                'cs_z_f_pe_ttm',  # value factor (inverse of PE)
+                'cs_z_mom_63',  # momentum factor
+                'cs_z_f_roe',  # quality factor
+                'cs_z_vol_21'  # volatility factor
+            ]
+            # Keep only columns present in pred_df
+            cols = [c for c in candidate_cols if c in pred_df.columns]
+            if cols:
+                exposures_df = pred_df[pred_df['symbol'].isin(long_syms)][['symbol'] + cols].set_index('symbol')
+                weights = neutralize_factor_exposures(weights, exposures_df)
+        except Exception as e:
+            log.warning(f"Factor neutralization failed: {e}")
     # Beta hedge
     try:
         b = portfolio_beta(weights, as_of, BETA_HEDGE_SYMBOL, lookback=63)
@@ -306,3 +331,56 @@ def compute_cvar_weights(selected_symbols: list[str], features_df: pd.DataFrame,
     w_series = pd.Series(weights)
     total = w_series.sum()
     return w_series / total if total else w_series
+
+# ---------------------------------------------------------------------------
+# Factor exposure neutralization
+def neutralize_factor_exposures(weights: pd.Series, exposures: pd.DataFrame) -> pd.Series:
+    """
+    Adjust a weight vector to neutralise exposure to one or more factors.
+
+    The method projects the weight vector onto the null space of the
+    factor‑exposure matrix E (factors × symbols).  The projection is:
+
+    w_neutral = w - E^T (E E^T)^-1 E w
+
+    After projection, negative weights are set to zero and the weights are
+    rescaled to preserve the original gross leverage.  If the projection
+    fails (e.g. due to singular matrix), the original weights are returned.
+
+    Parameters
+    ----------
+    weights : pd.Series
+        Portfolio weights indexed by symbol.  Must include all symbols in
+        exposures.
+    exposures : pd.DataFrame
+        DataFrame indexed by symbol with columns representing factor
+        exposures.  Factors should be standardised (e.g. z‑scores).
+
+    Returns
+    -------
+    pd.Series
+        Adjusted weights indexed by symbol.
+    """
+    syms = weights.index.tolist()
+    # Ensure exposures include same symbols in same order
+    X = exposures.reindex(syms).fillna(0.0).values  # shape (n, k) if factors are columns
+    if X.size == 0:
+        return weights
+    # Factor matrix E^T: shape (k, n)
+    E = X.T
+    # Compute pseudo‑inverse of (E E^T)
+    try:
+        EE = E @ E.T  # shape (k, k)
+        # Add small diagonal for numerical stability
+        EE_inv = np.linalg.pinv(EE + 1e-6 * np.eye(EE.shape[0]))
+        projection = E.T @ (EE_inv @ (E @ weights.values))
+        w_new = weights.values - projection
+    except Exception:
+        return weights
+    # Set negative weights to zero for long‑only portfolio
+    w_new = np.where(w_new < 0, 0.0, w_new)
+    # Rescale to original gross leverage
+    total_old = np.abs(weights).sum() or 1.0
+    total_new = np.abs(w_new).sum() or 1.0
+    w_new = w_new * (total_old / total_new)
+    return pd.Series(w_new, index=weights.index)
