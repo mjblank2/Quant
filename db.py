@@ -16,7 +16,6 @@ Example usage:
     from db import Base, engine, create_tables, upsert_dataframe
 
     create_tables()  # creates tables if they do not exist
-    # write a DataFrame of feature rows
     upsert_dataframe(features_df, Feature.__tablename__)
 """
 
@@ -37,20 +36,19 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.ext.declarative import declarative_base
-    # from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker  # <— uncommented import
 
 # ---------------------------------------------------------------------------
 # Engine and session
 # ---------------------------------------------------------------------------
 
-# Normalise PostgreSQL connection strings to include the psycopg dialect.
 def _normalise_dsn(url: str) -> str:
+    """Normalise PostgreSQL DSNs to include the psycopg dialect."""
     if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql+psycopg://", 1)
     elif url.startswith("postgresql://") and "+psycopg" not in url:
         return url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
-
 
 def _create_engine_from_env() -> Any:
     dsn = os.environ.get("DATABASE_URL")
@@ -61,9 +59,6 @@ def _create_engine_from_env() -> Any:
     dsn = _normalise_dsn(dsn)
     return create_engine(dsn, pool_pre_ping=True)
 
-
-# Create global SQLAlchemy objects.  The engine is created lazily to avoid
-# connecting to the database at import time in environments without DB access.
 engine = _create_engine_from_env()
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -73,21 +68,14 @@ Base = declarative_base()
 # ---------------------------------------------------------------------------
 
 class Universe(Base):
-    """Universe of tradable symbols and associated metadata."""
-
     __tablename__ = "universe"
-
     symbol = Column(String, primary_key=True)
     sector = Column(String, nullable=True)
     industry = Column(String, nullable=True)
     ts = Column(Date, index=True)
 
-
 class DailyBar(Base):
-    """Daily OHLCV bars for each symbol."""
-
     __tablename__ = "daily_bars"
-
     id = Column(Integer, primary_key=True)
     ts = Column(Date, index=True, nullable=False)
     symbol = Column(String, index=True, nullable=False)
@@ -98,16 +86,7 @@ class DailyBar(Base):
     volume = Column(Float)
     adj_close = Column(Float)
 
-
 class Feature(Base):
-    """
-    Model representing engineered features.  This table contains one row per
-    symbol and date, with columns for momentum, volatility, market
-    statistics, cross‑sectional z‑scores, macro features and fundamental
-    ratios.  Update this class whenever you add new feature columns to the
-    pipeline.
-    """
-
     __tablename__ = "features"
 
     id = Column(Integer, primary_key=True)
@@ -149,7 +128,7 @@ class Feature(Base):
     mkt_kurt_21 = Column(Float)
     mkt_kurt_63 = Column(Float)
 
-    # cross‑sectional z‑scores (add as needed)
+    # cross-sectional z‑scores
     cs_z_mom_21 = Column(Float)
     cs_z_mom_63 = Column(Float)
     cs_z_vol_21 = Column(Float)
@@ -175,49 +154,35 @@ class Feature(Base):
     cs_z_mkt_kurt_21 = Column(Float)
     cs_z_mkt_kurt_63 = Column(Float)
 
-    # optional sentiment/event signals and lags (add your own signals here)
+    # sentiment/event signals and 1‑day lag (placeholders)
     signal_a = Column(Float)
     signal_a_lag1 = Column(Float)
     signal_b = Column(Float)
     signal_b_lag1 = Column(Float)
-    # Add more signal and signal_lag1 fields as needed.
 
     __table_args__ = (
         Index("idx_features_symbol_ts", "symbol", "ts", unique=True),
     )
 
-
 class Prediction(Base):
-    """Model predictions for each symbol and model version."""
-
     __tablename__ = "predictions"
-
     id = Column(Integer, primary_key=True)
     ts = Column(Date, index=True, nullable=False)
     symbol = Column(String, index=True, nullable=False)
     model_version = Column(String, index=True, nullable=False)
     y_pred = Column(Float)
-
     __table_args__ = (
         Index("idx_predictions_symbol_ts", "symbol", "ts", "model_version", unique=True),
     )
 
-
 class BacktestEquity(Base):
-    """Equity curve for backtests."""
-
     __tablename__ = "backtest_equity"
-
     id = Column(Integer, primary_key=True)
     ts = Column(Date, index=True, nullable=False)
     equity = Column(Float)
 
-
 class Trade(Base):
-    """Executed or proposed trades."""
-
     __tablename__ = "trades"
-
     id = Column(Integer, primary_key=True)
     trade_date = Column(Date, nullable=False)
     symbol = Column(String, nullable=False)
@@ -229,12 +194,8 @@ class Trade(Base):
     client_order_id = Column(String)
     ts = Column(Date, default=date.today)
 
-
 class Position(Base):
-    """Current positions for each symbol."""
-
     __tablename__ = "current_positions"
-
     id = Column(Integer, primary_key=True)
     symbol = Column(String, unique=True, nullable=False)
     shares = Column(Float, nullable=False)
@@ -246,12 +207,7 @@ class Position(Base):
 # ---------------------------------------------------------------------------
 
 def create_tables() -> None:
-    """
-    Create all tables defined in this module.  If tables already exist,
-    missing columns will be added automatically by SQLAlchemy's metadata.
-    Call this at application start to ensure the database schema is
-    up-to-date.
-    """
+    """Create all tables defined in this module."""
     Base.metadata.create_all(bind=engine)
 
 def upsert_dataframe(
@@ -263,52 +219,31 @@ def upsert_dataframe(
     """
     Insert or update a pandas DataFrame into the specified table.
 
-    This helper accepts either a table name (string) or a SQLAlchemy Table
-    object.  It also accepts ``conflict_cols`` and ``update_cols`` parameters
-    for backwards compatibility with older ingestion code.  These parameters
-    are currently ignored because this implementation always performs a
-    simple append operation.  Unknown columns in the input DataFrame will be
-    dropped; missing columns will be added with NULL values.
-
-    Args:
-        df: DataFrame containing rows to insert/update.
-        table: Name of the database table (str) or Table object.
-        conflict_cols: Optional list of columns to use for conflict
-            resolution when upserting.  Ignored in this implementation.
-        update_cols: Optional list of columns to update on conflict.
-            Ignored in this implementation.
+    Accepts ``conflict_cols`` and ``update_cols`` for backward compatibility,
+    but ignores them since this helper always performs an append operation.
+    Drops any unknown columns and adds missing columns as NULL.
     """
-    # Do nothing if DataFrame is empty
     if df is None or df.empty:
         return
 
-    # Derive the table name from either a string or a SQLAlchemy Table object
+    # Derive the table name (string) from class or Table object
     if hasattr(table, "name"):
         table_name = table.name
     elif hasattr(table, "__tablename__"):
-        table_name = table.__tablename__  # type: ignore
+        table_name = table.__tablename__
     else:
         table_name = str(table)
 
-    # Check the table exists in metadata
     if table_name not in Base.metadata.tables:
         raise ValueError(f"Unknown table: {table_name}")
 
-    # Determine valid columns for the target table
     valid_cols = set(c.name for c in Base.metadata.tables[table_name].columns)
-
-    # Keep only valid columns from the DataFrame
     filtered_df = df.copy()[[c for c in df.columns if c in valid_cols]]
 
-    # Add any missing columns with None (NULL) values so that the DataFrame
-    # aligns with the database schema
     for col in valid_cols:
         if col not in filtered_df.columns:
             filtered_df[col] = None
 
-    # Perform the insert; SQLAlchemy will handle the rest.  Setting
-    # ``if_exists='append'`` will append rows.  We use the multi insert
-    # method to improve performance.
     filtered_df.to_sql(
         table_name,
         con=engine,
