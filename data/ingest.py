@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -59,14 +58,14 @@ def _universe_symbols(limit: Optional[int] = None) -> List[str]:
     try:
         with SessionLocal() as session:
             q = session.query(Universe.symbol)
+            # Only filter by `included` if the Universe model defines that column.
             if hasattr(Universe, "included"):
                 q = q.filter(Universe.included.is_(True))
             if limit and limit > 0:
                 q = q.limit(limit)
-                        rows = q.all()
-        
-                        syms = [r[0] for r in rows]
-                 if syms:
+            rows = q.all()
+            syms = [r[0] for r in rows]
+            if syms:
                 return syms
     except Exception as e:
         log.warning("Failed to load universe from DB: %s", e)
@@ -446,6 +445,7 @@ def _dedupe_bars(df: pd.DataFrame) -> pd.DataFrame:
 
 _ADJ_CLOSE_CHECKED = False
 
+
 def _ensure_adj_close_column() -> None:
     """Ensure the daily_bars table has an adj_close column.
 
@@ -471,6 +471,7 @@ def _ensure_adj_close_column() -> None:
         pass
     finally:
         _ADJ_CLOSE_CHECKED = True
+
 
 def _upsert_daily_bars(df: pd.DataFrame, chunk_size: int = 5000) -> int:
     """Upsert to daily_bars using PostgreSQL ON CONFLICT."""
