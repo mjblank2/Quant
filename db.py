@@ -17,12 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# ---------------------------------------------------------------------------
-# Engine and session
-# ---------------------------------------------------------------------------
-
 def _normalise_dsn(url: str) -> str:
-    """Ensure PostgreSQL DSNs use the psycopg driver."""
     if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql+psycopg://", 1)
     elif url.startswith("postgresql://") and "+psycopg" not in url:
@@ -39,10 +34,6 @@ def _create_engine_from_env() -> Any:
 engine = _create_engine_from_env()
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
-
-# ---------------------------------------------------------------------------
-# ORM model definitions
-# ---------------------------------------------------------------------------
 
 class Universe(Base):
     __tablename__ = "universe"
@@ -61,7 +52,7 @@ class DailyBar(Base):
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)
-    adj_close = Column(Float)  # required by ingestion
+    adj_close = Column(Float)  # add adjusted close
 
 class Feature(Base):
     __tablename__ = "features"
@@ -69,89 +60,45 @@ class Feature(Base):
     ts = Column(Date, index=True, nullable=False)
     symbol = Column(String, index=True, nullable=False)
     # price and momentum metrics
-    ret_1d = Column(Float)
-    ret_5d = Column(Float)
-    ret_21d = Column(Float)
-    mom_21 = Column(Float)
-    mom_63 = Column(Float)
-    vol_21 = Column(Float)
-    vol_63 = Column(Float)
-    turnover_21 = Column(Float)
-    beta_63 = Column(Float)
-    size_ln = Column(Float)
+    ret_1d = Column(Float); ret_5d = Column(Float); ret_21d = Column(Float)
+    mom_21 = Column(Float); mom_63 = Column(Float)
+    vol_21 = Column(Float); vol_63 = Column(Float)
+    turnover_21 = Column(Float); beta_63 = Column(Float); size_ln = Column(Float)
     # fundamental ratios
-    f_pe_ttm = Column(Float)
-    f_pb = Column(Float)
-    f_ps_ttm = Column(Float)
-    f_debt_to_equity = Column(Float)
-    f_roa = Column(Float)
-    f_roe = Column(Float)
-    f_gross_margin = Column(Float)
-    f_profit_margin = Column(Float)
-    f_current_ratio = Column(Float)
-    # market macro features (short and long horizons)
-    mkt_ret_1d = Column(Float)
-    mkt_ret_5d = Column(Float)
-    mkt_ret_21d = Column(Float)
-    mkt_ret_63d = Column(Float)
-    mkt_vol_21 = Column(Float)
-    mkt_vol_63 = Column(Float)
-    mkt_skew_21 = Column(Float)
-    mkt_skew_63 = Column(Float)
-    mkt_kurt_21 = Column(Float)
-    mkt_kurt_63 = Column(Float)
-    # cross-sectional z‑scores
-    cs_z_mom_21 = Column(Float)
-    cs_z_mom_63 = Column(Float)
-    cs_z_vol_21 = Column(Float)
-    cs_z_vol_63 = Column(Float)
-    cs_z_turnover_21 = Column(Float)
-    cs_z_size_ln = Column(Float)
-    cs_z_beta_63 = Column(Float)
-    cs_z_f_pe_ttm = Column(Float)
-    cs_z_f_pb = Column(Float)
-    cs_z_f_ps_ttm = Column(Float)
-    cs_z_f_debt_to_equity = Column(Float)
-    cs_z_f_roa = Column(Float)
-    cs_z_f_roe = Column(Float)
-    cs_z_f_gross_margin = Column(Float)
-    cs_z_f_profit_margin = Column(Float)
-    cs_z_f_current_ratio = Column(Float)
-    cs_z_mkt_ret_21d = Column(Float)
-    cs_z_mkt_ret_63d = Column(Float)
-    cs_z_mkt_vol_21 = Column(Float)
-    cs_z_mkt_vol_63 = Column(Float)
-    cs_z_mkt_skew_21 = Column(Float)
-    cs_z_mkt_skew_63 = Column(Float)
-    cs_z_mkt_kurt_21 = Column(Float)
-    cs_z_mkt_kurt_63 = Column(Float)
-    # sentiment/event signals and lags (placeholders)
-    signal_a = Column(Float)
-    signal_a_lag1 = Column(Float)
-    signal_b = Column(Float)
-    signal_b_lag1 = Column(Float)
-    __table_args__ = (
-        Index("idx_features_symbol_ts", "symbol", "ts", unique=True),
-    )
+    f_pe_ttm = Column(Float); f_pb = Column(Float); f_ps_ttm = Column(Float)
+    f_debt_to_equity = Column(Float); f_roa = Column(Float); f_roe = Column(Float)
+    f_gross_margin = Column(Float); f_profit_margin = Column(Float); f_current_ratio = Column(Float)
+    # macro features
+    mkt_ret_1d = Column(Float); mkt_ret_5d = Column(Float); mkt_ret_21d = Column(Float); mkt_ret_63d = Column(Float)
+    mkt_vol_21 = Column(Float); mkt_vol_63 = Column(Float)
+    mkt_skew_21 = Column(Float); mkt_skew_63 = Column(Float)
+    mkt_kurt_21 = Column(Float); mkt_kurt_63 = Column(Float)
+    # cross-sectional z-scores
+    cs_z_mom_21 = Column(Float); cs_z_mom_63 = Column(Float)
+    cs_z_vol_21 = Column(Float); cs_z_vol_63 = Column(Float)
+    cs_z_turnover_21 = Column(Float); cs_z_size_ln = Column(Float); cs_z_beta_63 = Column(Float)
+    cs_z_f_pe_ttm = Column(Float); cs_z_f_pb = Column(Float); cs_z_f_ps_ttm = Column(Float)
+    cs_z_f_debt_to_equity = Column(Float); cs_z_f_roa = Column(Float); cs_z_f_roe = Column(Float)
+    cs_z_f_gross_margin = Column(Float); cs_z_f_profit_margin = Column(Float); cs_z_f_current_ratio = Column(Float)
+    cs_z_mkt_ret_21d = Column(Float); cs_z_mkt_ret_63d = Column(Float)
+    cs_z_mkt_vol_21 = Column(Float); cs_z_mkt_vol_63 = Column(Float)
+    cs_z_mkt_skew_21 = Column(Float); cs_z_mkt_skew_63 = Column(Float)
+    cs_z_mkt_kurt_21 = Column(Float); cs_z_mkt_kurt_63 = Column(Float)
+    # optional sentiment/event columns
+    signal_a = Column(Float); signal_a_lag1 = Column(Float)
+    signal_b = Column(Float); signal_b_lag1 = Column(Float)
+    __table_args__ = (Index("idx_features_symbol_ts", "symbol", "ts", unique=True),)
 
 class Fundamentals(Base):
-    """
-    Point‑in‑time fundamentals table, used by data/fundamentals.py.
-    """
     __tablename__ = "fundamentals"
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True, nullable=False)
     as_of = Column(Date, index=True, nullable=False)
     available_at = Column(Date, nullable=True)
-    debt_to_equity = Column(Float, nullable=True)
-    return_on_assets = Column(Float, nullable=True)
-    return_on_equity = Column(Float, nullable=True)
-    gross_margins = Column(Float, nullable=True)
-    profit_margins = Column(Float, nullable=True)
-    current_ratio = Column(Float, nullable=True)
-    __table_args__ = (
-        Index("idx_fundamentals_symbol_asof", "symbol", "as_of", unique=True),
-    )
+    debt_to_equity = Column(Float); return_on_assets = Column(Float)
+    return_on_equity = Column(Float); gross_margins = Column(Float)
+    profit_margins = Column(Float); current_ratio = Column(Float)
+    __table_args__ = (Index("idx_fundamentals_symbol_asof", "symbol", "as_of", unique=True),)
 
 class Prediction(Base):
     __tablename__ = "predictions"
@@ -192,24 +139,16 @@ class Position(Base):
     ts = Column(Date, default=date.today)
 
 class TargetPosition(Base):
-    """
-    Model for storing target weights and share counts generated by the optimizer.
-    Each entry corresponds to a desired position on a given date.
-    """
     __tablename__ = "target_positions"
     id = Column(Integer, primary_key=True)
     ts = Column(Date, index=True, nullable=False)
     symbol = Column(String, index=True, nullable=False)
     weight = Column(Float, nullable=False)
-    price = Column(Float, nullable=True)
+    price = Column(Float)
     target_shares = Column(Float, nullable=False)
     __table_args__ = (
         Index("idx_target_positions_ts_symbol", "ts", "symbol", unique=True),
     )
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
 
 def create_tables() -> None:
     """Create all defined tables; add new columns if needed."""
@@ -222,31 +161,25 @@ def upsert_dataframe(
     update_cols: Optional[list[str]] = None,
 ) -> None:
     """
-    Upsert (append) a DataFrame into the given table.  Accepts unused
-    conflict and update parameters for backward compatibility.
+    Append a DataFrame to the given table.  Unknown columns are dropped and missing
+    columns are filled with None.  Accepts conflict_cols and update_cols for
+    backward compatibility.
     """
     if df is None or df.empty:
         return
-
-    # Derive table name
     if hasattr(table, "name"):
         table_name = table.name
     elif hasattr(table, "__tablename__"):
         table_name = table.__tablename__
     else:
         table_name = str(table)
-
     if table_name not in Base.metadata.tables:
         raise ValueError(f"Unknown table: {table_name}")
-
     valid_cols = set(c.name for c in Base.metadata.tables[table_name].columns)
     filtered_df = df.copy()[[c for c in df.columns if c in valid_cols]]
-
-    # Fill missing columns with None
     for col in valid_cols:
         if col not in filtered_df.columns:
             filtered_df[col] = None
-
     filtered_df.to_sql(
         table_name,
         con=engine,
