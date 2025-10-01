@@ -206,13 +206,22 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             for col in ['pe_ttm', 'pb', 'ps_ttm', 'debt_to_equity', 'return_on_assets', 'return_on_equity', 'gross_margins', 'profit_margins', 'current_ratio']:
                 if col not in g.columns:
                     g[col] = np.nan
-            # Rolling beta vs. market
+            # Rolling beta vs. market and macro features
             if 'mret' in g.columns and not g['mret'].isna().all():
+                # Beta computed over a 63‑day window
                 cov = g['ret_1d'].rolling(63).cov(g['mret'])
                 var = g['mret'].rolling(63).var()
                 g['beta_63'] = cov / var.replace(0, np.nan)
+                # Macro features derived from the benchmark returns
+                g['mkt_ret_1d'] = g['mret']
+                g['mkt_ret_5d'] = g['mret'].rolling(5).sum()
+                g['mkt_vol_21'] = g['mret'].rolling(21).std()
             else:
+                # If market returns are missing, fall back to beta=1 and NaNs for macro
                 g['beta_63'] = 1.0
+                g['mkt_ret_1d'] = np.nan
+                g['mkt_ret_5d'] = np.nan
+                g['mkt_vol_21'] = np.nan
                 if 'mret' not in g.columns:
                     log.debug(f"No market returns data, using beta=1.0 for {sym}")
             # Discard rows prior to last computed feature for this symbol
@@ -226,7 +235,9 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 'rsi_14', 'turnover_21', 'size_ln', 'adv_usd_21',
                 'overnight_gap', 'illiq_21', 'beta_63',
                 'f_pe_ttm', 'f_pb', 'f_ps_ttm', 'f_debt_to_equity',
-                'f_roa', 'f_roe', 'f_gm', 'f_profit_margin', 'f_current_ratio'
+                'f_roa', 'f_roe', 'f_gm', 'f_profit_margin', 'f_current_ratio',
+                # Market‑level macro features
+                'mkt_ret_1d', 'mkt_ret_5d', 'mkt_vol_21'
             ]
             g['f_pe_ttm'] = g.get('pe_ttm')
             g['f_pb'] = g.get('pb')

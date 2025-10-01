@@ -34,12 +34,43 @@ from models.transformers import CrossSectionalNormalizer
 from models.rl_models import QTableRegressor
 from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS,
                     SECTOR_NEUTRALIZE,)
+
+# Optional regime‑gating configuration.  If USE_REGIME_GATING is set to
+# 'true', the pipeline will compute a volatility‑driven gating factor for
+# the latest prediction date and blend tree‑based and neural models based
+# on this factor.  GATING_THRESHOLD defines the reference 21‑day
+# volatility (e.g. median or long‑run average) and GATING_SLOPE controls
+# how rapidly the gating transitions between 0 and 1.  These can be set via
+# environment variables or default to reasonable values.
+USE_REGIME_GATING = os.getenv('USE_REGIME_GATING', 'false').lower() == 'true'
+try:
+    GATING_THRESHOLD = float(os.getenv('GATING_THRESHOLD', '0.03'))  # 3% daily vol
+except Exception:
+    GATING_THRESHOLD = 0.03
+try:
+    GATING_SLOPE = float(os.getenv('GATING_SLOPE', '5.0'))
+except Exception:
+    GATING_SLOPE = 5.0
+
+# -----------------------------------------------------------------------------
+# Hyper-parameter search configuration.  By default the pipeline uses
+# GridSearchCV for deterministic hyper-parameter tuning.  If
+# USE_RANDOM_SEARCH is set to 'true' in the environment, the training
+# routine will instead use RandomizedSearchCV with a limited number
+# of iterations.  This can speed up the search and explore more
+# parameter combinations.  The number of random iterations can be
+# configured via N_RANDOM_SEARCH_ITER.
+USE_RANDOM_SEARCH = os.getenv('USE_RANDOM_SEARCH', 'false').lower() == 'true'
+try:
+    N_RANDOM_SEARCH_ITER = int(os.getenv('N_RANDOM_SEARCH_ITER', '10'))
+except Exception:
+    N_RANDOM_SEARCH_ITER = 10
 from risk.sector import build_sector_dummies
 from risk.risk_model import neutralize_with_sectors
 from models.regime import classify_regime, gate_blend_weights
 from data.universe_history import gate_training_with_universe
 from utils.price_utils import price_expr
-from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV, RandomizedSearchCV
 import logging
 
 log = logging.getLogger(__name__)
@@ -65,6 +96,8 @@ FEATURE_COLS = [
     # Fundamental ratios
     "f_pe_ttm", "f_pb", "f_ps_ttm", "f_debt_to_equity", "f_roa", "f_roe", "f_gm",
     "f_profit_margin", "f_current_ratio",
+    # Market‑level macro features (from benchmark returns)
+    "mkt_ret_1d", "mkt_ret_5d", "mkt_vol_21",
     # Sparse high-impact event features
     "pead_event", "pead_surprise_eps", "pead_surprise_rev", "russell_inout"
 ]
@@ -522,14 +555,31 @@ def train_with_cv(X_train: pd.DataFrame, y_train: np.ndarray, base_model: Pipeli
     """
     if param_grid:
         cv = TimeSeriesSplit(n_splits=5)
-        search = GridSearchCV(
-            base_model,
-            param_grid,
-            cv=cv,
-            scoring='neg_mean_absolute_error',
-            n_jobs=-1,
-            verbose=0,
-        )
+        # Select search strategy based on USE_RANDOM_SEARCH flag.  Use
+        # RandomizedSearchCV when enabled to explore a subset of parameter
+        # combinations; otherwise use deterministic GridSearchCV.  The
+        # param_grid is passed directly to param_distributions since lists
+        # are valid distributions.
+        if USE_RANDOM_SEARCH:
+            search = RandomizedSearchCV(
+                base_model,
+                param_distributions=param_grid,
+                n_iter=N_RANDOM_SEARCH_ITER,
+                cv=cv,
+                scoring='neg_mean_absolute_error',
+                n_jobs=-1,
+                verbose=0,
+                random_state=42,
+            )
+        else:
+            search = GridSearchCV(
+                base_model,
+                param_grid,
+                cv=cv,
+                scoring='neg_mean_absolute_error',
+                n_jobs=-1,
+                verbose=0,
+            )
         fit_params: dict[str, Any] = {}
         if sample_weight is not None:
             fit_params['model__sample_weight'] = sample_weight
@@ -540,7 +590,7 @@ def train_with_cv(X_train: pd.DataFrame, y_train: np.ndarray, base_model: Pipeli
             search.fit(X_train, y_train, **fit_params)
             return search.best_estimator_
         except Exception as e:
-            log.warning(f"Grid search failed ({e}); falling back to base model.")
+            log.warning(f"Hyperparameter search failed ({e}); falling back to base model.")
             # Fall back to a simple fit with provided weights
             try:
                 if fit_params:
@@ -909,6 +959,57 @@ def train_and_predict_all_models(window_years: int = 4):
             upsert_dataframe(meta_out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
         except Exception as e:
             log.warning(f"Meta blending failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Regime‑aware gating: blend tree and neural model predictions based
+    # on the current volatility regime.  This is applied only for the
+    # latest prediction date and requires that at least one tree and one
+    # neural model have produced predictions.  The gating factor is a
+    # logistic function of the cross‑sectional mean 21‑day volatility
+    # compared to a threshold.  A higher volatility regime results in
+    # greater weight on tree‑based models, while a lower regime weights
+    # neural models more heavily.
+    if USE_REGIME_GATING and preds_dict and 'vol_21' in latest_df.columns:
+        try:
+            # Current cross‑sectional volatility
+            current_vol = float(latest_df['vol_21'].mean())
+            if not np.isnan(current_vol):
+                # Compute gating factor in (0,1)
+                denom = GATING_THRESHOLD if GATING_THRESHOLD != 0 else 1.0
+                x = (current_vol - GATING_THRESHOLD) / denom
+                gating_factor = 1.0 / (1.0 + np.exp(-GATING_SLOPE * x))
+                # Separate predictions into tree and neural groups
+                tree_keys = {k for k in preds_dict.keys() if k in {
+                    'rf', 'extra_trees', 'gbr', 'xgb', 'lgbm', 'cat', 'hgb'
+                }}
+                neural_keys = {k for k in preds_dict.keys() if k in {
+                    'ridge', 'elasticnet', 'mlp', 'deep_mlp', 'q_table'
+                }}
+                # Compute average predictions for each group
+                tree_pred = None
+                if tree_keys:
+                    arrs = []
+                    for k in tree_keys:
+                        arrs.append(preds_dict[k].reindex(latest_df['symbol']).fillna(0.0).values)
+                    tree_pred = np.mean(arrs, axis=0)
+                neural_pred = None
+                if neural_keys:
+                    arrs = []
+                    for k in neural_keys:
+                        arrs.append(preds_dict[k].reindex(latest_df['symbol']).fillna(0.0).values)
+                    neural_pred = np.mean(arrs, axis=0)
+                if tree_pred is not None and neural_pred is not None:
+                    gating_pred = gating_factor * tree_pred + (1.0 - gating_factor) * neural_pred
+                    regime_out = latest_df[['symbol']].copy()
+                    regime_out['ts'] = latest_ts
+                    regime_out['y_pred'] = gating_pred.astype(float)
+                    regime_out['model_version'] = 'blend_regime_v1'
+                    outputs['blend_regime'] = regime_out.copy()
+                    upsert_dataframe(regime_out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+                else:
+                    log.warning("Regime gating skipped: insufficient tree or neural predictions")
+        except Exception as e:
+            log.warning(f"Regime gating failed: {e}")
     log.info("Live training and prediction complete.")
     return outputs
 
