@@ -1,0 +1,18 @@
+# Exclude Git history and Python caches
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Exclude large data and archive files
+*.csv
+*.parquet
+*.zip
+*.tar
+*.gz
+*.bz2
+*.7z
+
+# Exclude Jupyter notebooks and other unnecessary files
+*.ipynb
