@@ -47,8 +47,7 @@ COPY db.py /app/db.py
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 
-# Include requirements files again for clarity (they are already copied above but
-C
+# Include requirements files again for clarity (they are already copied above butC
 # re-copying here is harmless and ensures they exist in the final image).
 COPY utils_http.py /app/utils_http.py
 COPY utils_http_async.py /app/utils_http_async.py
