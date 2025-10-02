@@ -12,6 +12,8 @@ from sqlalchemy import (
     Integer,
     String,
     Index,
+    Boolean,
+    DateTime,
     create_engine,
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -40,11 +42,22 @@ Base = declarative_base()
 
 
 class Universe(Base):
+    """
+    Schema definition for the universe table.
+
+    In the production database, the universe table tracks symbol metadata,
+    inclusion flags and timestamps.  We mirror those fields here so that
+    ORM-generated upserts and queries align with the live schema.
+    """
+
     __tablename__ = "universe"
     symbol = Column(String, primary_key=True)
-    sector = Column(String, nullable=True)
-    industry = Column(String, nullable=True)
-    ts = Column(Date, index=True)
+    name = Column(String, nullable=True)
+    exchange = Column(String, nullable=True)
+    market_cap = Column(Float, nullable=True)
+    adv_usd_20 = Column(Float, nullable=True)
+    included = Column(Boolean, nullable=False, default=True)
+    last_updated = Column(DateTime, nullable=False)
 
 
 class DailyBar(Base):
