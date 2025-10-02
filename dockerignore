@@ -1,18 +1,39 @@
-# Exclude Git history and Python caches
+# Docker ignore file to prevent large or unnecessary files from being sent
+# to the Docker build context. Without a .dockerignore, the entire
+# repository (including test data and caches) is uploaded to the build
+# process, which can exceed Render’s cache/extraction limits and lead to
+# errors like `tar: Exiting with failure status` or missing content during
+# COPY commands.
+
+# Ignore everything by default. Specific entries will be re‑included below.
+*
+
+# Re‑include required application directories and files. Order matters:
+!data/
+!data_ingestion/
+!features/
+!models/
+!ml/
+!portfolio/
+!tasks/
+!scripts/
+!alembic/
+!jobs/
+
+# Re‑include top‑level modules and configuration files.
+!db.py
+!config.py
+!worker.py
+!run_pipeline.py
+!requirements.txt
+!requirements.extra.txt
+!alembic.ini
+
+# Always ignore Git history, caches and other artifacts.
 .git
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Exclude large data and archive files
-*.csv
-*.parquet
-*.zip
-*.tar
-*.gz
-*.bz2
-*.7z
-
-# Exclude Jupyter notebooks and other unnecessary files
-*.ipynb
+__pycache__
+*.py[cod]
+tests/
+.pytest_cache/
+.venv/
+.idea/
