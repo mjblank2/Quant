@@ -116,7 +116,7 @@ FEATURE_COLS = [
     "vol_63", "vol_252", "mom_252",
     "spread_ratio", "spread_21", "atr_14", "obv",
     # Fundamental ratios
-    "f_pe_ttm", "f_pb", "f_ps_ttm", "f_debt_to_equity", "f_roa", "f_roe", "f_gm",
+    "f_pe_ttm", "f_pb", "f_ps_ttm", "f_debt_to_equity", "f_roa", "f_roe", "f_gross_margin",
     "f_profit_margin", "f_current_ratio",
     # Market‑level macro features (from benchmark returns).  We include
     # multiple horizons to provide the models with medium‑term context.
@@ -136,7 +136,7 @@ CS_Z_FEATURES = [
     'mom_21', 'mom_63', 'vol_21', 'rsi_14', 'turnover_21', 'size_ln',
     'adv_usd_21', 'beta_63',
     'f_pe_ttm', 'f_pb', 'f_ps_ttm', 'f_debt_to_equity',
-    'f_roa', 'f_roe', 'f_gm', 'f_profit_margin', 'f_current_ratio'
+    'f_roa', 'f_roe', 'f_gross_margin', 'f_profit_margin', 'f_current_ratio'
 ]
 # Append the z‑score columns to the feature list.  We do this outside the
 # literal definition to keep the diff minimal and to reflect that these
