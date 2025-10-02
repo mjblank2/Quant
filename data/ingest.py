@@ -294,11 +294,25 @@ def _fetch_from_polygon(symbols: List[str], start: date, end: date) -> pd.DataFr
 
 
 def _get_universe_symbols() -> List[str]:
-    """Load investable symbols from DB universe (included = true)."""
+    """
+    Load investable symbols from the DB universe.
+
+    Historically the function filtered on an ``included`` column, but the
+    current Universe model does not define such an attribute.  To remain
+    backward compatible with older schemas (which may define ``included``),
+    this helper checks for the attribute and applies the filter only when
+    present.  It returns a sorted list of unique, uppercased symbols, or an
+    empty list on error.  Any exceptions are logged.
+    """
     try:
         with SessionLocal() as s:
-            rows = s.execute(select(Universe.symbol).where(Universe.included == True)).scalars().all()  # noqa: E712
-        syms = sorted(set([r.strip().upper() for r in rows if r]))
+            # Start with a basic query for the symbol column
+            query = select(Universe.symbol)
+            # Apply the included filter only when the attribute exists
+            if hasattr(Universe, "included"):
+                query = query.where(Universe.included == True)  # noqa: E712
+            rows = s.execute(query).scalars().all()
+        syms = sorted({(r or "").strip().upper() for r in rows if r})
         if syms:
             log.info(f"Loaded {len(syms)} symbols from universe.")
         return syms
