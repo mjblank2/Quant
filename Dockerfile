@@ -21,8 +21,30 @@ RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 COPY requirements.extra.txt /app/requirements.extra.txt
 RUN pip install -r /app/requirements.extra.txt
 
-# Copy the rest of the app
-COPY . /app
+# Copy the application source selectively.  Avoid copying the entire repository
+# (including test data, caches, and other artifacts) into the image.  This
+# reduces the build context size and prevents cache extraction errors.
+COPY data /app/data
+COPY data_ingestion /app/data_ingestion
+COPY features /app/features
+COPY models /app/models
+COPY ml /app/ml
+COPY portfolio /app/portfolio
+COPY tasks /app/tasks
+COPY scripts /app/scripts
+
+# Individual top‑level modules and configuration
+COPY worker.py /app/worker.py
+COPY run_pipeline.py /app/run_pipeline.py
+COPY config.py /app/config.py
+COPY db.py /app/db.py
+COPY alembic /app/alembic
+COPY alembic.ini /app/alembic.ini
+
+# Include requirements files again for clarity (they are already copied above but
+# re-copying here is harmless and ensures they exist in the final image).
+COPY requirements.txt /app/requirements.txt
+COPY requirements.extra.txt /app/requirements.extra.txt
 
 # Non-root user
 RUN useradd -m appuser && chown -R appuser:appuser /app
