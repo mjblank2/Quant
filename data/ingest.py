@@ -216,7 +216,7 @@ def _fetch_from_alpaca(symbols: List[str], start: date, end: date) -> pd.DataFra
         log.warning("alpaca_trade_api not installed; skipping Alpaca provider: %s", e)
         return pd.DataFrame()
     except Exception as e:
-        log.error("Unexpected Alpaca error: %s", e, exc_info=True)
+        log.error("Unexpected Alpaca error: %s", e)
         return pd.DataFrame()
 
 
@@ -584,11 +584,11 @@ def ingest_bars_for_universe(days: int = 7) -> bool:
         log.warning("No valid data after standardization")
         return False
 
-    # Use the robust upsert_dataframe function instead of custom PostgreSQL-only code
+    # Use the robust _upsert_daily_bars function instead of custom PostgreSQL-only code
     try:
-        log.info("Upserting %d rows to daily_bars", len(final_df))
-        upsert_dataframe(final_df, DailyBar, conflict_cols=["symbol", "ts"])
-        log.info("Ingestion complete. Upserted %d rows", len(final_df))
+        log.info("Upserting %d rows to daily_bars (bulk)", len(final_df))
+        inserted = _upsert_daily_bars(final_df)
+        log.info("Ingestion complete. Upserted %d rows", inserted)
         return True
     except Exception as e:
         log.error("Failed to upsert data: %s", e, exc_info=True)
