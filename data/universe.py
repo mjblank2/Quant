@@ -1,11 +1,12 @@
-
 from __future__ import annotations
 
 import logging
 import os
 from datetime import date, datetime
 from typing import Dict, Any, List
+
 import requests
+
 from .db import Universe  # Assumes db.py is in same package
 
 log = logging.getLogger("data.universe")
@@ -259,7 +260,7 @@ def rebuild_universe() -> List[Dict[str, Any]]:
 
         df_data = []
         truncated_names = 0
-        
+
         for item in symbols:
             # Sanitize the company name
             name = item.get("name")
@@ -267,31 +268,36 @@ def rebuild_universe() -> List[Dict[str, Any]]:
                 # Normalize Unicode (NFKC) and collapse whitespace
                 normalized = unicodedata.normalize('NFKC', name)
                 collapsed = ' '.join(normalized.split())
-                
+
                 # Truncate if longer than 256 characters (with a warning)
                 if len(collapsed) > 256:
                     collapsed = collapsed[:256]
                     truncated_names += 1
-                    
+
                 name = collapsed
-            
+
+            # Build row data; use timezone-aware UTC for last_updated
             df_data.append({
                 "symbol": item["symbol"],
                 "name": name,
                 "included": True,
-                "last_updated": datetime.utcnow(),
+                # datetime.utcnow() is deprecated and timezone-naive
+                "last_updated": datetime.now(datetime.UTC),
             })
-        
+
         if truncated_names > 0:
-            log.warning("Truncated %d company names longer than 256 characters during universe rebuild.", truncated_names)
+            log.warning(
+                "Truncated %d company names longer than 256 characters during universe rebuild.",
+                truncated_names,
+            )
 
         df = pd.DataFrame(df_data)
 
-        # Use upsert_dataframe which handles parameter limits automatically
-        db.upsert_dataframe(df, Universe, conflict_cols=["symbol"], chunk_size=1000)
+        # Use upsert_dataframe which handles parameter limits automatically.
+        # Do not pass chunk_size; our patched upsert handles chunking internally.
+        db.upsert_dataframe(df, Universe, conflict_cols=["symbol"])  # chunking handled in db.upsert_dataframe
 
         log.info("Universe rebuild completed successfully with %d symbols.", len(symbols))
-        return symbols
         return symbols
     except Exception as e:
         log.error("Failed to rebuild universe: %s", e, exc_info=True)
@@ -322,5 +328,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     except Exception as e:
+        log.error(f"Universe rebuild failed with exception: {e}", exc_info=True)
+        sys.exit(1)
         log.error(f"Universe rebuild failed with exception: {e}", exc_info=True)
         sys.exit(1)
