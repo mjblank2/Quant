@@ -297,7 +297,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 'rsi_14', 'turnover_21', 'size_ln', 'adv_usd_21',
                 'overnight_gap', 'illiq_21', 'beta_63',
                 'f_pe_ttm', 'f_pb', 'f_ps_ttm', 'f_debt_to_equity',
-                'f_roa', 'f_roe', 'f_gm', 'f_profit_margin', 'f_current_ratio',
+                'f_roa', 'f_roe', 'f_gross_margin', 'f_profit_margin', 'f_current_ratio',
                 # Market‑level macro features
                 'mkt_ret_1d', 'mkt_ret_5d', 'mkt_ret_21d', 'mkt_ret_63d',
                 'mkt_vol_21', 'mkt_vol_63',
@@ -309,7 +309,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['f_debt_to_equity'] = g.get('debt_to_equity')
             g['f_roa'] = g.get('return_on_assets')
             g['f_roe'] = g.get('return_on_equity')
-            g['f_gm'] = g.get('gross_margins')
+            g['f_gross_margin'] = g.get('gross_margins')
             g['f_profit_margin'] = g.get('profit_margins')
             g['f_current_ratio'] = g.get('current_ratio')
             # Drop rows with missing core returns
@@ -341,7 +341,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
                 'mom_21', 'mom_63', 'vol_21', 'rsi_14', 'turnover_21',
                 'size_ln', 'adv_usd_21', 'beta_63',
                 'f_pe_ttm', 'f_pb', 'f_ps_ttm', 'f_debt_to_equity',
-                'f_roa', 'f_roe', 'f_gm', 'f_profit_margin', 'f_current_ratio'
+                'f_roa', 'f_roe', 'f_gross_margin', 'f_profit_margin', 'f_current_ratio'
             ]
             # Ensure all columns exist before attempting to compute z‑scores
             missing_cols = [c for c in features_for_cs if c not in feats.columns]
