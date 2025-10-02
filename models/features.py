@@ -15,13 +15,50 @@ is commonly used in value and quality models.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from sqlalchemy import text, bindparam
+from sqlalchemy import text, bindparam, inspect
 from typing import List
 from db import engine, upsert_dataframe, Feature
 from utils.price_utils import price_expr
 import logging
 
 log = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------
+# Schema helpers
+#
+# The fundamentals table was originally created without a ``return_on_equity``
+# column.  When adding ROE as an additional factor, older databases may not
+# have this column, causing queries in `_load_fundamentals` to fail with
+# ``psycopg.errors.UndefinedColumn``.  To ensure compatibility, this helper
+# checks for the presence of the column and adds it when necessary (similar to
+# how the ingest pipeline adds ``adj_close`` to daily_bars).  The flag
+# prevents repeated alterations during a single run.
+_ROE_COLUMN_CHECKED: bool = False
+
+
+def _ensure_return_on_equity_column() -> None:
+    """Ensure the fundamentals table has a return_on_equity column.
+
+    If the column is missing, attempt to add it via an ALTER TABLE
+    statement.  Failures are logged but otherwise ignored.  Subsequent calls
+    within the same process do nothing once the check has run.
+    """
+    global _ROE_COLUMN_CHECKED
+    if _ROE_COLUMN_CHECKED:
+        return
+    try:
+        insp = inspect(engine)
+        cols = {c['name'] for c in insp.get_columns('fundamentals')}
+        if 'return_on_equity' not in cols:
+            with engine.begin() as conn:
+                conn.execute(text('ALTER TABLE fundamentals ADD COLUMN return_on_equity DOUBLE PRECISION'))
+            log.warning("Added missing return_on_equity column to fundamentals")
+    except Exception as e:
+        # If we cannot inspect or alter the table, log and continue.  Queries
+        # in `_load_fundamentals` may still fail but will surface the cause.
+        log.warning(f"Failed to ensure return_on_equity column: {e}")
+    finally:
+        _ROE_COLUMN_CHECKED = True
 
 
 def _compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
@@ -98,6 +135,9 @@ def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
     """
     if not symbols:
         return pd.DataFrame(columns=['symbol', 'as_of'])
+    # Ensure the return_on_equity column exists before querying.  This avoids
+    # runtime errors on older database schemas that lack the column.
+    _ensure_return_on_equity_column()
     sql = (
         'SELECT symbol, as_of, pe_ttm, pb, ps_ttm, debt_to_equity, '
         'return_on_assets, return_on_equity, gross_margins, profit_margins, current_ratio '
