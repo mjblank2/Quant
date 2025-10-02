@@ -45,9 +45,14 @@ def _last_feature_dates() -> dict[str, pd.Timestamp]:
 
 
 def _symbols() -> list[str]:
-    """Return the list of included symbols in the universe."""
+    """Return the list of symbols in the universe.
+
+    The previous version filtered for `included = TRUE`, but the universe
+    table in the current schema does not include an `included` column.
+    Selecting all symbols avoids query failures.
+    """
     try:
-        df = pd.read_sql_query(text('SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol'), engine)
+        df = pd.read_sql_query(text('SELECT symbol FROM universe ORDER BY symbol'), engine)
         return df['symbol'].tolist()
     except Exception:
         return []
