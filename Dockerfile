@@ -48,6 +48,9 @@ COPY alembic.ini /app/alembic.ini
 
 # Include requirements files again for clarity (they are already copied above but
 # re-copying here is harmless and ensures they exist in the final image).
+COPY utils_http.py /app/utils_http.py
+COPY utils_http_async.py /app/utils_http_async.py
+COPY utils_logging.py /app/utils_logging.py
 COPY requirements.txt /app/requirements.txt
 COPY requirements.extra.txt /app/requirements.extra.txt
 
