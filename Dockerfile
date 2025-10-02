@@ -33,6 +33,11 @@ COPY portfolio /app/portfolio
 COPY tasks /app/tasks
 COPY scripts /app/scripts
 
+# Include missing directories and files
+COPY jobs /app/jobs
+COPY app.py /app/app.py
+COPY health_api.py /app/health_api.py
+COPY market_calendar.py /app/market_calendar.py
 # Individual top‑level modules and configuration
 COPY worker.py /app/worker.py
 COPY run_pipeline.py /app/run_pipeline.py
