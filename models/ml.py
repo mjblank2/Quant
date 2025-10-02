@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import numpy as np, pandas as pd, copy, logging, os
 from os import cpu_count
 from typing import Dict, Any
@@ -12,18 +13,20 @@ from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 # blocks so the worker can start even when the dependencies are missing.
 try:
     from xgboost import XGBRegressor, XGBRanker  # type: ignore[attr-defined]
-    
 except Exception:
+    # If xgboost isn't available, set both classes to None.  Note: the
+    # indentation here is critical.  Both assignments must be at the same
+    # indentation level inside the except block to avoid an IndentationError.
     XGBRegressor = None  # type: ignore[assignment]
-        XGBRanker = None  # type: ignore[assignment]
+    XGBRanker = None  # type: ignore[assignment]
 
 try:
-    from lightgbm import LGBMRegressor  # type: ignore[attr‑defined]
+    from lightgbm import LGBMRegressor  # type: ignore[attr-defined]
 except Exception:
     LGBMRegressor = None  # type: ignore[assignment]
 
 try:
-    from catboost import CatBoostRegressor  # type: ignore[attr‑defined]
+    from catboost import CatBoostRegressor  # type: ignore[attr-defined]
 except Exception:
     CatBoostRegressor = None  # type: ignore[assignment]
 
@@ -69,7 +72,7 @@ except Exception:
     N_RANDOM_SEARCH_ITER = 10
 # Halving random search (successive halving) configuration.  When enabled,
 # the training routine will use HalvingRandomSearchCV to perform adaptive
-# hyper‑parameter search.  This often yields better performance than a
+# hyper-parameter search.  This often yields better performance than a
 # fixed‑size random search by allocating more resources to promising
 # configurations.  Set USE_HALVING_SEARCH=true in the environment to
 # activate.  You can optionally override the halving factor via
@@ -243,11 +246,12 @@ def _model_specs() -> Dict[str, Pipeline]:
     to standard regression models (RandomForest, Ridge, XGBoost), this
     function conditionally includes a learning-to-rank (LTR) variant of
     XGBoost if the XGBoost library is installed.  The LTR model uses
-    the 'rank:ndcg' objective and will be fit with group information.
+    the 'rank:ndcg' objective when XGBRanker is available and falls back to
+    a regression objective (rmse) when XGBRanker is not available.
     """
     specs: Dict[str, Pipeline] = {
         "rf": _define_pipeline(RandomForestRegressor(n_estimators=350, max_depth=10,
-                                                     random_state=42, n_jobs=_xgb_threads())),
+                                                      random_state=42, n_jobs=_xgb_threads())),
         "ridge": _define_pipeline(Ridge(alpha=1.0)),
         # ExtraTrees model: extremely randomized trees for robust non‑linear patterns
         "extra_trees": _define_pipeline(ExtraTreesRegressor(
@@ -286,7 +290,7 @@ def _model_specs() -> Dict[str, Pipeline]:
             n_jobs=_xgb_threads(),
             tree_method="hist"
         ))
-    # Learning-to-rank model using NDCG objective
+    # Learning-to-rank model using NDCG objective (if ranker is available)
     if XGBRanker is not None:
         specs["xgb_ltr"] = _define_pipeline(XGBRanker(
             objective='rank:ndcg',
@@ -300,8 +304,9 @@ def _model_specs() -> Dict[str, Pipeline]:
             tree_method="hist"
         ))
     else:
+        # Fall back to a regression objective (rmse) if the ranker isn't available
         specs["xgb_ltr"] = _define_pipeline(XGBRegressor(
-            objective='rank:ndcg',
+            objective='rmse',
             n_estimators=500,
             max_depth=4,
             learning_rate=0.05,
@@ -463,12 +468,13 @@ def _model_specs() -> Dict[str, Pipeline]:
         specs["q_table"] = _define_pipeline(QTableRegressor(n_bins=10, random_state=42))
     return specs
 
-# Hyper‑parameter grids for each model.  These grids are designed to be
-# relatively small to keep cross‑validation feasible.  Keys should match
-# entries in the models dictionary returned by `_model_specs`.  Parameter
-# names must include the 'model__' prefix to refer to the estimator
-# inside the Pipeline.  Models absent from this mapping will be fit
-# without tuning.
+    # Hyper‑parameter grids for each model.  These grids are designed to be
+    # relatively small to keep cross‑validation feasible.  Keys should match
+    # entries in the models dictionary returned by `_model_specs`.  Parameter
+    # names must include the 'model__' prefix to refer to the estimator
+    # inside the Pipeline.  Models absent from this mapping will be fit
+    # without tuning.
+
 PARAM_GRIDS: Dict[str, Dict[str, list]] = {
     'rf': {
         'model__n_estimators': [200, 400, 600],
@@ -514,8 +520,7 @@ PARAM_GRIDS: Dict[str, Dict[str, list]] = {
         'model__hidden_layer_sizes': [(128, 64), (256, 128)],
         'model__alpha': [1e-4, 1e-3],
         'model__learning_rate_init': [1e-3, 5e-3]
-    }
-    ,
+    },
     # Deeper MLP parameter grid.  We test different layer configurations
     # and regularization strengths.  The deeper network may capture
     # higher‑order interactions but risks overfitting; cross‑validation
@@ -546,7 +551,6 @@ PARAM_GRIDS: Dict[str, Dict[str, list]] = {
         'model__learning_rate_init': [1e-3, 5e-3]
     }
 }
-
 
 def _parse_blend_weights(s: str) -> Dict[str, float]:
     out: Dict[str, float] = {}
