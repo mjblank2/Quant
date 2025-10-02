@@ -1,45 +1,19 @@
-from __future__ import annotations
-import argparse
-import logging
-import os
-import sys
-import time
+"""
+Module entrypoint for the quant worker.
 
-# Use the actual function exposed by data.universe
-from data.universe import rebuild_universe
-from data.ingest import ingest_bars_for_universe
+Render’s process manager looks for a module named ``jobs.worker`` when
+starting the quant-worker service.  Previously, this module did not
+exist, causing an ImportError.  This file serves as a thin wrapper
+around the project’s ``worker.py`` script.  It exposes a ``main``
+function and, when executed as a script, invokes ``main()`` directly.
+"""
 
-# Align with the rest of the codebase (see app.py) which imports from models.ml
-from models.ml import train_and_predict_all_models as run_eod_pipeline
+from worker import main as _worker_main
 
 
-def main():
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s - worker - %(levelname)s - %(message)s")
-    log = logging.getLogger("worker")
-
-    parser = argparse.ArgumentParser(description="Blank Capital worker")
-    parser.add_argument("task", nargs="?", choices=["idle", "universe", "ingest", "pipeline"], default=os.getenv("WORKER_TASK", "idle"))
-    parser.add_argument("--days", type=int, default=int(os.getenv("DAYS", "7")))
-    args = parser.parse_args()
-
-    log.info("Starting worker task=%s", args.task)
-    try:
-        if args.task == "idle":
-            while True:
-                time.sleep(3600)
-        elif args.task == "universe":
-            rebuild_universe()
-        elif args.task == "ingest":
-            ingest_bars_for_universe(args.days)
-        elif args.task == "pipeline":
-            ok = run_eod_pipeline()
-            if not ok:
-                sys.exit(1)
-    except Exception:
-        log.exception("Worker task failed")
-        sys.exit(1)
-    log.info("Worker task complete")
-    sys.exit(0)
+def main() -> None:
+    """Invoke the real worker main function."""
+    _worker_main()
 
 
 if __name__ == "__main__":
