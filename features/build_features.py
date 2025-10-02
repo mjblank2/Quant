@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -13,14 +12,16 @@ from utils.price_utils import price_expr, select_price_as
 
 log = logging.getLogger(__name__)
 
+
 def _compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
-    avg_loss = loss.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+    avg_gain = gain.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+    avg_loss = loss.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
     rs = avg_gain / (avg_loss + 1e-8)
     return 100.0 - (100.0 / (1.0 + rs))
+
 
 def _last_feature_dates() -> dict[str, pd.Timestamp]:
     try:
@@ -29,12 +30,21 @@ def _last_feature_dates() -> dict[str, pd.Timestamp]:
     except Exception:
         return {}
 
+
 def _symbols() -> list[str]:
+    """
+    Return the list of symbols from the universe table.  The original
+    implementation filtered on `included = TRUE`, but the universe
+    table does not define an `included` column in the current schema.
+    Selecting all symbols avoids query errors and ensures the feature
+    builder runs on the entire universe.
+    """
     try:
-        df = pd.read_sql_query(text('SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol'), engine)
+        df = pd.read_sql_query(text('SELECT symbol FROM universe ORDER BY symbol'), engine)
         return df['symbol'].tolist()
     except Exception:
         return []
+
 
 def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
     """
@@ -44,7 +54,7 @@ def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFra
     """
     if not symbols:
         # return DataFrame with all expected columns when no symbols are provided
-        return pd.DataFrame(columns=['symbol','ts','open','high','low','close','adj_close','volume'])
+        return pd.DataFrame(columns=['symbol', 'ts', 'open', 'high', 'low', 'close', 'adj_close', 'volume'])
 
     sql = f"""
         SELECT symbol, ts, open, high, low, close,
@@ -56,6 +66,7 @@ def _load_prices_batch(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFra
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     params = {'start': start_ts.date(), 'syms': tuple(symbols)}
     return pd.read_sql_query(stmt, engine, params=params, parse_dates=['ts'])
+
 
 def _load_market_returns(market_symbol: str = "IWM") -> pd.DataFrame:
     """Return market prices and daily returns for the benchmark symbol."""
@@ -73,9 +84,10 @@ def _load_market_returns(market_symbol: str = "IWM") -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=["ts", "px", "mret"])
 
+
 def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
     if not symbols:
-        return pd.DataFrame(columns=['symbol','as_of'])
+        return pd.DataFrame(columns=['symbol', 'as_of'])
     sql = (
         'SELECT symbol, as_of, pe_ttm, pb, ps_ttm, debt_to_equity, return_on_assets, '
         'gross_margins, profit_margins, current_ratio '
@@ -84,16 +96,18 @@ def _load_fundamentals(symbols: List[str]) -> pd.DataFrame:
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
 
+
 def _load_shares_outstanding(symbols: List[str]) -> pd.DataFrame:
     if not symbols:
-        return pd.DataFrame(columns=['symbol','as_of','shares'])
+        return pd.DataFrame(columns=['symbol', 'as_of', 'shares'])
     sql = 'SELECT symbol, as_of, shares FROM shares_outstanding WHERE symbol IN :syms ORDER BY symbol, as_of'
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
 
+
 def _load_alt_signals(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFrame:
     if not symbols:
-        return pd.DataFrame(columns=['symbol','ts'])
+        return pd.DataFrame(columns=['symbol', 'ts'])
     sql = (
         'SELECT symbol, ts, name, value FROM alt_signals '
         'WHERE ts >= :start AND symbol IN :syms ORDER BY symbol, ts'
@@ -101,9 +115,10 @@ def _load_alt_signals(symbols: List[str], start_ts: pd.Timestamp) -> pd.DataFram
     stmt = text(sql).bindparams(bindparam('syms', expanding=True))
     df = pd.read_sql_query(stmt, engine, params={'start': start_ts.date(), 'syms': tuple(symbols)}, parse_dates=['ts'])
     if df.empty:
-        return pd.DataFrame(columns=['symbol','ts'])
-    piv = df.pivot_table(index=['symbol','ts'], columns='name', values='value', aggfunc='last').reset_index()
+        return pd.DataFrame(columns=['symbol', 'ts'])
+    piv = df.pivot_table(index=['symbol', 'ts'], columns='name', values='value', aggfunc='last').reset_index()
     return piv
+
 
 def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame:
     """
@@ -125,12 +140,12 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
     # Load market data once for beta calculations
     mkt = _load_market_returns("IWM")
     if not mkt.empty:
-        mkt = mkt.rename(columns={"px":"mkt_px", "mret":"mkt_ret"})
+        mkt = mkt.rename(columns={"px": "mkt_px", "mret": "mkt_ret"})
 
     # Process symbols in batches to control memory usage
     for i in range(0, len(syms), batch_size):
-        bsyms = syms[i:i+batch_size]
-        log.info(f"Processing batch {i//batch_size + 1} / {int(np.ceil(len(syms)/batch_size))} "
+        bsyms = syms[i:i + batch_size]
+        log.info(f"Processing batch {i // batch_size + 1} / {int(np.ceil(len(syms) / batch_size))} "
                  f"(Symbols: {len(bsyms)})")
 
         # Determine earliest timestamp to load for each symbol (for warmup)
@@ -154,8 +169,8 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
         # Merge alternative signals into price data; fill missing alt columns with zeros
         if not alts.empty:
-            px = px.merge(alts, on=['symbol','ts'], how='left')
-        for c in ['pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout']:
+            px = px.merge(alts, on=['symbol', 'ts'], how='left')
+        for c in ['pead_event', 'pead_surprise_eps', 'pead_surprise_rev', 'russell_inout']:
             if c not in px.columns:
                 px[c] = 0.0
             else:
@@ -193,7 +208,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['overnight_gap'] = (g['open'] / g['price_feat'].shift(1)) - 1.0
             dollar_volume = g['price_feat'] * g['volume']
             g['adv_usd_21'] = dollar_volume.rolling(21).mean()
-            g['illiq_21'] = (g['ret_1d'].abs() / dollar_volume.replace(0,np.nan)).rolling(21).mean()
+            g['illiq_21'] = (g['ret_1d'].abs() / dollar_volume.replace(0, np.nan)).rolling(21).mean()
 
             # **New technical indicators**
 
@@ -227,11 +242,11 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['obv'] = (direction * g['volume']).fillna(0).cumsum()
 
             # Shares outstanding → market cap & turnover
-            shs_sym = shs[shs['symbol'] == sym][['as_of','shares']].sort_values('as_of')
+            shs_sym = shs[shs['symbol'] == sym][['as_of', 'shares']].sort_values('as_of')
             if not shs_sym.empty:
                 g = pd.merge_asof(
                     g.sort_values('ts'),
-                    shs_sym.rename(columns={'as_of':'ts_shs'}).sort_values('ts_shs'),
+                    shs_sym.rename(columns={'as_of': 'ts_shs'}).sort_values('ts_shs'),
                     left_on='ts', right_on='ts_shs', direction='backward'
                 )
                 g['market_cap_pit'] = g['price_feat'] * g['shares']
@@ -250,11 +265,11 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             if not f_sym.empty:
                 g = pd.merge_asof(
                     g.sort_values('ts'),
-                    f_sym.rename(columns={'as_of':'ts_fnd'}).sort_values('ts_fnd'),
+                    f_sym.rename(columns={'as_of': 'ts_fnd'}).sort_values('ts_fnd'),
                     left_on='ts', right_on='ts_fnd', direction='backward'
                 )
             # Ensure fundamental columns exist
-            for col in ['pe_ttm','pb','ps_ttm','debt_to_equity','return_on_assets','gross_margins','profit_margins','current_ratio']:
+            for col in ['pe_ttm', 'pb', 'ps_ttm', 'debt_to_equity', 'return_on_assets', 'gross_margins', 'profit_margins', 'current_ratio']:
                 if col not in g.columns:
                     g[col] = np.nan
 
@@ -290,15 +305,15 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
 
             # Column list for upsert
             fcols = [
-                'symbol','ts','ret_1d','ret_5d','ret_21d','mom_21','mom_63','vol_21','rsi_14',
-                'reversal_5d_z','ivol_63','turnover_21','size_ln','adv_usd_21','overnight_gap',
-                'illiq_21','beta_63','fwd_ret','fwd_ret_resid',
-                'pead_event','pead_surprise_eps','pead_surprise_rev','russell_inout',
+                'symbol', 'ts', 'ret_1d', 'ret_5d', 'ret_21d', 'mom_21', 'mom_63', 'vol_21', 'rsi_14',
+                'reversal_5d_z', 'ivol_63', 'turnover_21', 'size_ln', 'adv_usd_21', 'overnight_gap',
+                'illiq_21', 'beta_63', 'fwd_ret', 'fwd_ret_resid',
+                'pead_event', 'pead_surprise_eps', 'pead_surprise_rev', 'russell_inout',
                 # fundamental columns mapped below
-                'f_pe_ttm','f_pb','f_ps_ttm','f_debt_to_equity','f_roa','f_gm','f_profit_margin','f_current_ratio',
+                'f_pe_ttm', 'f_pb', 'f_ps_ttm', 'f_debt_to_equity', 'f_roa', 'f_gm', 'f_profit_margin', 'f_current_ratio',
                 # new technical features
-                'ema_12','ema_26','macd','ema_50','ema_200','ma_ratio_50_200',
-                'vol_63','vol_252','mom_252','spread_ratio','spread_21','atr_14','obv'
+                'ema_12', 'ema_26', 'macd', 'ema_50', 'ema_200', 'ma_ratio_50_200',
+                'vol_63', 'vol_252', 'mom_252', 'spread_ratio', 'spread_21', 'atr_14', 'obv'
             ]
 
             # Map PIT fundamental fields to unified names
@@ -312,23 +327,23 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             g['f_current_ratio'] = g.get('current_ratio')
 
             # Drop rows with missing core features to avoid NaNs in training
-            core_features = ['ret_1d','ret_5d','vol_21']
+            core_features = ['ret_1d', 'ret_5d', 'vol_21']
             g2 = g.dropna(subset=core_features)[fcols].copy()
             if len(g2) > 0:
-                g2 = g2.drop_duplicates(subset=['symbol','ts'], keep='last')
+                g2 = g2.drop_duplicates(subset=['symbol', 'ts'], keep='last')
                 out_frames.append(g2)
 
         # Upsert new rows for this batch
         if out_frames:
             feats = pd.concat(out_frames, ignore_index=True)
-            feats = feats.sort_values('ts').drop_duplicates(['symbol','ts'], keep='last').reset_index(drop=True)
-            upsert_dataframe(feats, Feature, ['symbol','ts'], chunk_size=200)
+            feats = feats.sort_values('ts').drop_duplicates(['symbol', 'ts'], keep='last').reset_index(drop=True)
+            upsert_dataframe(feats, Feature, ['symbol', 'ts'], chunk_size=200)
             new_rows.append(feats)
             log.info(f"Batch completed. New rows upserted: {len(feats)}")
 
     return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
 
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     build_features()
-
