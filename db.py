@@ -61,16 +61,29 @@ class Universe(Base):
 
 
 class DailyBar(Base):
+    """
+    Schema definition for the daily_bars table.
+
+    In the production database, daily_bars uses a composite primary key on
+    (symbol, ts) and includes additional columns such as VWAP and trade_count.
+    This definition mirrors the live schema to ensure ON CONFLICT upserts and
+    column mappings work as expected.
+    """
+
     __tablename__ = "daily_bars"
-    id = Column(Integer, primary_key=True)
-    ts = Column(Date, index=True, nullable=False)
-    symbol = Column(String, index=True, nullable=False)
-    open = Column(Float)
-    high = Column(Float)
-    low = Column(Float)
-    close = Column(Float)
-    volume = Column(Float)
-    adj_close = Column(Float)  # add adjusted close
+    # Composite primary key on (symbol, ts)
+    symbol = Column(String, primary_key=True, nullable=False)
+    ts = Column(Date, primary_key=True, nullable=False, index=True)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+    # Additional columns from migration
+    vwap = Column(Float, nullable=True)
+    trade_count = Column(Integer, nullable=True)
+    # Adjusted close is optional and may not be present in older schemas
+    adj_close = Column(Float)
 
 
 class Feature(Base):
