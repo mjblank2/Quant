@@ -330,5 +330,3 @@ if __name__ == "__main__":
     except Exception as e:
         log.error(f"Universe rebuild failed with exception: {e}", exc_info=True)
         sys.exit(1)
-        log.error(f"Universe rebuild failed with exception: {e}", exc_info=True)
-        sys.exit(1)
