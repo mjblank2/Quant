@@ -37,6 +37,9 @@ COPY scripts /app/scripts
 # Include missing directories and files
 COPY jobs /app/jobs
 COPY utils /app/utils
+
+COPY risk /app/risk
+COPY hedges /app/hedges
 COPY trading /app/trading
 COPY app.py /app/app.py
 COPY health_api.py /app/health_api.py
