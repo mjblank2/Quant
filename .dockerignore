@@ -3,9 +3,8 @@
 # repository (including test data and caches) is uploaded to the build
 # process, which can exceed Render’s cache extraction limits and cause
 # errors like 'tar: Exiting with failure status' or missing content during
-# copy commands.
-
-# Ignore everything by default. Specific entries will be re-included below.
+# copy command
+.# Ignore everything by default. Specific entries will be re-included below.
 *
 
 # Re-include required application directories and files. Order matters:
