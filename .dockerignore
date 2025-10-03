@@ -28,6 +28,12 @@
 !run_pipeline.py
 !requirements.txt
 !requirements.extra.txt
+!utils_http.py
+!utils_http_async.py
+!utils_logging.py
+!app.py
+!health_api.py
+!market_calendar.py
 !alembic.ini
 
 # Always ignore Git history, caches and other artifacts.
