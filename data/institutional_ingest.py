@@ -215,9 +215,9 @@ def validate_and_ingest_fundamentals(df: pd.DataFrame, source: str = "polygon") 
             df['knowledge_date'] = pd.to_datetime(df['as_of']) + pd.Timedelta(days=DEFAULT_KNOWLEDGE_LATENCY_DAYS)
 
     try:
-        # Perform ingestion
-        from db import Fundamentals
-        upsert_dataframe(df, Fundamentals.__table__, ['symbol', 'as_of'])
+        # Perform ingestion using proper ON CONFLICT upsert
+        from data.fundamentals import upsert_fundamentals
+        upsert_fundamentals(df)
 
         # Log lineage
         if not df.empty:
