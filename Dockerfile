@@ -40,6 +40,7 @@ COPY utils /app/utils
 
 COPY risk /app/risk
 COPY hedges /app/hedges
+COPY tax /app/tax
 COPY trading /app/trading
 COPY app.py /app/app.py
 COPY health_api.py /app/health_api.py
