@@ -20,7 +20,8 @@
 !jobs/
 !utils/
 !trading/
-
+!risk/
+!hedges/
 
 # Re-include top-level modules and configuration files.
 !db.py
