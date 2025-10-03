@@ -216,8 +216,8 @@ def validate_and_ingest_fundamentals(df: pd.DataFrame, source: str = "polygon") 
 
     try:
         # Perform ingestion using proper ON CONFLICT upsert
-        from data.fundamentals import _upsert_fundamentals
-        _upsert_fundamentals(df)
+        from data.fundamentals import upsert_fundamentals
+        upsert_fundamentals(df)
 
         # Log lineage
         if not df.empty:
