@@ -20,6 +20,8 @@
 !alembic/
 !jobs/
 !utils/
+!trading/
+
 
 # Re-include top-level modules and configuration files.
 !db.py
