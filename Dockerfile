@@ -43,6 +43,7 @@ COPY hedges /app/hedges
 COPY tax /app/tax
 COPY trading /app/trading
 COPY app.py /app/app.py
+COPY performance /app/performance
 COPY health_api.py /app/health_api.py
 COPY market_calendar.py /app/market_calendar.py
 # Individual top‑level modules and configuration
