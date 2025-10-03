@@ -26,6 +26,8 @@
 
 # Re-include top-level modules and configuration files.
 !db.py
+!performance/
+
 !config.py
 !worker.py
 !run_pipeline.py
