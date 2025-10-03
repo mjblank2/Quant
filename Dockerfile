@@ -3,12 +3,13 @@ FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    
 
 # System deps (single line to avoid line-continuation issues)
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
 
 # Copy and fix requirements (PEP 440 comma hotfix for Alembic)
 COPY requirements.txt /app/requirements.txt
@@ -36,6 +37,7 @@ COPY scripts /app/scripts
 # Include missing directories and files
 COPY jobs /app/jobs
 COPY utils /app/utils
+COPY trading /app/trading
 COPY app.py /app/app.py
 COPY health_api.py /app/health_api.py
 COPY market_calendar.py /app/market_calendar.py
