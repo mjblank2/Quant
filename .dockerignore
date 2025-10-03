@@ -22,6 +22,7 @@
 !trading/
 !risk/
 !hedges/
+!tax/
 
 # Re-include top-level modules and configuration files.
 !db.py
