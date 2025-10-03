@@ -249,12 +249,26 @@ def upsert_dataframe(
     table: Any,
     conflict_cols: Optional[list[str]] = None,
     update_cols: Optional[list[str]] = None,
+    chunk_size: Optional[int] = None,
 ) -> None:
     """
     Append a DataFrame to the given table.  Unknown columns are dropped and missing
     columns are filled with None.  Accepts conflict_cols and update_cols for
     backward compatibility.  Uses chunked inserts to avoid Postgres parameter
     limits.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to insert
+    table : Any
+        Table object or name
+    conflict_cols : Optional[list[str]]
+        Conflict columns (for backward compatibility, not used in current implementation)
+    update_cols : Optional[list[str]]
+        Update columns (for backward compatibility, not used in current implementation)
+    chunk_size : Optional[int]
+        Number of rows to insert per batch. Defaults to 1000 if not specified.
     """
     if df is None or df.empty:
         return
@@ -272,11 +286,12 @@ def upsert_dataframe(
         if col not in filtered_df.columns:
             filtered_df[col] = None
     # Use chunked inserts to avoid exceeding parameter limits (65535 in Postgres)
+    chunksize = chunk_size if chunk_size is not None else 1000
     filtered_df.to_sql(
         table_name,
         con=engine,
         if_exists="append",
         index=False,
         method="multi",
-        chunksize=1000,
+        chunksize=chunksize,
     )
