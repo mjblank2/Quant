@@ -15,7 +15,8 @@ from __future__ import annotations
 import asyncio
 import pandas as pd
 from sqlalchemy import text
-from db import engine, upsert_dataframe, Fundamentals
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from db import engine, Fundamentals
 from config import POLYGON_API_KEY
 from utils_http import get_json_async
 import logging
@@ -96,7 +97,8 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
 
                 def _safe_div(a, b):
                     try:
-                        a = float(a); b = float(b)
+                        a = float(a)
+                        b = float(b)
                         if b == 0:
                             return None
                         return a / b
@@ -149,6 +151,66 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
     return df
 
 
+def _dedupe_fundamentals(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop duplicate (symbol, as_of) to avoid ON CONFLICT errors."""
+    if df is None or df.empty:
+        return df
+    before = len(df)
+    df = df.sort_values(["symbol", "as_of"]).drop_duplicates(subset=["symbol", "as_of"], keep="last")
+    after = len(df)
+    if after < before:
+        log.info(f"De-duplicated fundamentals: {before} -> {after}")
+    return df
+
+
+def _upsert_fundamentals(df: pd.DataFrame, chunk_size: int = 1000) -> int:
+    """Upsert to fundamentals using PostgreSQL ON CONFLICT."""
+    if df is None or df.empty:
+        return 0
+
+    # Deduplicate to avoid within-batch conflicts
+    df = _dedupe_fundamentals(df)
+
+    # Filter to only the columns that exist in the table
+    table_cols = ["symbol", "as_of", "available_at", "debt_to_equity",
+                  "return_on_assets", "return_on_equity", "gross_margins",
+                  "profit_margins", "current_ratio"]
+    df_cols = [c for c in table_cols if c in df.columns]
+    df = df[df_cols].copy()
+
+    # Drop rows with null primary key values
+    df = df.dropna(subset=["symbol", "as_of"])
+
+    if df.empty:
+        log.warning("No valid fundamentals data to upsert after filtering")
+        return 0
+
+    total = 0
+    table = Fundamentals.__table__
+
+    with engine.begin() as conn:
+        for start_idx in range(0, len(df), chunk_size):
+            chunk = df.iloc[start_idx:start_idx + chunk_size]
+            payload = chunk.to_dict(orient="records")
+            stmt = pg_insert(table).values(payload)
+
+            # Build update dict for all non-key columns
+            update_dict = {}
+            for col in df_cols:
+                if col not in ["symbol", "as_of"]:  # Exclude primary key columns
+                    update_dict[col] = stmt.excluded[col]
+
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["symbol", "as_of"],
+                set_=update_dict,
+            )
+            conn.execute(stmt)
+            total += len(chunk)
+
+    log.info(f"Upserted {total} fundamental records")
+    return total
+
+
 def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
     """Fetch and upsert financial fundamentals for all symbols in the universe.
 
@@ -170,8 +232,8 @@ def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
         return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
     df = asyncio.run(_poly_financials_async(syms, batch_size=batch_size))
     if not df.empty:
-        # Upsert into the fundamentals table on (symbol, as_of)
-        upsert_dataframe(df, Fundamentals, ["symbol", "as_of"])
+        # Use proper ON CONFLICT upsert instead of simple append
+        _upsert_fundamentals(df)
     return df
 
 
