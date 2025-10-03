@@ -13,7 +13,6 @@ from datetime import date
 os.environ["DATABASE_URL"] = "sqlite:///test_fundamentals_integration.db"
 
 import pandas as pd
-from sqlalchemy import create_engine
 from db import Base, Fundamentals, engine
 from data.fundamentals import _upsert_fundamentals
 
