@@ -11,7 +11,6 @@ import os
 import pandas as pd
 from datetime import date
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
 
 # Set up test database
 os.environ["DATABASE_URL"] = "sqlite:///test_fundamentals_upsert.db"
