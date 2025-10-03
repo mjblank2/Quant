@@ -156,7 +156,7 @@ def _load_shares_outstanding(symbols: List[str]) -> pd.DataFrame:
     return pd.read_sql_query(stmt, engine, params={'syms': tuple(symbols)}, parse_dates=['as_of'])
 
 
-def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame:
+def build_features(batch_size: int = 200, warmup_days: int = 60) -> pd.DataFrame:
     """Incrementally compute and upsert features for the universe.
 
     This function processes the universe in batches, computing technical,
