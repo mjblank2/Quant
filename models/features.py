@@ -359,9 +359,12 @@ def build_features(batch_size: int = 200, warmup_days: int = 60) -> pd.DataFrame
                     lambda s: _zscore(s) if len(s) >= 10 else pd.Series(np.nan, index=s.index)
                 )
 
-       upsert_dataframe(feats, Feature, ['symbol','ts'])
-            new_rows.append(feats)
-            log.info(f"Batch completed. New rows: {len(feats)}")
+                      upsert_dataframe(feats, Feature, ['symbol', 'ts'])
+                
+                       new_rows.append(feats)
+                       log.info(f"Batch completed. New rows: {len(feats)}")
+                
+                        log.info(f"Batch completed. New rows: {len(feats)}")
     return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
 
 
