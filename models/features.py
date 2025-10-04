@@ -356,7 +356,7 @@ def build_features(batch_size: int = 200, warmup_days: int = 60) -> pd.DataFrame
             for col in features_for_cs:
                 zcol = f'cs_z_{col}'
                 feats[zcol] = feats.groupby('ts')[col].transform(
-                labda s: _score(s) if len(s) >= 10 else pd.Series(np.nan, index=s.index)
+                     lambda s: _zscore(s) if len(s) >= 10 else pd.Series(np.nan, index=s.index)
                 )
                                                   upsert_dataframe(feats, Feature, ['symbol', 'ts'])
                     
