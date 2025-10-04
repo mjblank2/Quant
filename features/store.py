@@ -60,7 +60,7 @@ class FeatureStore:
             .drop_duplicates(['symbol', 'ts'], keep='last')
             .reset_index(drop=True)
         )
-        upsert_dataframe(features_df, Feature, ['symbol', 'ts'], chunk_size=200)
+       upsert_dataframe(features_df, Feature, ['symbol','ts'])
         log.info(f"Stored {len(features_df)} feature records")
 
     def get_feature_metadata(self, feature_name: str) -> Dict[str, Any]:
