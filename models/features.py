@@ -358,12 +358,12 @@ def build_features(batch_size: int = 200, warmup_days: int = 60) -> pd.DataFrame
                 feats[zcol] = feats.groupby('ts')[col].transform(
                 labda s: _score(s) if len(s) >= 10 else pd.Series(np.nan, index=s.index)
                 )
-                                              upsert_dataframe(feats, Feature, ['symbol', 'ts'])
-                
-                               new_rows.append(feats)
-                               log.info(f"Batch completed. New rows: {len(feats)}")
-                        
-                     return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
+                                                  upsert_dataframe(feats, Feature, ['symbol', 'ts'])
+                    
+                                   new_rows.append(feats)
+                                   log.info(f"Batch completed. New rows: {len(feats)}")
+                            
+                             return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
 
 
 if __name__ == "__main__":
