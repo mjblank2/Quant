@@ -347,21 +347,23 @@ def build_features(batch_size: int = 200, warmup_days: int = 60) -> pd.DataFrame
             missing_cols = [c for c in features_for_cs if c not in feats.columns]
             for c in missing_cols:
                 feats[c] = np.nan
+
             def _zscore(x: pd.Series) -> pd.Series:
                 m = x.mean()
                 s = x.std(ddof=0)
                 return (x - m) / (s + 1e-8)
+
             # Group by timestamp and apply z‑score; only compute when group size
             # >= 10 to avoid small‑sample noise.  Otherwise fill with NaN.
-            for    for col in features_for_cs:
-        zcol = f'cs_z_{col}'
-        feats[zcol] = feats.groupby('ts')[col].transform(
-            lambda s: _zscore(s) if len(s) >= 10 else pd.Series(np.nan, index=s.index)
-        )
+            for col in features_for_cs:
+                zcol = f'cs_z_{col}'
+                feats[zcol] = feats.groupby('ts')[col].transform(
+                    lambda s: _zscore(s) if len(s) >= 10 else pd.Series(np.nan, index=s.index)
+                )
 
-    upsert_dataframe(feats, Feature, ['symbol', 'ts'])
-    new_rows.append(feats)
-    log.info(f"Batch completed. New rows: {len(feats)}")
+            upsert_dataframe(feats, Feature, ['symbol', 'ts'])
+            new_rows.append(feats)
+            log.info(f"Batch completed. New rows: {len(feats)}")
 
     return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
 

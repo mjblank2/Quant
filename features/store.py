@@ -54,13 +54,13 @@ class FeatureStore:
     def store_features(self, features_df: pd.DataFrame) -> None:
         if features_df.empty:
             return
-        from db import upsert_dataframe, Feature  # type: ignore
+        from db import Feature, upsert_dataframe  # type: ignore
         features_df = (
             features_df.sort_values('ts')
             .drop_duplicates(['symbol', 'ts'], keep='last')
             .reset_index(drop=True)
         )
-       upsert_dataframe(features_df, Feature, ['symbol','ts'])
+        upsert_dataframe(features_df, Feature, ['symbol', 'ts'])
         log.info(f"Stored {len(features_df)} feature records")
 
     def get_feature_metadata(self, feature_name: str) -> Dict[str, Any]:
@@ -79,7 +79,12 @@ class FeatureStore:
             'tags': feature_def.tags
         }
 
-    def validate_feature_consistency(self, training_features: pd.DataFrame, serving_features: pd.DataFrame, tolerance: float = 1e-6) -> Dict[str, Any]:
+    def validate_feature_consistency(
+        self,
+        training_features: pd.DataFrame,
+        serving_features: pd.DataFrame,
+        tolerance: float = 1e-6,
+    ) -> Dict[str, Any]:
         validation_results = {'consistent': True, 'errors': [], 'warnings': []}
         training_cols = set(training_features.columns)
         serving_cols = set(serving_features.columns)
@@ -131,7 +136,8 @@ class FeatureStore:
             """
             from db import engine  # type: ignore
             prices = pd.read_sql_query(text(price_sql), engine, params=params, parse_dates=['ts'])
-            if prices.empty: return pd.DataFrame()
+            if prices.empty:
+                return pd.DataFrame()
 
             shares_sql = f"""
                 SELECT symbol, as_of, shares
