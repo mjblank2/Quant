@@ -227,7 +227,18 @@ def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
         DataFrame of the fetched fundamentals.
     """
     with engine.connect() as con:
-        syms = pd.read_sql_query(text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"), con)["symbol"].tolist()
+        #syms = pd.read_sql_qu# ery(text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"), con)["symbol"].tolist()
+                    try:
+                syms_df = pd.read_sql_query(
+                    text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"),
+                    con,
+                )
+            except Exception:
+                syms_df = pd.read_sql_query(
+                    text("SELECT symbol FROM universe ORDER BY symbol"),
+                    con,
+                )
+            syms = syms_df["symbol"].tolist()
     if not syms:
         return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
     df = asyncio.run(_poly_financials_async(syms, batch_size=batch_size))
