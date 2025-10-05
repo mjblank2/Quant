@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import urllib.parse
+import time
 from datetime import date, datetime
 from typing import Dict, Any, List
 
@@ -59,7 +60,13 @@ def _add_polygon_auth(url: str, api_key: str) -> str:
     return url
 
 
-def _safe_get_json(url: str, params: dict = None, timeout: int = 30) -> dict | None:
+def _safe_get_json(
+    url: str,
+    params: dict = None,
+    timeout: int = 30,
+    retries: int = 3,
+    backoff_factor: float = 0.5,
+) -> dict | None:
     """
     Make a safe HTTP GET request that returns JSON or None on failure.
 
@@ -86,6 +93,36 @@ def _safe_get_json(url: str, params: dict = None, timeout: int = 30) -> dict | N
         actual_url = getattr(resp, 'url', url) if 'resp' in locals() else url
         log.warning("Request failed for %s: %s", actual_url, str(e))
         return None
+    attempt = 0
+    while attempt <= retries:
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+
+            if status_code is not None and 500 <= status_code < 600 and attempt < retries:
+                sleep_seconds = backoff_factor * (2**attempt)
+                log.warning(
+                    "Request failed for %s with status %s, retrying in %.1fs (attempt %d/%d)",
+                    url,
+                    status_code,
+                    sleep_seconds,
+                    attempt + 1,
+                    retries + 1,
+                )
+                time.sleep(sleep_seconds)
+                attempt += 1
+                continue
+
+            log.warning("Request failed for %s: %s", url, str(exc))
+            return None
+        except Exception as exc:  # pragma: no cover - safety net for unexpected errors
+            log.warning("Unexpected error requesting %s: %s", url, str(exc))
+            return None
+
+    return None
 
 
 def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dict[str, Any]]:
