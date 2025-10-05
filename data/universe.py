@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import urllib.parse
 import time
 from datetime import date, datetime
 from typing import Dict, Any, List
@@ -83,6 +84,15 @@ def _safe_get_json(
     dict or None
         The JSON response if successful, None if any error occurs
     """
+    try:
+        resp = requests.get(url, params=params, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        # Log the actual request URL (resp.url includes params)
+        actual_url = getattr(resp, 'url', url) if 'resp' in locals() else url
+        log.warning("Request failed for %s: %s", actual_url, str(e))
+        return None
     attempt = 0
     while attempt <= retries:
         try:
@@ -184,13 +194,20 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
         for result in data.get("results", []):
             symbol = result.get("ticker")
             name = result.get("name")
+            
+            # Skip if symbol is invalid (None, empty, or contains special chars)
+            if not symbol or not isinstance(symbol, str) or not symbol.strip():
+                log.warning("Skipping invalid symbol in results: %s", result)
+                continue
 
             # Try to get market_cap from the paginated result first
             market_cap = result.get("market_cap")
 
             # Only call the details endpoint if market_cap is missing
             if market_cap is None:
-                detail_url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
+                # URL-encode the symbol for use in path
+                encoded_symbol = urllib.parse.quote(symbol.strip(), safe='')
+                detail_url = f"https://api.polygon.io/v3/reference/tickers/{encoded_symbol}"
                 details = _safe_get_json(detail_url, params={"apiKey": api_key})
                 if details is not None:
                     market_cap = (
