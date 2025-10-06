@@ -32,6 +32,40 @@ def _normalise_dsn(url: str) -> str:
 def _create_engine_from_env() -> Any:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
+        raise RuntimeError("DATABASE_URL environment vafrom __future__ import annotations
+
+import os
+from datetime import date
+from typing import Any, Optional
+
+import pandas as pd
+from sqlalchemy import (
+    Column,
+    Date,
+    Float,
+    Integer,
+    String,
+    Index,
+    Boolean,
+    DateTime,
+    create_engine,
+    inspect,
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+
+def _normalise_dsn(url: str) -> str:
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif url.startswith("postgresql://") and "+psycopg" not in url:
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return url
+
+
+def _create_engine_from_env() -> Any:
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
         raise RuntimeError("DATABASE_URL environment variable is not set")
     dsn = _normalise_dsn(dsn)
     return create_engine(dsn, pool_pre_ping=True)
@@ -301,6 +335,20 @@ def upsert_dataframe(
         if col not in filtered_df.columns:
             filtered_df[col] = None
 
+    # Convert DataFrame columns to numeric for columns that are Float in the database.
+    # When DataFrame dtypes are object (e.g. strings), pandas will generate VARCHAR
+    # parameters in to_sql, causing a datatype mismatch.  Inspect the table schema
+    # and coerce any Float columns to numeric before insertion.
+    try:
+        insp_cols = inspect(engine).get_columns(table_name)
+        float_cols = [col_info["name"] for col_info in insp_cols if isinstance(col_info["type"], Float)]
+        for col in float_cols:
+            if col in filtered_df.columns:
+                filtered_df[col] = pd.to_numeric(filtered_df[col], errors="coerce")
+    except Exception:
+        # If inspection fails, silently skip casting; invalid types will raise DB errors
+        pass
+
     # choose a sensible chunksize to avoid hitting Postgres parameter limits (65535)
     chunksize = chunk_size if chunk_size is not None else 1000
 
@@ -312,3 +360,4 @@ def upsert_dataframe(
         method="multi",
         chunksize=chunksize,
     )
+
