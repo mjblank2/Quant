@@ -4,7 +4,7 @@ import logging
 import os
 import urllib.parse
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Dict, Any, List
 
 import requests
@@ -328,8 +328,8 @@ def rebuild_universe() -> List[Dict[str, Any]]:
                 "symbol": item["symbol"],
                 "name": name,
                 "included": True,
-                # datetime.utcnow() is deprecated and timezone-naive
-                "last_updated": datetime.now(datetime.UTC),
+                # timezone-aware UTC (compatible across Python versions)
+                "last_updated": datetime.now(timezone.utc),
             })
 
         if truncated_names > 0:
