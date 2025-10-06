@@ -32,40 +32,6 @@ def _normalise_dsn(url: str) -> str:
 def _create_engine_from_env() -> Any:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
-        raise RuntimeError("DATABASE_URL environment vafrom __future__ import annotations
-
-import os
-from datetime import date
-from typing import Any, Optional
-
-import pandas as pd
-from sqlalchemy import (
-    Column,
-    Date,
-    Float,
-    Integer,
-    String,
-    Index,
-    Boolean,
-    DateTime,
-    create_engine,
-    inspect,
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-
-
-def _normalise_dsn(url: str) -> str:
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+psycopg://", 1)
-    elif url.startswith("postgresql://") and "+psycopg" not in url:
-        return url.replace("postgresql://", "postgresql+psycopg://", 1)
-    return url
-
-
-def _create_engine_from_env() -> Any:
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
         raise RuntimeError("DATABASE_URL environment variable is not set")
     dsn = _normalise_dsn(dsn)
     return create_engine(dsn, pool_pre_ping=True)
@@ -360,4 +326,3 @@ def upsert_dataframe(
         method="multi",
         chunksize=chunksize,
     )
-
