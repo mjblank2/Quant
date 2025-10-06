@@ -18,6 +18,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import inspect
+
 
 
 def _normalise_dsn(url: str) -> str:
@@ -281,8 +283,15 @@ def upsert_dataframe(
     if table_name not in Base.metadata.tables:
         raise ValueError(f"Unknown table: {table_name}")
     valid_cols = set(c.name for c in Base.metadata.tables[table_name].columns)
+        try:
+        insp = inspect(engine)
+        columns_info = insp.get_columns(table_name)
+        valid_cols = {col["name"] for col in columns_info}
+    except Exception:
+        valid_cols = {c.name for c in Base.metadata.tables[table_name].columns}
+
     filtered_df = df.copy()[[c for c in df.columns if c in valid_cols]]
-    for col in valid_cols:
+    3for col in valid_cols:
         if col not in filtered_df.columns:
             filtered_df[col] = None
     # Use chunked inserts to avoid exceeding parameter limits (65535 in Postgres)
