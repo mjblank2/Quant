@@ -15,11 +15,10 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     create_engine,
+    inspect,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import inspect
-
 
 
 def _normalise_dsn(url: str) -> str:
@@ -274,28 +273,37 @@ def upsert_dataframe(
     """
     if df is None or df.empty:
         return
+    # determine table_name from object or string
     if hasattr(table, "name"):
         table_name = table.name
     elif hasattr(table, "__tablename__"):
         table_name = table.__tablename__
     else:
         table_name = str(table)
+
     if table_name not in Base.metadata.tables:
         raise ValueError(f"Unknown table: {table_name}")
+
+    # gather valid columns for the target table using live inspection of the database
     valid_cols = set(c.name for c in Base.metadata.tables[table_name].columns)
-        try:
+    try:
         insp = inspect(engine)
         columns_info = insp.get_columns(table_name)
         valid_cols = {col["name"] for col in columns_info}
     except Exception:
+        # fallback to metadata-defined columns if inspection fails
         valid_cols = {c.name for c in Base.metadata.tables[table_name].columns}
 
+    # retain only columns that exist in the table
     filtered_df = df.copy()[[c for c in df.columns if c in valid_cols]]
-    3for col in valid_cols:
+    # add missing columns with None so that pandas.to_sql includes them
+    for col in valid_cols:
         if col not in filtered_df.columns:
             filtered_df[col] = None
-    # Use chunked inserts to avoid exceeding parameter limits (65535 in Postgres)
+
+    # choose a sensible chunksize to avoid hitting Postgres parameter limits (65535)
     chunksize = chunk_size if chunk_size is not None else 1000
+
     filtered_df.to_sql(
         table_name,
         con=engine,
