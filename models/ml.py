@@ -35,6 +35,7 @@ from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor
 from sklearn.linear_model import ElasticNet
 from sklearn.ensemble import HistGradientBoostingRegressor
 from db import engine, upsert_dataframe, Prediction
+from utils.prediction_metadata import as_naive_utc, with_prediction_metadata
 from models.transformers import CrossSectionalNormalizer
 from models.rl_models import QTableRegressor
 from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS,
@@ -914,6 +915,8 @@ def train_and_predict_all_models(window_years: int = 4):
         regime = classify_regime(latest_ts)
         blend_w = gate_blend_weights(blend_w, regime)
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
+    prediction_horizon = int(TARGET_HORIZON_DAYS)
+    created_at_ts = as_naive_utc(pd.Timestamp.utcnow().floor('s'))
     # Fit & predict base models
     for name, pipe in models.items():
         # Deep copy the pipeline to avoid contaminating base specs
@@ -989,9 +992,14 @@ def train_and_predict_all_models(window_years: int = 4):
         out['y_pred'] = pred_vals.astype(float)
         out['model_version'] = f"{name}_v1"
         preds_dict[name] = out.set_index('symbol')['y_pred']
-        outputs[name] = out.copy()
+        enriched_out = with_prediction_metadata(out, prediction_horizon, created_at_ts)
+        outputs[name] = enriched_out.copy()
         # Persist predictions
-        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+        upsert_dataframe(
+            enriched_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+            Prediction,
+            ['symbol', 'ts', 'model_version']
+        )
     # Create blended predictions (raw and neutralized)
     if blend_w:
         sym_index = latest_df['symbol']
@@ -1005,8 +1013,9 @@ def train_and_predict_all_models(window_years: int = 4):
         out['ts'] = latest_ts
         out['y_pred'] = blend.astype(float)
         out['model_version'] = 'blend_raw_v1'
+        out = with_prediction_metadata(out, prediction_horizon, created_at_ts)
         outputs['blend_raw'] = out.copy()
-        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
         # Sector/factor neutralization
         try:
             # Factor exposures used for neutralization; fallback to just size_ln, mom_21, turnover_21
@@ -1021,13 +1030,15 @@ def train_and_predict_all_models(window_years: int = 4):
             out2['ts'] = latest_ts
             out2['y_pred'] = resid.values
             out2['model_version'] = 'blend_v1'
+            out2 = with_prediction_metadata(out2, prediction_horizon, created_at_ts)
             outputs['blend'] = out2.copy()
-            upsert_dataframe(out2[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+            upsert_dataframe(out2[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
         except Exception as e:
             log.warning(f"Neutralization failed: {e}; fallback to raw blend.")
             out_fallback = out.copy()
             out_fallback['model_version'] = 'blend_v1'
-            upsert_dataframe(out_fallback[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+            out_fallback = with_prediction_metadata(out_fallback, prediction_horizon, created_at_ts)
+            upsert_dataframe(out_fallback[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
 
     # ----------------------------------------------------------------------
     # Meta‑model blending.  Combine base model predictions via a linear
@@ -1059,8 +1070,9 @@ def train_and_predict_all_models(window_years: int = 4):
             meta_out['ts'] = latest_ts
             meta_out['y_pred'] = meta_pred.astype(float)
             meta_out['model_version'] = 'blend_meta_v1'
+            meta_out = with_prediction_metadata(meta_out, prediction_horizon, created_at_ts)
             outputs['blend_meta'] = meta_out.copy()
-            upsert_dataframe(meta_out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+            upsert_dataframe(meta_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
         except Exception as e:
             log.warning(f"Meta blending failed: {e}")
 
@@ -1108,8 +1120,9 @@ def train_and_predict_all_models(window_years: int = 4):
                     regime_out['ts'] = latest_ts
                     regime_out['y_pred'] = gating_pred.astype(float)
                     regime_out['model_version'] = 'blend_regime_v1'
+                    regime_out = with_prediction_metadata(regime_out, prediction_horizon, created_at_ts)
                     outputs['blend_regime'] = regime_out.copy()
-                    upsert_dataframe(regime_out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+                    upsert_dataframe(regime_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
                 else:
                     log.warning("Regime gating skipped: insufficient tree or neural predictions")
         except Exception as e:
