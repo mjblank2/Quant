@@ -191,9 +191,9 @@ class Prediction(Base):
     symbol = Column(String(20), primary_key=True, nullable=False)
     ts = Column(Date, primary_key=True, nullable=False, index=True)
     model_version = Column(String(32), primary_key=True, nullable=False, index=True)
+    horizon = Column(Integer, primary_key=True, nullable=False, default=5)
+    created_at = Column(DateTime, primary_key=True, nullable=False, server_default=func.now())
     y_pred = Column(Float, nullable=False)
-    horizon = Column(Integer, nullable=False, default=5)
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
     __table_args__ = (
         Index("ix_predictions_ts", "ts"),
         Index("ix_predictions_ts_model", "ts", "model_version"),
