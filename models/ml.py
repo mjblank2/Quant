@@ -973,9 +973,6 @@ def train_and_predict_all_models(window_years: int = 4):
             out2 = with_prediction_metadata(out2, prediction_horizon, created_at_ts)
             outputs['blend'] = out2.copy()
             upsert_dataframe(out2[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
-            out2['horizon'] = TARGET_HORIZON_DAYS
-            out2['created_at'] = created_at_ts
-            outputs['blend'] = out2.copy()
             upsert_dataframe(
                 out2[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
                 Prediction,
