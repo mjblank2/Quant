@@ -97,34 +97,33 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# Feature set used for model training and prediction.  Extended to include
-# volatility-adjusted reversal and idiosyncratic volatility.  The list is
+# Feature set used for model training and prediction.  Trimmed to include only
+# features that are actually computed by models/features.py.  The list is
 # intentionally ordered so that price/momentum/volatility features come first,
-# followed by liquidity/size/beta and additional features.  Sparse event
-# features (like PEAD and Russell index inclusion) are appended at the end.
-# Base set of feature names.  The order places price/momentum/volatility
-# features first, followed by liquidity/size/beta features, then technical
-# indicators, fundamental ratios and sparse event indicators.  See
-# models/features.py for generation of these features.
+# followed by liquidity/size/beta, fundamental ratios, macro features and sparse
+# event indicators.  See models/features.py for generation of these features.
 FEATURE_COLS = [
-    "ret_1d", "ret_5d", "ret_21d", "mom_21", "mom_63", "vol_21", "rsi_14",
-    "turnover_21", "size_ln", "overnight_gap", "illiq_21", "beta_63",
-    # Volatility-adjusted reversal and idiosyncratic volatility
-    "reversal_5d_z", "ivol_63",
-    # New technical indicators
-    "ema_12", "ema_26", "macd", "ema_50", "ema_200", "ma_ratio_50_200",
-    "vol_63", "vol_252", "mom_252",
-    "spread_ratio", "spread_21", "atr_14", "obv",
+    # Price/returns and momentum
+    "ret_1d", "ret_5d", "ret_21d",
+    "mom_21", "mom_63",
+    # Volatility, RSI and liquidity
+    "vol_21", "rsi_14",
+    "turnover_21",
+    "size_ln",
+    "overnight_gap",
+    "illiq_21",
+    "beta_63",
+    # Liquidity measure used in cross-sectional z‑scores
+    "adv_usd_21",
     # Fundamental ratios
-    "f_pe_ttm", "f_pb", "f_ps_ttm", "f_debt_to_equity", "f_roa", "f_roe", "f_gross_margin",
-    "f_profit_margin", "f_current_ratio",
-    # Market‑level macro features (from benchmark returns).  We include
-    # multiple horizons to provide the models with medium‑term context.
+    "f_pe_ttm", "f_pb", "f_ps_ttm", "f_debt_to_equity",
+    "f_roa", "f_roe", "f_gross_margin", "f_profit_margin", "f_current_ratio",
+    # Market‑level macro features (from benchmark returns) across multiple horizons
     "mkt_ret_1d", "mkt_ret_5d", "mkt_ret_21d", "mkt_ret_63d",
     "mkt_vol_21", "mkt_vol_63",
     "mkt_skew_21", "mkt_kurt_21", "mkt_skew_63", "mkt_kurt_63",
     # Sparse high-impact event features
-    "pead_event", "pead_surprise_eps", "pead_surprise_rev", "russell_inout"
+    "pead_event", "pead_surprise_eps", "pead_surprise_rev", "russell_inout",
 ]
 
 # Cross‑sectional z‑score features.  These columns (prefixed with ``cs_z_``)
@@ -139,11 +138,13 @@ CS_Z_FEATURES = [
     'f_roa', 'f_roe', 'f_gross_margin', 'f_profit_margin', 'f_current_ratio'
 ]
 # Append the z‑score columns to the feature list.  We do this outside the
-# literal definition to keep the diff minimal and to reflect that these
-# features are optional; if not present in the DB they will be backfilled
-# with NaN and later replaced with zeros during training.
+# literal definition to reflect that these features are optional; if not
+# present in the DB they will be backfilled with NaN and later replaced
+# with zeros during training.
 for _base in CS_Z_FEATURES:
     FEATURE_COLS.append(f'cs_z_{_base}')
+
+# Trading cost adjustment columns
 TCA_COLS = ["vol_21", "adv_usd_21"]
 
 # Target variable used for training and evaluation.  By default, we model
@@ -156,14 +157,12 @@ TARGET_VARIABLE = 'fwd_ret_resid'
 MIN_TARGET_COVERAGE = float(os.getenv("MIN_TARGET_COVERAGE", "0.6"))  # 60% minimum coverage
 FALLBACK_TARGET = 'fwd_ret'  # Fallback target when primary coverage is low
 
-
 def _latest_feature_date():
     try:
         df = pd.read_sql_query(text("SELECT MAX(ts) AS max_ts FROM features"), engine, parse_dates=["max_ts"])
         return df.iloc[0, 0]
     except Exception:
         return None
-
 
 def _load_features_window(start_ts, end_ts):
     """
@@ -194,9 +193,12 @@ def _load_features_window(start_ts, end_ts):
             return pd.DataFrame(columns=cols)
     sql = f"SELECT {cols_str} FROM features WHERE ts >= :start AND ts <= :end"
     try:
-        df = pd.read_sql_query(text(sql), engine,
-                               params={"start": start_ts.date(), "end": end_ts.date()},
-                               parse_dates=["ts"])
+        df = pd.read_sql_query(
+            text(sql),
+            engine,
+            params={"start": start_ts.date(), "end": end_ts.date()},
+            parse_dates=["ts"],
+        )
         for col in missing:
             df[col] = np.nan
         # ensure deterministic order and column set
@@ -209,16 +211,24 @@ def _load_features_window(start_ts, end_ts):
 
 def _load_prices_window(start_ts, end_ts):
     try:
-        return pd.read_sql_query(text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
-                                 engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts']).sort_values(['symbol', 'ts'])
+        return pd.read_sql_query(
+            text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars WHERE ts>=:s AND ts<=:e"),
+            engine,
+            params={'s': start_ts.date(), 'e': end_ts.date()},
+            parse_dates=['ts']
+        ).sort_values(['symbol', 'ts'])
     except Exception:
         return pd.DataFrame(columns=['symbol', 'ts', 'px'])
 
 
 def _load_altsignals(start_ts, end_ts):
     try:
-        df = pd.read_sql_query(text("SELECT symbol, ts, name, value FROM alt_signals WHERE ts>=:s AND ts<=:e"),
-                               engine, params={'s': start_ts.date(), 'e': end_ts.date()}, parse_dates=['ts'])
+        df = pd.read_sql_query(
+            text("SELECT symbol, ts, name, value FROM alt_signals WHERE ts>=:s AND ts<=:e"),
+            engine,
+            params={'s': start_ts.date(), 'e': end_ts.date()},
+            parse_dates=['ts']
+        )
     except Exception:
         return pd.DataFrame(columns=['symbol', 'ts', 'name', 'value'])
     if df.empty:
@@ -234,8 +244,10 @@ def _xgb_threads() -> int:
 
 
 def _define_pipeline(estimator: Any) -> Pipeline:
-    return Pipeline([("normalizer", CrossSectionalNormalizer(winsorize_tails=0.05)),
-                     ("model", estimator)])
+    return Pipeline([
+        ("normalizer", CrossSectionalNormalizer(winsorize_tails=0.05)),
+        ("model", estimator),
+    ])
 
 
 def _model_specs() -> Dict[str, Pipeline]:
@@ -245,15 +257,19 @@ def _model_specs() -> Dict[str, Pipeline]:
     Returns a dictionary mapping model names to sklearn Pipelines.  In addition
     to standard regression models (RandomForest, Ridge, XGBoost), this
     function conditionally includes a learning-to-rank (LTR) variant of
-    XGBoost if the XGBoost library is installed.  The LTR model uses
-    the 'rank:ndcg' objective when XGBRanker is available and falls back to
-    a regression objective (rmse) when XGBRanker is not available.
+    XGBoost if the XGBoost library is installed.  The LTR model always falls
+    back to a regression objective (rmse) using XGBRegressor to avoid
+    integer-label constraints.
     """
     specs: Dict[str, Pipeline] = {
-        "rf": _define_pipeline(RandomForestRegressor(n_estimators=350, max_depth=10,
-                                                      random_state=42, n_jobs=_xgb_threads())),
+        "rf": _define_pipeline(RandomForestRegressor(
+            n_estimators=350,
+            max_depth=10,
+            random_state=42,
+            n_jobs=_xgb_threads()
+        )),
         "ridge": _define_pipeline(Ridge(alpha=1.0)),
-        # ExtraTrees model: extremely randomized trees for robust non‑linear patterns
+        # ExtraTrees model: extremely randomized trees for robust non-linear patterns
         "extra_trees": _define_pipeline(ExtraTreesRegressor(
             n_estimators=400,
             max_depth=10,
@@ -272,7 +288,7 @@ def _model_specs() -> Dict[str, Pipeline]:
             random_state=42
         )),
         # ElasticNet linear model: combines L1 and L2 regularization; can capture sparse relationships
-        "elasticnet": _define_pipeline(ElasticNet(alpha=0.1, l1_ratio=0.5, random_state=42))
+        "elasticnet": _define_pipeline(ElasticNet(alpha=0.1, l1_ratio=0.5, random_state=42)),
     }
     # Only include XGBoost models if the import succeeded.  The
     # presence of XGBRegressor is used as a proxy for all optional models,
@@ -290,21 +306,8 @@ def _model_specs() -> Dict[str, Pipeline]:
             n_jobs=_xgb_threads(),
             tree_method="hist"
         ))
-    # Learning-to-rank model using NDCG objective (if ranker is available)
-    if XGBRanker is not None:
-        specs["xgb_ltr"] = _define_pipeline(XGBRanker(
-            objective='rank:ndcg',
-            n_estimators=500,
-            max_depth=4,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=_xgb_threads(),
-            tree_method="hist"
-        ))
-    else:
-        # Fall back to a regression objective (rmse) if the ranker isn't available
+        # Always define the LTR model using XGBRegressor with rmse objective.  Using
+        # XGBRanker triggers integer-label constraints which are not met here.
         specs["xgb_ltr"] = _define_pipeline(XGBRegressor(
             objective='rmse',
             n_estimators=500,
@@ -316,8 +319,9 @@ def _model_specs() -> Dict[str, Pipeline]:
             n_jobs=_xgb_threads(),
             tree_method="hist"
         ))
-
-        # LightGBM regression model (if available)
+    # LightGBM regression model (if available)
+    if XGBRegressor is None or LGBMRegressor is not None:
+        # include LightGBM even if xgboost is absent; unify with existing spec
         if LGBMRegressor is not None:
             specs["lgbm"] = _define_pipeline(LGBMRegressor(
                 n_estimators=500,
@@ -329,28 +333,20 @@ def _model_specs() -> Dict[str, Pipeline]:
                 random_state=42,
                 n_jobs=_xgb_threads()
             ))
-
-        # CatBoost regression model (if available).  Set verbose=0 to silence output.
-        if CatBoostRegressor is not None:
-            specs["cat"] = _define_pipeline(CatBoostRegressor(
-                iterations=300,
-                depth=6,
-                learning_rate=0.05,
-                loss_function='RMSE',
-                random_seed=42,
-                verbose=False
-            ))
-
-        # Stacking ensemble combining tree-based models
-        # Use base estimators from the above specs directly in the stacker
-        # Only include a subset to avoid excessive complexity
-        stack_estimators = []
-        # We'll pull out the underlying estimators (not pipelines) because
-        # StackingRegressor expects estimators without preprocessing.  The
-        # CrossSectionalNormalizer is applied by the outer pipeline created by
-        # _define_pipeline.
-        if XGBRegressor is not None:
-            stack_estimators.append(("xgb", XGBRegressor(
+    # CatBoost regression model (if available).  Set verbose=0 to silence output.
+    if CatBoostRegressor is not None:
+        specs["cat"] = _define_pipeline(CatBoostRegressor(
+            iterations=300,
+            depth=6,
+            learning_rate=0.05,
+            loss_function='RMSE',
+            random_seed=42,
+            verbose=False
+        ))
+    # Stacking ensemble combining tree-based models. Use base estimators directly in the stacker.
+    stack_estimators = []
+    if XGBRegressor is not None:
+        stack_estimators.append(("xgb", XGBRegressor(
             n_estimators=500,
             max_depth=4,
             learning_rate=0.05,
@@ -360,121 +356,95 @@ def _model_specs() -> Dict[str, Pipeline]:
             n_jobs=_xgb_threads(),
             tree_method="hist"
         )))
-        if LGBMRegressor is not None:
-            stack_estimators.append(("lgbm", LGBMRegressor(
-                n_estimators=500,
-                num_leaves=31,
-                max_depth=-1,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42,
-                n_jobs=_xgb_threads()
-            )))
-        if CatBoostRegressor is not None:
-            stack_estimators.append(("cat", CatBoostRegressor(
-                iterations=300,
-                depth=6,
-                learning_rate=0.05,
-                loss_function='RMSE',
-                random_seed=42,
-                verbose=False
-            )))
-
-        # Create the stacking model only if we have at least two base estimators
-        if len(stack_estimators) >= 2:
-            stack_model = StackingRegressor(
-                estimators=stack_estimators,
-                final_estimator=Ridge(alpha=1.0),
-                n_jobs=_xgb_threads(),
-                passthrough=False
-            )
-            specs["stack"] = _define_pipeline(stack_model)
-
-        # Feedforward neural network (MLP) model
-        # Uses two hidden layers with early stopping and L2 regularization to
-        # reduce overfitting.  Note: MLPRegressor supports sample_weight in
-        # sklearn >=1.0; if unsupported, training without weights will be
-        # attempted by the calling code.
-        specs["mlp"] = _define_pipeline(MLPRegressor(
-            hidden_layer_sizes=(128, 64),
-            activation='relu',
-            solver='adam',
-            alpha=1e-4,
-            learning_rate_init=1e-3,
-            max_iter=500,
-            early_stopping=True,
-            validation_fraction=0.1,
+    if LGBMRegressor is not None:
+        stack_estimators.append(("lgbm", LGBMRegressor(
+            n_estimators=500,
+            num_leaves=31,
+            max_depth=-1,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=_xgb_threads()
+        )))
+    if CatBoostRegressor is not None:
+        stack_estimators.append(("cat", CatBoostRegressor(
+            iterations=300,
+            depth=6,
+            learning_rate=0.05,
+            loss_function='RMSE',
+            random_seed=42,
+            verbose=False
+        )))
+    # Create the stacking model only if we have at least two base estimators
+    if len(stack_estimators) >= 2:
+        stack_model = StackingRegressor(
+            estimators=stack_estimators,
+            final_estimator=Ridge(alpha=1.0),
+            n_jobs=_xgb_threads(),
+            passthrough=False
+        )
+        specs["stack"] = _define_pipeline(stack_model)
+    # Feedforward neural network (MLP) model
+    specs["mlp"] = _define_pipeline(MLPRegressor(
+        hidden_layer_sizes=(128, 64),
+        activation='relu',
+        solver='adam',
+        alpha=1e-4,
+        learning_rate_init=1e-3,
+        max_iter=500,
+        early_stopping=True,
+        validation_fraction=0.1,
+        random_state=42
+    ))
+    # Deep feedforward neural network with three hidden layers.
+    specs["deep_mlp"] = _define_pipeline(MLPRegressor(
+        hidden_layer_sizes=(256, 128, 64),
+        activation='relu',
+        solver='adam',
+        alpha=1e-4,
+        learning_rate_init=1e-3,
+        max_iter=800,
+        early_stopping=True,
+        validation_fraction=0.1,
+        random_state=42
+    ))
+    # HistGradientBoostingRegressor: a fast, tree‑based gradient boosting
+    # implementation that can approximate deeper tree interactions.
+    try:
+        _ = HistGradientBoostingRegressor
+        specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
+            loss='lsquared_error',
+            max_depth=6,
+            learning_rate=0.05,
+            max_iter=300,
+            l2_regularization=0.0,
             random_state=42
         ))
-
-        # Deep feedforward neural network with three hidden layers.  This
-        # expands model capacity to capture more complex patterns while
-        # retaining early stopping and L2 regularization to mitigate
-        # overfitting.  Note: training may take longer than the shallow MLP.
-        specs["deep_mlp"] = _define_pipeline(MLPRegressor(
-            hidden_layer_sizes=(256, 128, 64),
-            activation='relu',
-            solver='adam',
-            alpha=1e-4,
-            learning_rate_init=1e-3,
-            max_iter=800,
-            early_stopping=True,
-            validation_fraction=0.1,
-            random_state=42
-        ))
-
-        # HistGradientBoostingRegressor: a fast, tree‑based gradient boosting
-        # implementation that can approximate deeper tree interactions.  It
-        # handles missing values internally and may offer better performance
-        # than GBDT on tabular data.  Only include it if scikit‑learn
-        # provides the class (imported above).
-        try:
-            _ = HistGradientBoostingRegressor
-            specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
-                loss='lsquared_error',
-                max_depth=6,
-                learning_rate=0.05,
-                max_iter=300,
-                l2_regularization=0.0,
-                random_state=42
-            ))
-        except Exception:
-            pass
-
-        # Very deep feedforward neural network with four hidden layers.  This
-        # model substantially increases capacity at the risk of overfitting;
-        # cross‑validation will decide whether it adds value.  We include it
-        # conditionally so that environments without sufficient compute can skip it.
-        specs["very_deep_mlp"] = _define_pipeline(MLPRegressor(
-            hidden_layer_sizes=(512, 256, 128, 64),
-            activation='relu',
-            solver='adam',
-            alpha=1e-4,
-            learning_rate_init=1e-3,
-            max_iter=1000,
-            early_stopping=True,
-            validation_fraction=0.1,
-            random_state=42
-        ))
-
-        # Simple reinforcement-learning inspired Q-table model
-        # This model discretizes the training returns into quantile bins and
-        # learns expected rewards for long/hold/short actions.  At prediction
-        # time it infers a state from the first feature (e.g. 1‑day return)
-        # and outputs a signal in {‑1, 0, +1}.  While primitive compared to
-        # full RL algorithms, it provides a reinforcement‑learning flavour
-        # within the available package constraints.
-        specs["q_table"] = _define_pipeline(QTableRegressor(n_bins=10, random_state=42))
+    except Exception:
+        pass
+    # Very deep feedforward neural network with four hidden layers.
+    specs["very_deep_mlp"] = _define_pipeline(MLPRegressor(
+        hidden_layer_sizes=(512, 256, 128, 64),
+        activation='relu',
+        solver='adam',
+        alpha=1e-4,
+        learning_rate_init=1e-3,
+        max_iter=1000,
+        early_stopping=True,
+        validation_fraction=0.1,
+        random_state=42
+    ))
+    # Simple reinforcement-learning inspired Q-table model
+    specs["q_table"] = _define_pipeline(QTableRegressor(n_bins=10, random_state=42))
     return specs
 
-    # Hyper‑parameter grids for each model.  These grids are designed to be
-    # relatively small to keep cross‑validation feasible.  Keys should match
-    # entries in the models dictionary returned by `_model_specs`.  Parameter
-    # names must include the 'model__' prefix to refer to the estimator
-    # inside the Pipeline.  Models absent from this mapping will be fit
-    # without tuning.
-
+# Hyper‑parameter grids for each model.  These grids are designed to be
+# relatively small to keep cross‑validation feasible.  Keys should match
+# entries in the models dictionary returned by `_model_specs`.
+# Parameter names must include the 'model__' prefix to refer to the estimator
+# inside the Pipeline.  Models absent from this mapping will be fit
+# without tuning.
 PARAM_GRIDS: Dict[str, Dict[str, list]] = {
     'rf': {
         'model__n_estimators': [200, 400, 600],
@@ -539,9 +509,7 @@ PARAM_GRIDS: Dict[str, Dict[str, list]] = {
         'model__max_iter': [200, 400]
     },
     # Very deep MLP parameter grid: experiment with more layers and
-    # stronger regularization to balance capacity and overfitting risk.  The
-    # final 32‑unit layer provides an additional nonlinearity to capture
-    # nuanced relationships.
+    # stronger regularization to balance capacity and overfitting risk.
     'very_deep_mlp': {
         'model__hidden_layer_sizes': [
             (512, 256, 128, 64),
@@ -549,8 +517,9 @@ PARAM_GRIDS: Dict[str, Dict[str, list]] = {
         ],
         'model__alpha': [1e-4, 1e-3, 1e-2],
         'model__learning_rate_init': [1e-3, 5e-3]
-    }
+    },
 }
+
 
 def _parse_blend_weights(s: str) -> Dict[str, float]:
     out: Dict[str, float] = {}
@@ -588,10 +557,14 @@ def _calculate_target_coverage(df: pd.DataFrame, target_col: str) -> float:
     return non_null_rows / total_rows if total_rows > 0 else 0.0
 
 
-def train_with_cv(X_train: pd.DataFrame, y_train: np.ndarray, base_model: Pipeline,
-                  param_grid: dict[str, list] | None,
-                  sample_weight: np.ndarray | None = None,
-                  group: np.ndarray | None = None) -> Pipeline:
+def train_with_cv(
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    base_model: Pipeline,
+    param_grid: dict[str, list] | None,
+    sample_weight: np.ndarray | None = None,
+    group: np.ndarray | None = None
+) -> Pipeline:
     """
     Train a model using time-series cross-validation and return the best estimator.
 
@@ -602,37 +575,28 @@ def train_with_cv(X_train: pd.DataFrame, y_train: np.ndarray, base_model: Pipeli
     y_train : np.ndarray
         Target values corresponding to X_train.
     base_model : Pipeline
-        Sklearn Pipeline to tune.  The estimator must be accessible via the
-        'model' step.
+        Sklearn Pipeline to tune.  The estimator must be accessible via the 'model' step.
     param_grid : dict[str, list], optional
-        Hyperparameter grid for GridSearchCV.  Keys should correspond to
-        pipeline parameter names (e.g. 'model__n_estimators').  If None or
-        empty, the base_model will be fit without hyper‑parameter search.
+        Hyperparameter grid for GridSearchCV.  Keys should correspond to pipeline
+        parameter names (e.g. 'model__n_estimators').  If None or empty, the
+        base_model will be fit without hyper‑parameter search.
     sample_weight : np.ndarray, optional
-        Sample weights for each observation.  If provided, these weights
-        will be passed through GridSearchCV to each fit.
+        Sample weights for each observation.  If provided, these weights will be
+        passed through to each fit.
     group : np.ndarray, optional
         Optional group array for learning‑to‑rank models (e.g. XGBoost rank:ndcg).
 
     Returns
     -------
     Pipeline
-        The fitted best estimator.  If no param_grid is provided, returns
-        the base_model after fitting.
+        The fitted best estimator.  If no param_grid is provided, returns the base_model after fitting.
     """
     if param_grid:
         cv = TimeSeriesSplit(n_splits=5)
-        # Select search strategy based on USE_RANDOM_SEARCH flag.  Use
-        # RandomizedSearchCV when enabled to explore a subset of parameter
-        # combinations; otherwise use deterministic GridSearchCV.  The
-        # param_grid is passed directly to param_distributions since lists
-        # are valid distributions.
+        # Select search strategy based on USE_RANDOM_SEARCH flag.
         if USE_HALVING_SEARCH:
-            # Successive halving search: adaptively allocates resources to
-            # promising hyper‑parameter configurations.  See HALVING_FACTOR
-            # environment variable for controlling aggressiveness.  This
-            # search uses the number of samples as the resource and stops
-            # early for poor performers.
+            # Successive halving search: adaptively allocates resources to promising hyper-parameter configurations.
+            # Use the number of samples as the resource and stop early for poor performers.
             search = HalvingRandomSearchCV(
                 base_model,
                 param_distributions=param_grid,
@@ -640,7 +604,8 @@ def train_with_cv(X_train: pd.DataFrame, y_train: np.ndarray, base_model: Pipeli
                 factor=HALVING_FACTOR,
                 resource='n_samples',
                 max_resources='auto',
-                min_resources='auto',
+                # Use 'smallest' for min_resources to avoid invalid 'auto' default
+                min_resources='smallest',
                 scoring='neg_mean_absolute_error',
                 n_jobs=-1,
                 random_state=42,
@@ -697,22 +662,6 @@ def train_with_cv(X_train: pd.DataFrame, y_train: np.ndarray, base_model: Pipeli
 def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback_target: str, min_coverage: float) -> str:
     """
     Select the best target variable based on coverage thresholds.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Training DataFrame
-    primary_target : str
-        Preferred target variable (e.g., 'fwd_ret_resid')
-    fallback_target : str
-        Fallback target variable (e.g., 'fwd_ret')
-    min_coverage : float
-        Minimum coverage threshold (0.0 to 1.0)
-
-    Returns
-    -------
-    str
-        Selected target variable name
     """
     primary_coverage = _calculate_target_coverage(df, primary_target)
     fallback_coverage = _calculate_target_coverage(df, fallback_target)
@@ -734,27 +683,6 @@ def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback
 def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variable: str = TARGET_VARIABLE) -> Dict[str, float]:
     """
     Compute information coefficients (IC) for each model over a recent evaluation window.
-
-    Parameters
-    ----------
-    train_df : DataFrame
-        Training data containing features, the target variable, and timestamps.
-    feature_cols : list[str]
-        List of feature column names to be used as inputs to the models.
-
-    Returns
-    -------
-    Dict[str, float]
-        A dictionary mapping model names to their normalized (positive) mean ICs.
-
-    Notes
-    -----
-    - IC is computed as the mean Spearman correlation between model predictions and
-      the target variable across dates in the recent 6-month window.  If there
-      are insufficient observations in the window, the full training set is used.
-    - Learning-to-rank models receive a `group` parameter corresponding to the
-      number of samples per date.
-    - Negative ICs are floored at zero before normalization.
     """
     models = _model_specs()
     if train_df.empty:
@@ -914,6 +842,8 @@ def train_and_predict_all_models(window_years: int = 4):
         regime = classify_regime(latest_ts)
         blend_w = gate_blend_weights(blend_w, regime)
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
+    # Prepare a timestamp for created_at
+    created_at_ts = pd.Timestamp.now()
     # Fit & predict base models
     for name, pipe in models.items():
         # Deep copy the pipeline to avoid contaminating base specs
@@ -981,17 +911,23 @@ def train_and_predict_all_models(window_years: int = 4):
             train_pred_vals = p2.predict(X_train_sorted)
             train_preds_dict[name] = train_pred_vals.astype(float)
         except Exception as e:
-            # If a model cannot produce training predictions (e.g. due to
-            # incompatible input shape), skip it from meta blending.
+            # If a model cannot produce training predictions (e.g. due to incompatible input shape), skip it.
             log.warning(f"Training prediction failed for model {name}: {e}; model will be excluded from meta blend.")
         out = latest_df[['symbol']].copy()
         out['ts'] = latest_ts
         out['y_pred'] = pred_vals.astype(float)
         out['model_version'] = f"{name}_v1"
+        # Add horizon and created_at columns
+        out['horizon'] = TARGET_HORIZON_DAYS
+        out['created_at'] = created_at_ts
         preds_dict[name] = out.set_index('symbol')['y_pred']
         outputs[name] = out.copy()
         # Persist predictions
-        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+        upsert_dataframe(
+            out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+            Prediction,
+            ['symbol', 'ts', 'model_version']
+        )
     # Create blended predictions (raw and neutralized)
     if blend_w:
         sym_index = latest_df['symbol']
@@ -1005,8 +941,14 @@ def train_and_predict_all_models(window_years: int = 4):
         out['ts'] = latest_ts
         out['y_pred'] = blend.astype(float)
         out['model_version'] = 'blend_raw_v1'
+        out['horizon'] = TARGET_HORIZON_DAYS
+        out['created_at'] = created_at_ts
         outputs['blend_raw'] = out.copy()
-        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+        upsert_dataframe(
+            out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+            Prediction,
+            ['symbol', 'ts', 'model_version']
+        )
         # Sector/factor neutralization
         try:
             # Factor exposures used for neutralization; fallback to just size_ln, mom_21, turnover_21
@@ -1021,14 +963,23 @@ def train_and_predict_all_models(window_years: int = 4):
             out2['ts'] = latest_ts
             out2['y_pred'] = resid.values
             out2['model_version'] = 'blend_v1'
+            out2['horizon'] = TARGET_HORIZON_DAYS
+            out2['created_at'] = created_at_ts
             outputs['blend'] = out2.copy()
-            upsert_dataframe(out2[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+            upsert_dataframe(
+                out2[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+                Prediction,
+                ['symbol', 'ts', 'model_version']
+            )
         except Exception as e:
             log.warning(f"Neutralization failed: {e}; fallback to raw blend.")
             out_fallback = out.copy()
             out_fallback['model_version'] = 'blend_v1'
-            upsert_dataframe(out_fallback[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
-
+            upsert_dataframe(
+                out_fallback[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+                Prediction,
+                ['symbol', 'ts', 'model_version']
+            )
     # ----------------------------------------------------------------------
     # Meta‑model blending.  Combine base model predictions via a linear
     # meta‑model (Ridge regression) trained on the out-of-sample predictions
@@ -1038,8 +989,7 @@ def train_and_predict_all_models(window_years: int = 4):
     if train_preds_dict and len(train_preds_dict) >= 2:
         try:
             from sklearn.linear_model import RidgeCV
-            # Build matrix of training predictions (rows correspond to
-            # y_train_sorted).  The order of columns is defined by keys.
+            # Build matrix of training predictions (rows correspond to y_train_sorted).  The order of columns is defined by keys.
             meta_keys = list(train_preds_dict.keys())
             meta_X_train = np.column_stack([train_preds_dict[k] for k in meta_keys])
             # Time-series cross-validation for meta model
@@ -1059,11 +1009,16 @@ def train_and_predict_all_models(window_years: int = 4):
             meta_out['ts'] = latest_ts
             meta_out['y_pred'] = meta_pred.astype(float)
             meta_out['model_version'] = 'blend_meta_v1'
+            meta_out['horizon'] = TARGET_HORIZON_DAYS
+            meta_out['created_at'] = created_at_ts
             outputs['blend_meta'] = meta_out.copy()
-            upsert_dataframe(meta_out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+            upsert_dataframe(
+                meta_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+                Prediction,
+                ['symbol', 'ts', 'model_version']
+            )
         except Exception as e:
             log.warning(f"Meta blending failed: {e}")
-
     # ------------------------------------------------------------------
     # Regime‑aware gating: blend tree and neural model predictions based
     # on the current volatility regime.  This is applied only for the
@@ -1084,10 +1039,10 @@ def train_and_predict_all_models(window_years: int = 4):
                 gating_factor = 1.0 / (1.0 + np.exp(-GATING_SLOPE * x))
                 # Separate predictions into tree and neural groups
                 tree_keys = {k for k in preds_dict.keys() if k in {
-                    'rf', 'extra_trees', 'gbr', 'xgb', 'lgbm', 'cat', 'hgb'
+                    'rf', 'extra_trees', 'gbr', 'xgb_reg', 'lgbm', 'cat', 'hgb'
                 }}
                 neural_keys = {k for k in preds_dict.keys() if k in {
-                    'ridge', 'elasticnet', 'mlp', 'deep_mlp', 'q_table'
+                    'ridge', 'elasticnet', 'mlp', 'deep_mlp', 'q_table', 'very_deep_mlp'
                 }}
                 # Compute average predictions for each group
                 tree_pred = None
@@ -1108,8 +1063,14 @@ def train_and_predict_all_models(window_years: int = 4):
                     regime_out['ts'] = latest_ts
                     regime_out['y_pred'] = gating_pred.astype(float)
                     regime_out['model_version'] = 'blend_regime_v1'
+                    regime_out['horizon'] = TARGET_HORIZON_DAYS
+                    regime_out['created_at'] = created_at_ts
                     outputs['blend_regime'] = regime_out.copy()
-                    upsert_dataframe(regime_out[['symbol', 'ts', 'y_pred', 'model_version']], Prediction, ['symbol', 'ts', 'model_version'])
+                    upsert_dataframe(
+                        regime_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+                        Prediction,
+                        ['symbol', 'ts', 'model_version']
+                    )
                 else:
                     log.warning("Regime gating skipped: insufficient tree or neural predictions")
         except Exception as e:
@@ -1117,23 +1078,23 @@ def train_and_predict_all_models(window_years: int = 4):
     log.info("Live training and prediction complete.")
     return outputs
 
-
 from config import PREFERRED_MODEL
 from db import BacktestEquity
 from performance.metrics import compute_all_metrics
 
-
 def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) -> pd.DataFrame:
     """
-    Simple WFB: for each ts, take top-N positive names by y_pred (given model_version),
-    realize fwd_ret over TARGET_HORIZON_DAYS, average cross-sectionally, and cumulate to equity.
-    Persists results to backtest_equity.
+    Simple walkforward backtest: for each ts, take top-N positive names by y_pred (given model_version),
+    realize fwd_ret over TARGET_HORIZON_DAYS, average cross-sectionally, and
+    cumulate to equity.  Persists results to backtest_equity.
     """
     mv = model_version or PREFERRED_MODEL
     with engine.connect() as con:
         preds = pd.read_sql_query(
             text("SELECT symbol, ts, y_pred FROM predictions WHERE model_version = :mv ORDER BY ts, y_pred DESC"),
-            con, params={"mv": mv}, parse_dates=['ts']
+            con,
+            params={"mv": mv},
+            parse_dates=['ts']
         )
     if preds.empty:
         log.warning("No predictions found for backtest.")
@@ -1142,7 +1103,8 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
     with engine.connect() as con:
         px = pd.read_sql_query(
             text(f"SELECT symbol, ts, {price_expr()} AS px FROM daily_bars"),
-            con, parse_dates=['ts']
+            con,
+            parse_dates=['ts']
         )
     if px.empty:
         log.warning("No prices for backtest.")
@@ -1152,7 +1114,7 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
     px['fwd_ret'] = (px['px_fwd'] / px['px']) - 1.0
     df = preds.merge(px[['symbol', 'ts', 'fwd_ret']], on=['symbol', 'ts'], how='left')
     if df['fwd_ret'].isna().all():
-        log.warning("No fwd returns matched for backtest.")
+        log.warning("No forward returns matched for backtest.")
         return pd.DataFrame(columns=['ts', 'equity', 'daily_return', 'drawdown', 'tcost_impact'])
     # Pick top-N positive per ts
     port = (
@@ -1167,11 +1129,18 @@ def run_walkforward_backtest(model_version: str | None = None, top_n: int = 20) 
     if port.empty:
         return pd.DataFrame(columns=['ts', 'equity', 'daily_return', 'drawdown', 'tcost_impact'])
     equity = (1.0 + port).cumprod()
-    dd = equity / equity.cummax() - 1.0
-    out = pd.DataFrame({'ts': port.index.normalize(), 'equity': equity.values, 'daily_return': port.values, 'drawdown': dd.values, 'tcost_impact': 0.0})
+    drawdown = equity / equity.cummax() - 1.0
+    out = pd.DataFrame({
+        'ts': port.index.normalize(),
+        'equity': equity.values,
+        'daily_return': port.values,
+        'drawdown': drawdown.values,
+        'tcost_impact': 0.0
+    })
     # Persist
     upsert_dataframe(out, BacktestEquity, ['ts'])
     # Compute and log performance metrics
     metrics = compute_all_metrics(port)
     log.info(f"Backtest metrics: {metrics}")
     return out
+
