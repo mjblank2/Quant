@@ -929,7 +929,6 @@ def train_and_predict_all_models(window_years: int = 4):
         # Persist predictions
         upsert_dataframe(
             enriched_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
-            out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
             Prediction,
             ['symbol', 'ts', 'model_version']
         )
