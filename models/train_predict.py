@@ -115,7 +115,6 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str]) -> Dict[str,fl
     Xr = train_df.loc[recent_mask, feature_cols]; yr = train_df.loc[recent_mask, 'fwd_ret']
     if Xr.empty:
         Xr, yr = train_df[feature_cols], train_df['fwd_ret']
-
     for name, pipe in models.items():
         try:
             p2 = copy.deepcopy(pipe)
