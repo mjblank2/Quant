@@ -301,16 +301,53 @@ def upsert_dataframe(
         if col not in filtered_df.columns:
             filtered_df[col] = None
 
-    # Convert DataFrame columns to numeric for columns that are Float in the database.
-    # When DataFrame dtypes are object (e.g. strings), pandas will generate VARCHAR
-    # parameters in to_sql, causing a datatype mismatch.  Inspect the table schema
-    # and coerce any Float columns to numeric before insertion.
+    # Cast DataFrame columns to appropriate types based on the database schema.
+    # When DataFrame dtypes are object (e.g. strings), pandas will generate
+    # VARCHAR parameters in to_sql, causing datatype mismatches for numeric,
+    # integer, date or datetime columns.  Inspect the table schema and coerce
+    # columns accordingly.  Float columns are cast to numeric; Integer columns
+    # are cast to pandas nullable Int64; Date and DateTime columns are parsed
+    # to datetime; Boolean columns are cast to bool.
     try:
         insp_cols = inspect(engine).get_columns(table_name)
-        float_cols = [col_info["name"] for col_info in insp_cols if isinstance(col_info["type"], Float)]
+        float_cols = []
+        int_cols = []
+        date_cols = []
+        datetime_cols = []
+        bool_cols = []
+        for col_info in insp_cols:
+            col_name = col_info["name"]
+            col_type = col_info["type"]
+            if isinstance(col_type, Float):
+                float_cols.append(col_name)
+            elif isinstance(col_type, Integer):
+                int_cols.append(col_name)
+            elif isinstance(col_type, Date):
+                date_cols.append(col_name)
+            elif isinstance(col_type, DateTime):
+                datetime_cols.append(col_name)
+            elif isinstance(col_type, Boolean):
+                bool_cols.append(col_name)
+        # Cast float columns
         for col in float_cols:
             if col in filtered_df.columns:
                 filtered_df[col] = pd.to_numeric(filtered_df[col], errors="coerce")
+        # Cast integer columns
+        for col in int_cols:
+            if col in filtered_df.columns:
+                filtered_df[col] = pd.to_numeric(filtered_df[col], errors="coerce").astype("Int64")
+        # Cast date columns to date objects
+        for col in date_cols:
+            if col in filtered_df.columns:
+                filtered_df[col] = pd.to_datetime(filtered_df[col], errors="coerce").dt.date
+        # Cast datetime columns to pandas datetime
+        for col in datetime_cols:
+            if col in filtered_df.columns:
+                filtered_df[col] = pd.to_datetime(filtered_df[col], errors="coerce")
+        # Cast boolean columns
+        for col in bool_cols:
+            if col in filtered_df.columns:
+                filtered_df[col] = filtered_df[col].astype(bool)
     except Exception:
         # If inspection fails, silently skip casting; invalid types will raise DB errors
         pass
@@ -326,3 +363,4 @@ def upsert_dataframe(
         method="multi",
         chunksize=chunksize,
     )
+
