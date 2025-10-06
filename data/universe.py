@@ -13,7 +13,6 @@ from .db import Universe  # Assumes db.py is in same package
 
 log = logging.getLogger("data.universe")
 
-
 def _get_polygon_api_key() -> str:
     """
     Get and validate the Polygon API key from environment.
@@ -37,7 +36,6 @@ def _get_polygon_api_key() -> str:
         )
     return api_key.strip()
 
-
 def _add_polygon_auth(url: str, api_key: str) -> str:
     """
     Ensure a Polygon.io URL includes authentication.
@@ -59,10 +57,9 @@ def _add_polygon_auth(url: str, api_key: str) -> str:
         url = f"{url}{separator}apiKey={api_key}"
     return url
 
-
 def _safe_get_json(
     url: str,
-    params: dict = None,
+    params: dict | None = None,
     timeout: int = 30,
     retries: int = 3,
     backoff_factor: float = 0.5,
@@ -123,7 +120,6 @@ def _safe_get_json(
             return None
 
     return None
-
 
 def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dict[str, Any]]:
     """
@@ -194,7 +190,7 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
         for result in data.get("results", []):
             symbol = result.get("ticker")
             name = result.get("name")
-            
+
             # Skip if symbol is invalid (None, empty, or contains special chars)
             if not symbol or not isinstance(symbol, str) or not symbol.strip():
                 log.warning("Skipping invalid symbol in results: %s", result)
@@ -226,7 +222,6 @@ def _list_small_cap_symbols(max_market_cap: float = 3_000_000_000.0) -> List[Dic
 
     log.info("Completed universe fetch: %d symbols from %d pages", len(tickers), page_count)
     return tickers
-
 
 def test_polygon_api_connection() -> bool:
     """
@@ -263,16 +258,13 @@ def test_polygon_api_connection() -> bool:
         log.warning("Polygon API test skipped: %s", e)
         return False
 
-
 def _poly_ticker_info() -> Dict[str, Any]:
     """Fetch ticker info from Polygon (placeholder kept for compatibility)."""
     return {}
 
-
 async def _poly_adv(symbol: str, start: date, end: date) -> float | None:
     """Fetch average daily volume from Polygon (placeholder kept for compatibility)."""
     return None
-
 
 def rebuild_universe() -> List[Dict[str, Any]]:
     """
@@ -305,7 +297,7 @@ def rebuild_universe() -> List[Dict[str, Any]]:
         import db
         import unicodedata
 
-        df_data = []
+        df_data: List[Dict[str, Any]] = []
         truncated_names = 0
 
         for item in symbols:
@@ -328,7 +320,7 @@ def rebuild_universe() -> List[Dict[str, Any]]:
                 "symbol": item["symbol"],
                 "name": name,
                 "included": True,
-                # timezone-aware UTC (compatible across Python versions)
+                # datetime.utcnow() is deprecated and timezone-naive
                 "last_updated": datetime.now(timezone.utc),
             })
 
@@ -349,7 +341,6 @@ def rebuild_universe() -> List[Dict[str, Any]]:
     except Exception as e:
         log.error("Failed to rebuild universe: %s", e, exc_info=True)
         raise
-
 
 if __name__ == "__main__":
     import sys
