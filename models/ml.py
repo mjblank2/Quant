@@ -927,7 +927,7 @@ def train_and_predict_all_models(window_years: int = 4):
         blend_w = gate_blend_weights(blend_w, regime)
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
     prediction_horizon = int(TARGET_HORIZON_DAYS)
-    created_at_ts = pd.Timestamp.utcnow().floor('s').tz_localize(None)
+    created_at_ts = pd.Timestamp.utcnow().floor('s').replace(tzinfo=None)
     # Fit & predict base models
     for name, pipe in models.items():
         # Deep copy the pipeline to avoid contaminating base specs
