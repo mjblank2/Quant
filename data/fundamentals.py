@@ -5,43 +5,40 @@ This module fetches fundamental data from the Polygon API on a per‑symbol basi
 and computes a set of point‑in‑time ratios that are useful for quantitative
 research.  In addition to the original metrics (debt‑to‑equity, return on
 assets, gross margins, profit margins and current ratio), this version
-introduces **return on equity (ROE)**.  ROE measures how efficiently a
-company generates profit relative to shareholder equity and is a common
-fundamental signal.  If either net income or equity is missing or zero,
-ROE is recorded as ``None``.
+introduces return on equity (ROE). If either net income or equity is missing
+or zero, ROE is recorded as None.
 """
 
 from __future__ import annotations
+
 import asyncio
+import logging
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from db import engine, Fundamentals
 from config import POLYGON_API_KEY
 from utils_http import get_json_async
-import logging
 
 log = logging.getLogger("data.fundamentals")
 
 
-def fetch_fundamentals_for_universe
-dfetch_fundamentals_for_universe
-efdef fetch_fundamentals_for_universe
- _as_date(x):
+def _as_date(x):
     try:
         return pd.to_datetime(x, utc=True).date()
     except Exception:
         return None
 
 
-async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
-                                 batch_size: int = 50) -> pd.DataFrame:
-    """Fetch up to N filings per symbol from the Polygon financials endpoint.
-
-    The Polygon API can return large result sets when requesting the entire
-    universe.  To keep memory usage bounded, this function processes the
-    universe in smaller batches and only keeps one batch of results in
-    memory at a time.
+async def _poly_financials_async(
+    symbols: list[str],
+    per_symbol_max: int = 12,
+    batch_size: int = 50,
+) -> pd.DataFrame:
+    """
+    Fetch up to N filings per symbol from the Polygon financials endpoint, batched
+    to control memory usage.
 
     Parameters
     ----------
@@ -55,28 +52,38 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
     Returns
     -------
     pd.DataFrame
-        DataFrame with columns ``symbol``, ``as_of``, ``available_at`` and
-        fundamental ratios.
+        DataFrame with columns symbol, as_of, available_at and fundamental ratios.
     """
     if not POLYGON_API_KEY:
         log.warning("POLYGON_API_KEY not set; skipping fundamentals fetch")
-        return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
+        return pd.DataFrame(columns=["symbol", "as_of", "available_at"])
     if not symbols:
         log.info("No symbols provided for fundamentals fetch")
-        return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
+        return pd.DataFrame(columns=["symbol", "as_of", "available_at"])
 
-    log.info("Starting fundamentals fetch for %d symbols, has_api_key=%s", len(symbols), bool(POLYGON_API_KEY))
+    log.info(
+        "Starting fundamentals fetch for %d symbols, has_api_key=%s",
+        len(symbols),
+        bool(POLYGON_API_KEY),
+    )
 
     async def fetch_one(s: str):
         url = "https://api.polygon.io/vX/reference/financials"
-        params = {"ticker": s, "limit": min(per_symbol_max, 50), "order": "desc", "apiKey": POLYGON_API_KEY}
-        rows = []
+        params = {
+            "ticker": s,
+            "limit": min(per_symbol_max, 50),
+            "order": "desc",
+            "apiKey": POLYGON_API_KEY,
+        }
+        rows: list[dict] = []
         fetched = 0
-        next_url = None
+        next_url: str | None = None
+
         while True:
             js = await get_json_async(next_url or url, params=None if next_url else params)
             if not js or not js.get("results"):
                 break
+
             for res in js["results"]:
                 filing_dt = res.get("acceptance_datetime") or res.get("filing_date")
                 try:
@@ -84,7 +91,13 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
                     available_at = (fdt + pd.Timedelta(days=1)).normalize().date()
                 except Exception:
                     available_at = _as_date(res.get("filing_date"))
-                as_of = _as_date(res.get("period_of_report_date")) or _as_date(res.get("fiscal_period_end")) or _as_date(res.get("filing_date"))
+
+                as_of = (
+                    _as_date(res.get("period_of_report_date"))
+                    or _as_date(res.get("fiscal_period_end"))
+                    or _as_date(res.get("filing_date"))
+                )
+
                 fin = res.get("financials") or {}
                 inc = fin.get("income_statement") or {}
                 bal = fin.get("balance_sheet") or {}
@@ -115,38 +128,44 @@ async def _poly_financials_async(symbols: list[str], per_symbol_max: int = 12,
                 de = _safe_div(debt, equity)
                 roe = _safe_div(net_income, equity)
 
-                rows.append({
-                    "symbol": s,
-                    "as_of": as_of,
-                    "available_at": available_at,
-                    "pe_ttm": None,
-                    "pb": None,
-                    "ps_ttm": None,
-                    "debt_to_equity": de,
-                    "return_on_assets": roa,
-                    "return_on_equity": roe,
-                    "gross_margins": gm,
-                    "profit_margins": pm,
-                    "current_ratio": cr,
-                })
+                rows.append(
+                    {
+                        "symbol": s,
+                        "as_of": as_of,
+                        "available_at": available_at,
+                        "pe_ttm": None,
+                        "pb": None,
+                        "ps_ttm": None,
+                        "debt_to_equity": de,
+                        "return_on_assets": roa,
+                        "return_on_equity": roe,
+                        "gross_margins": gm,
+                        "profit_margins": pm,
+                        "current_ratio": cr,
+                    }
+                )
                 fetched += 1
                 if fetched >= per_symbol_max:
                     break
+
             next_url = js.get("next_url")
             if next_url and "apiKey" not in next_url:
                 next_url = f"{next_url}&apiKey={POLYGON_API_KEY}"
                 log.debug("Added authentication to fundamentals pagination URL for %s", s)
+
             if fetched >= per_symbol_max or not next_url:
                 break
+
         if not rows:
             rows = [{"symbol": s, "as_of": None, "available_at": None}]
         return rows
 
     all_rows: list[list[dict]] = []
     for i in range(0, len(symbols), batch_size):
-        batch_symbols = symbols[i:i + batch_size]
+        batch_symbols = symbols[i : i + batch_size]
         batch = await asyncio.gather(*(fetch_one(s) for s in batch_symbols))
         all_rows.extend(batch)
+
     flat = [r for sub in all_rows for r in (sub if isinstance(sub, list) else [sub])]
     df = pd.DataFrame(flat)
     if not df.empty:
@@ -159,7 +178,9 @@ def _dedupe_fundamentals(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     before = len(df)
-    df = df.sort_values(["symbol", "as_of"]).drop_duplicates(subset=["symbol", "as_of"], keep="last")
+    df = df.sort_values(["symbol", "as_of"]).drop_duplicates(
+        subset=["symbol", "as_of"], keep="last"
+    )
     after = len(df)
     if after < before:
         log.info(f"De-duplicated fundamentals: {before} -> {after}")
@@ -171,19 +192,23 @@ def _upsert_fundamentals(df: pd.DataFrame, chunk_size: int = 1000) -> int:
     if df is None or df.empty:
         return 0
 
-    # Deduplicate to avoid within-batch conflicts
     df = _dedupe_fundamentals(df)
 
-    # Filter to only the columns that exist in the table
-    table_cols = ["symbol", "as_of", "available_at", "debt_to_equity",
-                  "return_on_assets", "return_on_equity", "gross_margins",
-                  "profit_margins", "current_ratio"]
+    table_cols = [
+        "symbol",
+        "as_of",
+        "available_at",
+        "debt_to_equity",
+        "return_on_assets",
+        "return_on_equity",
+        "gross_margins",
+        "profit_margins",
+        "current_ratio",
+    ]
     df_cols = [c for c in table_cols if c in df.columns]
     df = df[df_cols].copy()
 
-    # Drop rows with null primary key values
     df = df.dropna(subset=["symbol", "as_of"])
-
     if df.empty:
         log.warning("No valid fundamentals data to upsert after filtering")
         return 0
@@ -193,14 +218,13 @@ def _upsert_fundamentals(df: pd.DataFrame, chunk_size: int = 1000) -> int:
 
     with engine.begin() as conn:
         for start_idx in range(0, len(df), chunk_size):
-            chunk = df.iloc[start_idx:start_idx + chunk_size]
+            chunk = df.iloc[start_idx : start_idx + chunk_size]
             payload = chunk.to_dict(orient="records")
             stmt = pg_insert(table).values(payload)
 
-            # Build update dict for all non-key columns
             update_dict = {}
             for col in df_cols:
-                if col not in ["symbol", "as_of"]:  # Exclude primary key columns
+                if col not in ["symbol", "as_of"]:
                     update_dict[col] = stmt.excluded[col]
 
             stmt = stmt.on_conflict_do_update(
@@ -215,14 +239,15 @@ def _upsert_fundamentals(df: pd.DataFrame, chunk_size: int = 1000) -> int:
 
 
 def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
-    """Fetch and upsert financial fundamentals for all symbols in the universe.
+    """
+    Fetch and upsert financial fundamentals for all symbols in the universe.
 
     Parameters
     ----------
     batch_size: int, optional
-        Number of symbols to request concurrently from Polygon.  Smaller batch
+        Number of symbols to request concurrently from Polygon. Smaller batch
         sizes reduce peak memory usage at the cost of additional HTTP round‑trips.
-        Defaults to 50, a safe value for limited‑memory environments.
+        Defaults to 50.
 
     Returns
     -------
@@ -230,10 +255,11 @@ def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
         DataFrame of the fetched fundamentals.
     """
     with engine.connect() as con:
-    )
-            try:
+        try:
             syms_df = pd.read_sql_query(
-                text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"),
+                text(
+                    "SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"
+                ),
                 con,
             )
         except Exception:
@@ -241,12 +267,13 @@ def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
                 text("SELECT symbol FROM universe ORDER BY symbol"),
                 con,
             )
-        syms = syms_df["symbol"].tolist()
-if     nt syms:
-        return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
+
+    syms = syms_df["symbol"].tolist()
+    if not syms:
+        return pd.DataFrame(columns=["symbol", "as_of", "available_at"])
+
     df = asyncio.run(_poly_financials_async(syms, batch_size=batch_size))
     if not df.empty:
-        # Use proper ON CONFLICT upsert instead of simple append
         _upsert_fundamentals(df)
     return df
 
