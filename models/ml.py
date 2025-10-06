@@ -231,7 +231,11 @@ def _load_altsignals(start_ts, end_ts):
 def _with_prediction_metadata(df: pd.DataFrame, horizon: int, created_at: pd.Timestamp) -> pd.DataFrame:
     enriched = df.copy()
     enriched['horizon'] = int(horizon)
-    created_at_ts = pd.to_datetime(created_at, utc=True).tz_convert(None)
+    created_at_ts = pd.to_datetime(created_at)
+    if created_at_ts.tzinfo is None:
+        created_at_ts = created_at_ts.tz_localize('UTC').tz_convert(None)
+    else:
+        created_at_ts = created_at_ts.tz_convert('UTC').tz_convert(None)
     enriched['created_at'] = created_at_ts
     return enriched
 
