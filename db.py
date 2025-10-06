@@ -17,6 +17,7 @@ from sqlalchemy import (
     create_engine,
     inspect,
 )
+from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -187,13 +188,15 @@ class Fundamentals(Base):
 
 class Prediction(Base):
     __tablename__ = "predictions"
-    id = Column(Integer, primary_key=True)
-    ts = Column(Date, index=True, nullable=False)
-    symbol = Column(String, index=True, nullable=False)
-    model_version = Column(String, index=True, nullable=False)
-    y_pred = Column(Float)
+    symbol = Column(String(20), primary_key=True, nullable=False)
+    ts = Column(Date, primary_key=True, nullable=False, index=True)
+    model_version = Column(String(32), primary_key=True, nullable=False, index=True)
+    y_pred = Column(Float, nullable=False)
+    horizon = Column(Integer, nullable=False, default=5)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
     __table_args__ = (
-        Index("idx_predictions_symbol_ts", "symbol", "ts", "model_version", unique=True),
+        Index("ix_predictions_ts", "ts"),
+        Index("ix_predictions_ts_model", "ts", "model_version"),
     )
 
 
