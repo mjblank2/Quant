@@ -35,6 +35,7 @@ from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor
 from sklearn.linear_model import ElasticNet
 from sklearn.ensemble import HistGradientBoostingRegressor
 from db import engine, upsert_dataframe, Prediction
+from utils.prediction_metadata import as_naive_utc, with_prediction_metadata
 from models.transformers import CrossSectionalNormalizer
 from models.rl_models import QTableRegressor
 from config import (BACKTEST_START, TARGET_HORIZON_DAYS, BLEND_WEIGHTS,
@@ -842,6 +843,8 @@ def train_and_predict_all_models(window_years: int = 4):
         regime = classify_regime(latest_ts)
         blend_w = gate_blend_weights(blend_w, regime)
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
+    prediction_horizon = int(TARGET_HORIZON_DAYS)
+    created_at_ts = as_naive_utc(pd.Timestamp.utcnow().floor('s'))
     # Prepare a timestamp for created_at
     created_at_ts = pd.Timestamp.now()
     # Fit & predict base models
@@ -921,10 +924,11 @@ def train_and_predict_all_models(window_years: int = 4):
         out['horizon'] = TARGET_HORIZON_DAYS
         out['created_at'] = created_at_ts
         preds_dict[name] = out.set_index('symbol')['y_pred']
-        outputs[name] = out.copy()
+        enriched_out = with_prediction_metadata(out, prediction_horizon, created_at_ts)
+        outputs[name] = enriched_out.copy()
         # Persist predictions
         upsert_dataframe(
-            out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
+            enriched_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
             Prediction,
             ['symbol', 'ts', 'model_version']
         )
@@ -941,6 +945,9 @@ def train_and_predict_all_models(window_years: int = 4):
         out['ts'] = latest_ts
         out['y_pred'] = blend.astype(float)
         out['model_version'] = 'blend_raw_v1'
+        out = with_prediction_metadata(out, prediction_horizon, created_at_ts)
+        outputs['blend_raw'] = out.copy()
+        upsert_dataframe(out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
         out['horizon'] = TARGET_HORIZON_DAYS
         out['created_at'] = created_at_ts
         outputs['blend_raw'] = out.copy()
@@ -963,9 +970,9 @@ def train_and_predict_all_models(window_years: int = 4):
             out2['ts'] = latest_ts
             out2['y_pred'] = resid.values
             out2['model_version'] = 'blend_v1'
-            out2['horizon'] = TARGET_HORIZON_DAYS
-            out2['created_at'] = created_at_ts
+            out2 = with_prediction_metadata(out2, prediction_horizon, created_at_ts)
             outputs['blend'] = out2.copy()
+            upsert_dataframe(out2[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
             upsert_dataframe(
                 out2[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
                 Prediction,
@@ -975,6 +982,9 @@ def train_and_predict_all_models(window_years: int = 4):
             log.warning(f"Neutralization failed: {e}; fallback to raw blend.")
             out_fallback = out.copy()
             out_fallback['model_version'] = 'blend_v1'
+            out_fallback = with_prediction_metadata(out_fallback, prediction_horizon, created_at_ts)
+            upsert_dataframe(out_fallback[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
+
             upsert_dataframe(
                 out_fallback[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
                 Prediction,
@@ -1009,6 +1019,9 @@ def train_and_predict_all_models(window_years: int = 4):
             meta_out['ts'] = latest_ts
             meta_out['y_pred'] = meta_pred.astype(float)
             meta_out['model_version'] = 'blend_meta_v1'
+            meta_out = with_prediction_metadata(meta_out, prediction_horizon, created_at_ts)
+            outputs['blend_meta'] = meta_out.copy()
+            upsert_dataframe(meta_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
             meta_out['horizon'] = TARGET_HORIZON_DAYS
             meta_out['created_at'] = created_at_ts
             outputs['blend_meta'] = meta_out.copy()
@@ -1063,9 +1076,9 @@ def train_and_predict_all_models(window_years: int = 4):
                     regime_out['ts'] = latest_ts
                     regime_out['y_pred'] = gating_pred.astype(float)
                     regime_out['model_version'] = 'blend_regime_v1'
-                    regime_out['horizon'] = TARGET_HORIZON_DAYS
-                    regime_out['created_at'] = created_at_ts
+                    regime_out = with_prediction_metadata(regime_out, prediction_horizon, created_at_ts)
                     outputs['blend_regime'] = regime_out.copy()
+                    upsert_dataframe(regime_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']], Prediction, ['symbol', 'ts', 'model_version'])
                     upsert_dataframe(
                         regime_out[['symbol', 'ts', 'y_pred', 'model_version', 'horizon', 'created_at']],
                         Prediction,

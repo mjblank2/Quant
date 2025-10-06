@@ -18,6 +18,7 @@ except Exception:
     XGBRegressor = None
 
 from db import engine, upsert_dataframe, Prediction, BacktestEquity  # type: ignore
+from utils.prediction_metadata import as_naive_utc, with_prediction_metadata
 from models.transformers import CrossSectionalNormalizer
 from models.regime import classify_regime, gate_blend_weights
 from utils.price_utils import price_expr
@@ -184,6 +185,9 @@ def train_and_predict_all_models(window_years: int = 4):
         blend_w = gate_blend_weights(blend_w, regime)
         log.info(f"Regime: {regime}; Blend weights gated: {blend_w}")
 
+    prediction_horizon = int(TARGET_HORIZON_DAYS)
+    created_at_ts = as_naive_utc(pd.Timestamp.utcnow().floor("s"))
+
     for name, pipe in models.items():
         p2 = copy.deepcopy(pipe)
         p2.fit(X, y)
@@ -191,8 +195,13 @@ def train_and_predict_all_models(window_years: int = 4):
         out = latest_df[['symbol']].copy()
         out['ts'] = latest_ts; out['y_pred'] = p.astype(float); out['model_version'] = f"{name}_v1"
         preds_dict[name] = out.set_index('symbol')['y_pred']
-        outputs[name] = out.copy()
-        upsert_dataframe(out[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+        enriched_out = with_prediction_metadata(out, prediction_horizon, created_at_ts)
+        outputs[name] = enriched_out.copy()
+        upsert_dataframe(
+            enriched_out[['symbol','ts','y_pred','model_version','horizon','created_at']],
+            Prediction,
+            ['symbol','ts','model_version']
+        )
 
     if blend_w:
         sym_index = latest_df['symbol']
@@ -203,8 +212,9 @@ def train_and_predict_all_models(window_years: int = 4):
                 blend += w * series
         out = latest_df[['symbol']].copy()
         out['ts'] = latest_ts; out['y_pred'] = blend.astype(float); out['model_version'] = 'blend_raw_v17'
+        out = with_prediction_metadata(out, prediction_horizon, created_at_ts)
         outputs['blend_raw'] = out.copy()
-        upsert_dataframe(out[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+        upsert_dataframe(out[['symbol','ts','y_pred','model_version','horizon','created_at']], Prediction, ['symbol','ts','model_version'])
         try:
             fac = latest_df.set_index('symbol')[['size_ln','mom_21','turnover_21'] + (['beta_63'] if 'beta_63' in latest_df.columns else [])]
             pred_series = pd.Series(blend, index=sym_index)
@@ -220,12 +230,14 @@ def train_and_predict_all_models(window_years: int = 4):
             resid = neutralize_with_sectors(pred_series, fac, sd)
             out2 = latest_df[['symbol']].copy()
             out2['ts'] = latest_ts; out2['y_pred'] = resid.values; out2['model_version'] = 'blend_v1'
+            out2 = with_prediction_metadata(out2, prediction_horizon, created_at_ts)
             outputs['blend'] = out2.copy()
-            upsert_dataframe(out2[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+            upsert_dataframe(out2[['symbol','ts','y_pred','model_version','horizon','created_at']], Prediction, ['symbol','ts','model_version'])
         except Exception as e:
             log.warning(f"Neutralization failed: {e}; fallback to raw blend.")
             out_fallback = out.copy(); out_fallback['model_version']='blend_v1'
-            upsert_dataframe(out_fallback[['symbol','ts','y_pred','model_version']], Prediction, ['symbol','ts','model_version'])
+            out_fallback = with_prediction_metadata(out_fallback, prediction_horizon, created_at_ts)
+            upsert_dataframe(out_fallback[['symbol','ts','y_pred','model_version','horizon','created_at']], Prediction, ['symbol','ts','model_version'])
     log.info("Live training and prediction complete (v17).")
     return outputs
 
