@@ -202,7 +202,6 @@ def train_and_predict_all_models(window_years: int = 4):
             Prediction,
             ['symbol','ts','model_version']
         )
-
     if blend_w:
         sym_index = latest_df['symbol']
         blend = np.zeros(len(sym_index))
