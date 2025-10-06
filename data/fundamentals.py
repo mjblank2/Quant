@@ -24,7 +24,10 @@ import logging
 log = logging.getLogger("data.fundamentals")
 
 
-def _as_date(x):
+def fetch_fundamentals_for_universe
+dfetch_fundamentals_for_universe
+efdef fetch_fundamentals_for_universe
+ _as_date(x):
     try:
         return pd.to_datetime(x, utc=True).date()
     except Exception:
@@ -227,19 +230,19 @@ def fetch_fundamentals_for_universe(batch_size: int = 50) -> pd.DataFrame:
         DataFrame of the fetched fundamentals.
     """
     with engine.connect() as con:
-        #syms = pd.read_sql_qu# ery(text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"), con)["symbol"].tolist()
-                    try:
-                syms_df = pd.read_sql_query(
-                    text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"),
-                    con,
-                )
-            except Exception:
-                syms_df = pd.read_sql_query(
-                    text("SELECT symbol FROM universe ORDER BY symbol"),
-                    con,
-                )
-            syms = syms_df["symbol"].tolist()
-    if not syms:
+    )
+            try:
+            syms_df = pd.read_sql_query(
+                text("SELECT symbol FROM universe WHERE included = TRUE ORDER BY symbol"),
+                con,
+            )
+        except Exception:
+            syms_df = pd.read_sql_query(
+                text("SELECT symbol FROM universe ORDER BY symbol"),
+                con,
+            )
+        syms = syms_df["symbol"].tolist()
+if     nt syms:
         return pd.DataFrame(columns=['symbol', 'as_of', 'available_at'])
     df = asyncio.run(_poly_financials_async(syms, batch_size=batch_size))
     if not df.empty:
