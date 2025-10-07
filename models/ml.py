@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import numpy as np, pandas as pd, copy, logging, os, inspect as pyinspect
+import numpy as np, pandas as pd, copy, logging, os
+from inspect import signature
 from os import cpu_count
 from typing import Dict, Any
 from sqlalchemy import text, inspect
@@ -427,7 +428,7 @@ def _model_specs() -> Dict[str, Pipeline]:
     try:
         _ = HistGradientBoostingRegressor
         specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
-            loss='lsquared_error',
+            loss='squared_error',
             max_depth=6,
             learning_rate=0.05,
             max_iter=300,
@@ -722,8 +723,8 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variabl
         try:
             p2 = copy.deepcopy(pipe)
             fit_params: Dict[str, Any] = {}
-            # For LTR models (identified by 'ltr' in name), pass group parameter
-            if 'ltr' in name:
+            # Only pass group information when the estimator supports it
+            if _supports_group_param(p2):
                 fit_params['model__group'] = group_sizes
             # Fit on full training set (sorted by timestamp for LTR)
             if len(sorted_idx) == len(X_train):
