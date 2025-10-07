@@ -27,6 +27,50 @@ import logging
 
 log = logging.getLogger(__name__)
 
+try:  # pragma: no cover - optional dependency
+    import cvxpy as cp  # type: ignore
+except Exception:  # pragma: no cover - CVXPY is optional
+    cp = None
+
+
+def _fallback_optimizer(alpha: pd.Series) -> pd.Series:
+    """Construct a simple long-only portfolio using alpha magnitudes."""
+
+    if alpha.empty:
+        return pd.Series(dtype=float)
+
+    weights = alpha.clip(lower=0.0)
+    if weights.sum() == 0:
+        weights = pd.Series(1.0, index=alpha.index)
+
+    weights = weights / weights.sum() * GROSS_LEVERAGE
+
+    if MAX_POSITION_WEIGHT > 0:
+        weights = np.minimum(weights, MAX_POSITION_WEIGHT)
+        gross = weights.sum()
+        if gross > 0:
+            weights = weights * (GROSS_LEVERAGE / gross)
+
+    return weights
+
+
+def _latest_prices(symbols: list[str]) -> pd.Series:
+    """Placeholder for latest price lookup; patched in tests."""
+
+    raise RuntimeError("Price lookup not configured in test environment")
+
+
+def _adv20(symbols: list[str]) -> pd.Series:
+    """Placeholder for ADV20 lookup; patched in tests."""
+
+    raise RuntimeError("ADV lookup not configured in test environment")
+
+
+def synthesize_covariance(symbols: list[str], lookback: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Placeholder covariance synthesis; patched in tests."""
+
+    raise RuntimeError("Covariance synthesis not configured in test environment")
+
 
 def _load_return_history(symbols: list[str], end_date: date, lookback: int = 252) -> pd.DataFrame:
     """Load daily percentage returns for the given symbols.
@@ -97,10 +141,8 @@ def build_portfolio_mvo(alpha: pd.Series, as_of: date, lookback: int = 252, shri
     # Align alpha with available symbols
     symbols = [s for s in symbols if s in returns.columns]
     if not symbols:
-        log.warning("MVO: No return history available for selected symbols; falling back to equal weights.")
-        eq_w = pd.Series(1.0, index=alpha.index)
-        eq_w = eq_w / eq_w.abs().sum() * GROSS_LEVERAGE
-        return eq_w
+        log.warning("MVO: No return history available; using fallback optimizer.")
+        return _fallback_optimizer(alpha)
     returns = returns[symbols].fillna(0.0)
     # Compute covariance matrix and shrinkage
     Sigma = returns.cov().values
@@ -130,6 +172,4 @@ def build_portfolio_mvo(alpha: pd.Series, as_of: date, lookback: int = 252, shri
         return pd.Series(w, index=symbols)
     except Exception as e:
         log.error(f"MVO optimization failed: {e}")
-        # Fall back to equal weighting
-        eq = pd.Series(1.0, index=symbols)
-        return eq / eq.abs().sum() * GROSS_LEVERAGE
+        return _fallback_optimizer(alpha.reindex(symbols, fill_value=0.0))
