@@ -651,6 +651,184 @@ def _auto_compute_scores(ticker: str) -> tuple[dict[str, float], dict[str, float
     # Disclosure metrics remain neutral (50) due to lack of automated data
     return q_scores, b_scores, d_scores, raw_metrics
 
+# -----------------------------------------------------------------------------
+# Valuation defaults and automatic computation
+#
+# To remove the need for manual input in the valuation models, we derive
+# reasonable default assumptions directly from available financial data.  We
+# approximate revenue, shares outstanding, cash and debt from the latest
+# financial statements.  Growth and margin assumptions are drawn from the
+# automatic fundamental metrics (revenue_growth and profit_margin) when
+# available, and fallback constants are used otherwise.  The weighted average
+# cost of capital (WACC), tax rate, working‑capital rate, capex rate and
+# terminal growth are set to conservative industry‑agnostic values.  These
+# defaults feed into the price‑implied expectations and DCF calculations.
+
+def _derive_valuation_defaults(
+    ticker: str,
+    auto_metrics: Optional[dict[str, Optional[float]]] = None,
+) -> Optional[dict[str, float]]:
+    """Derive default inputs for valuation models from financial data.
+
+    Args:
+        ticker: Stock ticker symbol.
+        auto_metrics: Optional dictionary of fundamental metrics returned from
+            ``_auto_compute_scores``.  If provided, this dict may contain
+            ``profit_margin`` and ``revenue_growth`` entries used to seed
+            margin and growth assumptions.
+
+    Returns:
+        A dictionary with keys ``sales``, ``shares``, ``cash_excess``,
+        ``debt``, ``growth``, ``margin``, ``tax_rate``, ``wc_rate``,
+        ``capex_rate``, ``wacc`` and ``terminal_growth``.  If necessary
+        information cannot be retrieved, returns ``None``.
+    """
+    ticker = ticker.strip().upper()
+    if not ticker:
+        return None
+    # Fetch one period of financials to extract revenue, shares, cash and debt
+    results = _fetch_financials_polygon(ticker, limit=1)
+    using_polygon = True
+    if not results:
+        results = _fetch_financials_tiingo(ticker, limit=1)
+        using_polygon = False
+    if not results:
+        return None
+    sales0 = None
+    shares_out = None
+    cash_excess = 0.0
+    debt_value = 0.0
+    try:
+        if using_polygon:
+            fin = results[0].get("financials", {}) if isinstance(results[0], dict) else {}
+            inc = fin.get("income_statement", {}) or {}
+            bal = fin.get("balance_sheet", {}) or {}
+            sales0 = _pick_field(inc, [
+                "revenues", "revenue", "total_revenue", "totalRevenues", "salesRevenueNet", "netRevenue"
+            ])
+            shares_out = _pick_field(inc, [
+                "diluted_average_shares", "diluted_average_shares_outstanding", "diluted_shares"
+            ])
+            cash_excess = _pick_field(bal, [
+                "cash", "cash_and_cash_equivalents", "cash_and_cash_equivalents_at_carrying_value"
+            ]) or 0.0
+            debt_value = _pick_field(bal, [
+                "total_debt", "total_liabilities", "liabilities"
+            ]) or 0.0
+        else:
+            report = results[0] if isinstance(results[0], dict) else {}
+            # Extract statements from Tiingo report
+            def _extract_stmt_local(report_dict: dict[str, Any], name: str) -> dict[str, Any]:
+                for key in report_dict.keys():
+                    if key.lower().startswith(name.lower()):
+                        stmt = report_dict.get(key) or {}
+                        if isinstance(stmt, dict):
+                            return stmt
+                return {}
+            inc_tiingo = _extract_stmt_local(report, "incomeStatement")
+            bal_tiingo = _extract_stmt_local(report, "balanceSheet")
+            sales0 = _pick_field({k.lower(): v for k, v in inc_tiingo.items()}, [
+                "revenue", "revenues", "total_revenue", "totalrevenues", "netrevenue"
+            ])
+            shares_out = _pick_field({k.lower(): v for k, v in inc_tiingo.items()}, [
+                "diluted_average_shares", "dilutedaveragesharesoutstanding", "dilutedshares"
+            ])
+            cash_excess = _pick_field({k.lower(): v for k, v in bal_tiingo.items()}, [
+                "cash", "cash_and_cash_equivalents", "cashandequivalents"
+            ]) or 0.0
+            debt_value = _pick_field({k.lower(): v for k, v in bal_tiingo.items()}, [
+                "total_debt", "total_liabilities", "liabilities", "total_liabilities_net_debt"
+            ]) or 0.0
+    except Exception:
+        return None
+    # Derive growth and margin from auto metrics if available
+    growth = 0.10  # default 10%
+    margin = 0.10  # default 10%
+    if auto_metrics:
+        rev_growth = auto_metrics.get("revenue_growth")
+        prof_margin = auto_metrics.get("profit_margin")
+        if rev_growth is not None:
+            growth = max(min(float(rev_growth), 0.50), -0.20)  # bound between -20% and +50%
+        if prof_margin is not None:
+            margin = max(min(float(prof_margin), 0.50), -0.20)  # bound
+    # Set conservative default rates
+    tax_rate = 0.25
+    wc_rate = 0.02
+    capex_rate = 0.04
+    wacc = 0.10
+    terminal_growth = 0.03
+    return {
+        "sales": float(sales0 or 0.0),
+        "shares": float(shares_out or 0.0),
+        "cash_excess": float(cash_excess),
+        "debt": float(debt_value),
+        "growth": float(growth),
+        "margin": float(margin),
+        "tax_rate": float(tax_rate),
+        "wc_rate": float(wc_rate),
+        "capex_rate": float(capex_rate),
+        "wacc": float(wacc),
+        "terminal_growth": float(terminal_growth),
+    }
+
+
+def _auto_compute_valuation(
+    ticker: str,
+    price_per_share: float,
+    auto_metrics: Optional[dict[str, Optional[float]]] = None,
+) -> Optional[dict[str, Any]]:
+    """Compute expectations and DCF values automatically.
+
+    Args:
+        ticker: Ticker symbol.
+        price_per_share: Current stock price per share.
+        auto_metrics: Optional metrics used to set growth and margin assumptions.
+
+    Returns:
+        A dictionary with keys ``implied_years`` and ``dcf_result`` containing the
+        market‑implied forecast horizon and DCF output.  If computation fails,
+        returns ``None``.
+    """
+    defaults = _derive_valuation_defaults(ticker, auto_metrics)
+    if not defaults:
+        return None
+    try:
+        implied_years = compute_expectations_forecast_period(
+            sales0=defaults["sales"],
+            price_per_share=price_per_share,
+            shares_outstanding=defaults["shares"],
+            growth=defaults["growth"],
+            margin=defaults["margin"],
+            tax_rate=defaults["tax_rate"],
+            wc_rate=defaults["wc_rate"],
+            capex_rate=defaults["capex_rate"],
+            wacc=defaults["wacc"],
+            non_operating_assets=defaults["cash_excess"],
+            debt=defaults["debt"],
+            max_years=20,
+        )
+        dcf_result = compute_dcf_valuation(
+            sales0=defaults["sales"],
+            growth=defaults["growth"],
+            margin=defaults["margin"],
+            tax_rate=defaults["tax_rate"],
+            wc_rate=defaults["wc_rate"],
+            capex_rate=defaults["capex_rate"],
+            wacc=defaults["wacc"],
+            terminal_growth=defaults["terminal_growth"],
+            non_operating_assets=defaults["cash_excess"],
+            debt=defaults["debt"],
+            shares_outstanding=defaults["shares"],
+            years=5,
+        )
+        return {
+            "implied_years": implied_years,
+            "dcf_result": dcf_result,
+            "defaults": defaults,
+        }
+    except Exception:
+        return None
+
 
 # -----------------------------------------------------------------------------
 # Expectations Investing and DCF valuation helpers
@@ -1276,171 +1454,67 @@ def main() -> None:
         )
 
     # -------------------------------------------------------------------------
-    # Valuation Models Section (always visible when a ticker is provided)
+    # Valuation Models Section (automatically computed)
     #
-    # This section is placed outside of the edge score calculation so that
-    # expectations investing and DCF analysis can be run independently of the
-    # button click above.  When a ticker and valid price are provided, we
-    # attempt to fetch recent financials from Polygon or Tiingo to pre‑fill
-    # default inputs.  Users can override any assumption and compute either
-    # the market‑implied forecast period or a 5‑year DCF valuation.
+    # After the edge score is calculated or whenever a ticker and positive price
+    # are provided, we automatically compute a market‑implied forecast period
+    # and a five‑year DCF valuation using reasonable default assumptions.
+    # These assumptions are derived from the company's most recent financial
+    # statements and the automatically computed fundamentals (profit margin and
+    # revenue growth).  Users no longer need to manually input values.
     if ticker and manual_price > 0.0:
-        # Attempt to fetch additional financial data for valuation defaults
-        sales0: Optional[float] = None
-        shares_out: Optional[float] = None
-        cash_excess: float = 0.0
-        debt_value: float = 0.0
-        # Try Polygon first
-        _val_results = _fetch_financials_polygon(ticker, limit=1)
-        if _val_results:
-            _fin = _val_results[0].get("financials", {}) if isinstance(_val_results[0], dict) else {}
-            _inc_val = _fin.get("income_statement", {}) or {}
-            _bal_val = _fin.get("balance_sheet", {}) or {}
-            sales0 = _pick_field(_inc_val, [
-                "revenues", "revenue", "total_revenue", "totalRevenues", "salesRevenueNet", "netRevenue"
-            ])
-            shares_out = _pick_field(_inc_val, [
-                "diluted_average_shares", "diluted_average_shares_outstanding", "diluted_shares"
-            ])
-            cash_excess = _pick_field(_bal_val, [
-                "cash", "cash_and_cash_equivalents", "cash_and_cash_equivalents_at_carrying_value"
-            ]) or 0.0
-            debt_value = _pick_field(_bal_val, [
-                "total_debt", "total_liabilities", "liabilities"
-            ]) or 0.0
-        else:
-            _val_results = _fetch_financials_tiingo(ticker, limit=1)
-            if _val_results:
-                _report = _val_results[0] if isinstance(_val_results[0], dict) else {}
-                def _extract_stmt_local(report_dict: dict[str, Any], name: str) -> dict[str, Any]:
-                    for key in report_dict.keys():
-                        if key.lower().startswith(name.lower()):
-                            stmt = report_dict.get(key) or {}
-                            if isinstance(stmt, dict):
-                                return stmt
-                    return {}
-                _inc_val = _extract_stmt_local(_report, "incomeStatement")
-                _bal_val = _extract_stmt_local(_report, "balanceSheet")
-                sales0 = _pick_field({k.lower(): v for k, v in _inc_val.items()}, [
-                    "revenue", "revenues", "total_revenue", "totalrevenues", "netrevenue"
-                ])
-                shares_out = _pick_field({k.lower(): v for k, v in _inc_val.items()}, [
-                    "diluted_average_shares", "dilutedaveragesharesoutstanding", "dilutedshares"
-                ])
-                cash_excess = _pick_field({k.lower(): v for k, v in _bal_val.items()}, [
-                    "cash", "cash_and_cash_equivalents", "cashandequivalents"
-                ]) or 0.0
-                debt_value = _pick_field({k.lower(): v for k, v in _bal_val.items()}, [
-                    "total_debt", "total_liabilities", "liabilities", "total_liabilities_net_debt"
-                ]) or 0.0
-
+        valuation_result = _auto_compute_valuation(ticker, manual_price, auto_raw)
         with st.expander("Valuation Models (Expectations Investing & DCF)"):
             st.markdown(
-                "Use this section to explore what the market may be pricing in (Price‑Implied Expectations) "
-                "and to compute a five‑year DCF valuation using your assumptions.  Default values below "
-                "are pulled from the latest financial statements where available."
+                "This section shows automatically computed valuation analyses. "
+                "We derive default assumptions from the latest financial statements "
+                "and the auto‑computed fundamentals (growth and margin). The "
+                "Price‑Implied Expectations (PIE) analysis infers how many years of "
+                "projected cash flows are needed to justify the current stock price. "
+                "The five‑year DCF valuation discounts projected free cash flows and "
+                "a stable terminal value to estimate intrinsic value per share."
             )
-            # Input columns for assumptions
-            col1, col2, col3 = st.columns(3)
-            # Current annual revenue
-            sales_input = col1.number_input(
-                "Current annual revenue (Sales)",
-                value=float(sales0 or 0.0),
-                step=1e6,
-                help="Latest annual revenue in dollars"
-            )
-            # Shares outstanding
-            shares_input = col2.number_input(
-                "Shares outstanding (diluted)",
-                value=float(shares_out or 0.0),
-                step=1e3,
-                help="Diluted shares outstanding"
-            )
-            # WACC
-            wacc_input = col3.number_input(
-                "WACC (decimal)",
-                value=0.10,
-                min_value=0.0,
-                max_value=1.0,
-                step=0.005,
-                help="Weighted average cost of capital"
-            )
-            # Growth, margin, tax, working capital and capex rates
-            col4, col5, col6, col7, col8 = st.columns(5)
-            growth_input = col4.number_input(
-                "Sales growth (%)", value=10.0, step=0.5, help="Annual revenue growth rate (percent)"
-            ) / 100.0
-            margin_input = col5.number_input(
-                "Operating margin (%)", value=10.0, step=0.5, help="EBIT as a percent of sales"
-            ) / 100.0
-            tax_input = col6.number_input(
-                "Tax rate (%)", value=25.0, step=0.5, help="Effective cash tax rate"
-            ) / 100.0
-            wc_input = col7.number_input(
-                "Working capital rate (%)", value=2.0, step=0.5, help="Δ Working capital / Δ Sales"
-            ) / 100.0
-            capex_input = col8.number_input(
-                "Capex rate (%)", value=4.0, step=0.5, help="Δ Fixed capital / Δ Sales"
-            ) / 100.0
-            # Non‑operating assets and debt
-            col9, col10, col11 = st.columns(3)
-            noa_input = col9.number_input(
-                "Non‑operating assets", value=float(cash_excess), step=1e6, help="Excess cash and investments"
-            )
-            debt_input = col10.number_input(
-                "Debt (market value)", value=float(debt_value), step=1e6, help="Total debt"
-            )
-            term_growth_input = col11.number_input(
-                "Terminal growth (%)", value=3.0, step=0.25, help="Perpetual growth rate after year 5"
-            ) / 100.0
-
-            # Buttons for computations use unique keys to avoid conflicts
-            if st.button("Compute Market‑Implied Forecast Period", key="pie_compute_global"):
-                if sales_input > 0 and shares_input > 0 and wacc_input > 0:
-                    implied_years = compute_expectations_forecast_period(
-                        sales0=sales_input,
-                        price_per_share=manual_price,
-                        shares_outstanding=shares_input,
-                        growth=growth_input,
-                        margin=margin_input,
-                        tax_rate=tax_input,
-                        wc_rate=wc_input,
-                        capex_rate=capex_input,
-                        wacc=wacc_input,
-                        non_operating_assets=noa_input,
-                        debt=debt_input,
-                        max_years=20,
+            if valuation_result is None:
+                st.warning(
+                    "Valuation could not be computed automatically. This may be due "
+                    "to missing financial data from Polygon or Tiingo or unavailable "
+                    "growth/margin estimates."
+                )
+            else:
+                defaults = valuation_result.get("defaults", {})
+                implied_years = valuation_result.get("implied_years")
+                dcf_res = valuation_result.get("dcf_result", {})
+                # Display assumptions in two columns for readability
+                with st.expander("Assumptions used in valuation models"):
+                    st.markdown(
+                        "**Derived inputs:** These values are extracted from "
+                        "the latest financial statements and auto‑computed metrics."
                     )
+                    cols = st.columns(3)
+                    # Sales and shares
+                    cols[0].metric("Current revenue", f"${defaults.get('sales', 0.0):,.0f}")
+                    cols[0].metric("Shares outstanding", f"{defaults.get('shares', 0.0):,.0f}")
+                    cols[1].metric("Cash/excess", f"${defaults.get('cash_excess', 0.0):,.0f}")
+                    cols[1].metric("Debt", f"${defaults.get('debt', 0.0):,.0f}")
+                    cols[2].metric("Growth assumption", f"{defaults.get('growth', 0.0)*100:.1f}%")
+                    cols[2].metric("Margin assumption", f"{defaults.get('margin', 0.0)*100:.1f}%")
+                    cols2 = st.columns(3)
+                    cols2[0].metric("WACC", f"{defaults.get('wacc', 0.0)*100:.1f}%")
+                    cols2[0].metric("Tax rate", f"{defaults.get('tax_rate', 0.0)*100:.1f}%")
+                    cols2[1].metric("Working capital rate", f"{defaults.get('wc_rate', 0.0)*100:.1f}%")
+                    cols2[1].metric("Capex rate", f"{defaults.get('capex_rate', 0.0)*100:.1f}%")
+                    cols2[2].metric("Terminal growth", f"{defaults.get('terminal_growth', 0.0)*100:.1f}%")
+                # Display PIE result
+                if implied_years is not None:
                     st.success(f"Market‑implied forecast period: {implied_years} year(s)")
-                else:
-                    st.warning("Please provide positive values for sales, shares and WACC")
-            if st.button("Compute 5‑Year DCF", key="dcf_compute_global"):
-                if sales_input > 0 and shares_input > 0 and wacc_input > 0:
-                    dcf_result = compute_dcf_valuation(
-                        sales0=sales_input,
-                        growth=growth_input,
-                        margin=margin_input,
-                        tax_rate=tax_input,
-                        wc_rate=wc_input,
-                        capex_rate=capex_input,
-                        wacc=wacc_input,
-                        terminal_growth=term_growth_input,
-                        non_operating_assets=noa_input,
-                        debt=debt_input,
-                        shares_outstanding=shares_input,
-                        years=5,
-                    )
+                # Display DCF result
+                if dcf_res:
                     st.success(
-                        f"DCF enterprise value: ${dcf_result['enterprise_value']:,.0f}\n"
-                        f"DCF equity value: ${dcf_result['equity_value']:,.0f}\n"
-                        f"Intrinsic share price: ${dcf_result['intrinsic_price']:,.2f}"
+                        f"DCF enterprise value: ${dcf_res['enterprise_value']:,.0f}\n"
+                        f"DCF equity value: ${dcf_res['equity_value']:,.0f}\n"
+                        f"Intrinsic share price: ${dcf_res['intrinsic_price']:,.2f}"
                     )
-                else:
-                    st.warning("Please provide positive values for sales, shares and WACC")
 
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
