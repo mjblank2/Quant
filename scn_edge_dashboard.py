@@ -652,6 +652,105 @@ def _auto_compute_scores(ticker: str) -> tuple[dict[str, float], dict[str, float
     return q_scores, b_scores, d_scores, raw_metrics
 
 # -----------------------------------------------------------------------------
+# Growth and margin estimation
+#
+# When analyst estimates are unavailable or automatic fundamental metrics cannot
+# be derived, we fall back on historical performance to set baseline growth and
+# margin assumptions.  This helper fetches up to five reporting periods and
+# computes the compounded annual growth rate (CAGR) of revenue as well as the
+# average profit margin.  These values serve as reasonable estimates for
+# projections when no better data are available.  The function returns
+# ``None`` if insufficient data are retrieved.
+def _estimate_growth_margin(ticker: str, max_periods: int = 5) -> Optional[tuple[float, float]]:
+    """Estimate revenue growth and profit margin from historical financials.
+
+    Args:
+        ticker: Stock ticker symbol (e.g., "AAPL").
+        max_periods: Maximum number of reporting periods to consider (default 5).
+
+    Returns:
+        A tuple ``(growth, margin)`` where ``growth`` is the historical CAGR
+        estimate (e.g. 0.05 for 5% per year) and ``margin`` is the average
+        profit margin (net income / revenue).  If data cannot be fetched or
+        computed, returns ``None``.
+    """
+    ticker = ticker.strip().upper()
+    if not ticker:
+        return None
+    # Attempt to fetch financials from Polygon
+    results = _fetch_financials_polygon(ticker, limit=max_periods)
+    using_polygon = True if results else False
+    if not results:
+        # Fall back to Tiingo
+        results = _fetch_financials_tiingo(ticker, limit=max_periods)
+        using_polygon = False
+    if not results or len(results) < 2:
+        return None
+    revenues: list[float] = []
+    margins: list[float] = []
+    try:
+        if using_polygon:
+            # Polygon results ordered descending by reportPeriod (most recent first)
+            for item in results:
+                fin = item.get("financials", {}) if isinstance(item, dict) else {}
+                inc = fin.get("income_statement", {}) or {}
+                rev = _pick_field(inc, [
+                    "revenues", "revenue", "total_revenue", "totalRevenues", "salesRevenueNet", "netRevenue"
+                ])
+                ni = _pick_field(inc, [
+                    "net_income_loss_attributable_to_parent", "net_income_loss", "netIncome"
+                ])
+                if rev is not None and rev != 0:
+                    revenues.append(float(rev))
+                    if ni is not None:
+                        margins.append(float(ni) / float(rev))
+        else:
+            # Tiingo results may contain nested statements with keys like incomeStatement
+            for report in results:
+                if not isinstance(report, dict):
+                    continue
+                # Extract statements (lowercase keys for uniformity)
+                def _extract_stmt_local(report_dict: dict[str, Any], name: str) -> dict[str, Any]:
+                    for key, val in report_dict.items():
+                        if key.lower().startswith(name.lower()):
+                            return val if isinstance(val, dict) else {}
+                    return {}
+                inc_tiingo = _extract_stmt_local(report, "incomeStatement")
+                # Lowercase keys for easier matching
+                inc_lower = {k.lower(): v for k, v in inc_tiingo.items()}
+                rev = _pick_field(inc_lower, [
+                    "revenue", "revenues", "total_revenue", "totalrevenues", "netrevenue"
+                ])
+                ni = _pick_field(inc_lower, [
+                    "net_income", "netincome", "net_income_loss_attributable_to_parent"
+                ])
+                if rev is not None and rev != 0:
+                    revenues.append(float(rev))
+                    if ni is not None:
+                        margins.append(float(ni) / float(rev))
+    except Exception:
+        return None
+    # Ensure we have at least two revenue observations to compute CAGR
+    if len(revenues) < 2:
+        return None
+    try:
+        # CAGR: (latest_rev / earliest_rev)^(1/(n-1)) - 1
+        latest_rev = revenues[0]
+        earliest_rev = revenues[-1]
+        n_periods = len(revenues) - 1
+        if earliest_rev <= 0 or latest_rev <= 0:
+            return None
+        growth_cagr = (latest_rev / earliest_rev) ** (1.0 / n_periods) - 1.0
+        # Average profit margin (ignore None values)
+        if margins:
+            avg_margin = sum(margins) / len(margins)
+        else:
+            avg_margin = 0.0
+        return (growth_cagr, avg_margin)
+    except Exception:
+        return None
+
+# -----------------------------------------------------------------------------
 # Valuation defaults and automatic computation
 #
 # To remove the need for manual input in the valuation models, we derive
@@ -741,16 +840,31 @@ def _derive_valuation_defaults(
             ]) or 0.0
     except Exception:
         return None
-    # Derive growth and margin from auto metrics if available
+    # Derive growth and margin from auto metrics if available; if not,
+    # estimate from the last several reporting periods.  If both are
+    # unavailable, fall back to conservative constants.
     growth = 0.10  # default 10%
     margin = 0.10  # default 10%
+    # Attempt to use provided auto metrics
+    rev_growth = None
+    prof_margin = None
     if auto_metrics:
         rev_growth = auto_metrics.get("revenue_growth")
         prof_margin = auto_metrics.get("profit_margin")
-        if rev_growth is not None:
-            growth = max(min(float(rev_growth), 0.50), -0.20)  # bound between -20% and +50%
-        if prof_margin is not None:
-            margin = max(min(float(prof_margin), 0.50), -0.20)  # bound
+    if rev_growth is not None and prof_margin is not None:
+        try:
+            growth = max(min(float(rev_growth), 0.50), -0.20)
+            margin = max(min(float(prof_margin), 0.50), -0.20)
+        except Exception:
+            pass
+    else:
+        # If auto metrics are missing, estimate growth and margin using historical data
+        est = _estimate_growth_margin(ticker)
+        if est is not None:
+            g_est, m_est = est
+            # Bound the values to avoid extreme assumptions
+            growth = max(min(g_est, 0.50), -0.20)
+            margin = max(min(m_est, 0.50), -0.20)
     # Set conservative default rates
     tax_rate = 0.25
     wc_rate = 0.02
