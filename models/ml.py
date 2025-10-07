@@ -98,6 +98,25 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Valid loss options for HistGradientBoostingRegressor.  Keeping the list local
+# avoids importing sklearn internals while still providing a guardrail against
+# typos in environment overrides.  If an invalid loss is supplied we log a
+# warning and revert to the default ``squared_error`` so model training does not
+# abort mid-run.
+_HGB_VALID_LOSSES = {
+    "squared_error",
+    "absolute_error",
+    "poisson",
+    "gamma",
+    "quantile",
+}
+HGB_LOSS = os.getenv("HGB_LOSS", "squared_error")
+if HGB_LOSS not in _HGB_VALID_LOSSES:
+    log.warning(
+        "Invalid HGB_LOSS '%s'; falling back to 'squared_error'", HGB_LOSS
+    )
+    HGB_LOSS = "squared_error"
+
 # Feature set used for model training and prediction.  Trimmed to include only
 # features that are actually computed by models/features.py.  The list is
 # intentionally ordered so that price/momentum/volatility features come first,
@@ -394,8 +413,7 @@ def _model_specs() -> Dict[str, Pipeline]:
         alpha=1e-4,
         learning_rate_init=1e-3,
         max_iter=500,
-        early_stopping=True,
-        validation_fraction=0.1,
+        early_stopping=False,
         random_state=42
     ))
     # Deep feedforward neural network with three hidden layers.
@@ -406,8 +424,7 @@ def _model_specs() -> Dict[str, Pipeline]:
         alpha=1e-4,
         learning_rate_init=1e-3,
         max_iter=800,
-        early_stopping=True,
-        validation_fraction=0.1,
+        early_stopping=False,
         random_state=42
     ))
     # HistGradientBoostingRegressor: a fast, tree‑based gradient boosting
@@ -415,7 +432,7 @@ def _model_specs() -> Dict[str, Pipeline]:
     try:
         _ = HistGradientBoostingRegressor
         specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
-            loss='lsquared_error',
+            loss=HGB_LOSS,
             max_depth=6,
             learning_rate=0.05,
             max_iter=300,
@@ -432,8 +449,7 @@ def _model_specs() -> Dict[str, Pipeline]:
         alpha=1e-4,
         learning_rate_init=1e-3,
         max_iter=1000,
-        early_stopping=True,
-        validation_fraction=0.1,
+        early_stopping=False,
         random_state=42
     ))
     # Simple reinforcement-learning inspired Q-table model
