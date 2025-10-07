@@ -253,10 +253,7 @@ def _define_pipeline(estimator: Any) -> Pipeline:
 
 def _estimator_supports_group(pipeline: Pipeline) -> bool:
     """Return True if the pipeline's final estimator accepts a ``group`` argument."""
-    try:
-        estimator = pipeline.named_steps.get("model")
-    except Exception:
-        return False
+    estimator = pipeline.named_steps.get("model")
     if estimator is None:
         return False
     try:
