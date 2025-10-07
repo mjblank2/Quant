@@ -394,8 +394,7 @@ def _model_specs() -> Dict[str, Pipeline]:
         alpha=1e-4,
         learning_rate_init=1e-3,
         max_iter=500,
-        early_stopping=True,
-        validation_fraction=0.1,
+        early_stopping=False,
         random_state=42
     ))
     # Deep feedforward neural network with three hidden layers.
@@ -406,8 +405,7 @@ def _model_specs() -> Dict[str, Pipeline]:
         alpha=1e-4,
         learning_rate_init=1e-3,
         max_iter=800,
-        early_stopping=True,
-        validation_fraction=0.1,
+        early_stopping=False,
         random_state=42
     ))
     # HistGradientBoostingRegressor: a fast, tree‑based gradient boosting
@@ -415,7 +413,7 @@ def _model_specs() -> Dict[str, Pipeline]:
     try:
         _ = HistGradientBoostingRegressor
         specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
-            loss='lsquared_error',
+            loss='squared_error',
             max_depth=6,
             learning_rate=0.05,
             max_iter=300,
@@ -432,8 +430,7 @@ def _model_specs() -> Dict[str, Pipeline]:
         alpha=1e-4,
         learning_rate_init=1e-3,
         max_iter=1000,
-        early_stopping=True,
-        validation_fraction=0.1,
+        early_stopping=False,
         random_state=42
     ))
     # Simple reinforcement-learning inspired Q-table model
