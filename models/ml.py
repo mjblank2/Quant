@@ -283,6 +283,11 @@ def _estimator_supports_group(pipeline: Pipeline) -> bool:
     return "group" in sig.parameters
 
 
+def _supports_group_param(pipeline: Pipeline) -> bool:
+    """Backward-compatible alias for :func:`_estimator_supports_group`."""
+    return _estimator_supports_group(pipeline)
+
+
 def _model_specs() -> Dict[str, Pipeline]:
     """
     Define the base model specifications to be blended.
