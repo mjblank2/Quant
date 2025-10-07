@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 
 # Guard to ensure we only log the adj_close mode once
 _logged_price_mode = False
+_price_expr_cache: str | None = None
+_price_expr_state: tuple[bool, str] | None = None
 
 
 @lru_cache(maxsize=1)
@@ -43,7 +45,6 @@ def has_adj_close() -> bool:
         return False
 
 
-@lru_cache(maxsize=1)
 def price_expr() -> str:
     """
     Get the appropriate SQL expression for fetching adjusted prices.
@@ -56,16 +57,28 @@ def price_expr() -> str:
     """
     global _logged_price_mode
 
-    if has_adj_close():
+    global _price_expr_cache, _price_expr_state
+
+    state = has_adj_close()
+    engine_signature = _engine_signature()
+
+    if _price_expr_cache is not None and _price_expr_state == (state, engine_signature):
+        return _price_expr_cache
+
+    if state:
         if not _logged_price_mode:
             log.info("Using adj_close column with fallback to close")
             _logged_price_mode = True
-        return "COALESCE(adj_close, close)"
+        expression = "COALESCE(adj_close, close)"
     else:
         if not _logged_price_mode:
             log.info("adj_close column not found, falling back to close prices")
             _logged_price_mode = True
-        return "close"
+        expression = "close"
+
+    _price_expr_cache = expression
+    _price_expr_state = (state, engine_signature)
+    return expression
 
 
 def select_price_as(alias: str) -> str:
@@ -90,3 +103,20 @@ def log_price_mode_once() -> None:
     if not _logged_price_mode:
         # This will trigger the logging in price_expr()
         price_expr()
+
+
+def _engine_signature() -> str:
+    try:
+        return str(engine.url)
+    except Exception:  # pragma: no cover - engine may not have URL
+        return repr(engine)
+
+
+def _clear_price_expr_cache() -> None:
+    global _price_expr_cache, _price_expr_state, _logged_price_mode
+    _price_expr_cache = None
+    _price_expr_state = None
+    _logged_price_mode = False
+
+
+price_expr.cache_clear = _clear_price_expr_cache  # type: ignore[attr-defined]

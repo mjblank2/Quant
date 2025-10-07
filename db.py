@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
+from collections import OrderedDict
 from datetime import date
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 import pandas as pd
 from sqlalchemy import (
@@ -18,6 +21,8 @@ from sqlalchemy import (
     inspect,
     tuple_,
 )
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -42,6 +47,93 @@ def _create_engine_from_env() -> Any:
 engine = _create_engine_from_env()
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
+logger = logging.getLogger(__name__)
+
+_PREDICTION_INDEXES: Sequence[Any]
+if engine.dialect.name == "sqlite":
+    _PREDICTION_INDEXES = ()
+else:
+    _PREDICTION_INDEXES = (
+        Index("ix_predictions_ts", "ts"),
+        Index("ix_predictions_ts_model", "ts", "model_version"),
+    )
+
+_table_columns_cache: dict[tuple[str, str], list[str]] = {}
+_column_warning_cache: OrderedDict[tuple[str, tuple[str, ...]], float] = OrderedDict()
+_MAX_COLUMN_CACHE_SIZE = 100
+_ADJ_CLOSE_RATE_LIMIT = 300.0  # seconds
+_GENERAL_RATE_LIMIT = 60.0
+
+
+def _engine_cache_key(target: Any) -> str:
+    """Generate a cache key for column lookups based on the engine URL."""
+
+    try:
+        if hasattr(target, "engine"):
+            target = target.engine
+        url = getattr(target, "url", None)
+        if url is not None:
+            return str(url)
+        dialect = getattr(target, "dialect", None)
+        if dialect is not None and getattr(dialect, "name", None):
+            return str(dialect.name)
+    except Exception:  # pragma: no cover - defensive for mocks
+        pass
+
+    try:
+        return str(engine.url)
+    except Exception:  # pragma: no cover - fallback when engine lacks URL
+        return "default"
+
+
+def clear_table_columns_cache() -> None:
+    """Clear cached table column metadata."""
+
+    _table_columns_cache.clear()
+    _column_warning_cache.clear()
+
+
+def _should_log_column_warning(table_name: str, missing_cols: set[str]) -> bool:
+    """Determine whether a dropped-column warning should be emitted."""
+
+    if not missing_cols:
+        return False
+
+    normalized_missing = tuple(sorted(missing_cols))
+    cache_key = (table_name, normalized_missing)
+    now = time.time()
+
+    last_logged = _column_warning_cache.get(cache_key)
+
+    is_adj_close_only = normalized_missing == ("adj_close",)
+    rate_limit = _ADJ_CLOSE_RATE_LIMIT if is_adj_close_only else _GENERAL_RATE_LIMIT
+
+    if last_logged is not None and now - last_logged < rate_limit:
+        return False
+
+    _column_warning_cache[cache_key] = now
+
+    while len(_column_warning_cache) > _MAX_COLUMN_CACHE_SIZE:
+        _column_warning_cache.popitem(last=False)
+
+    return True
+
+
+def _get_cached_table_columns(table_name: str, target: Any) -> list[str]:
+    key = (table_name, _engine_cache_key(target))
+    if key in _table_columns_cache:
+        return list(_table_columns_cache[key])
+
+    try:
+        inspector = inspect(target)
+        columns_info = inspector.get_columns(table_name)
+        column_names = [col["name"] for col in columns_info]
+    except Exception:
+        table_meta = Base.metadata.tables.get(table_name)
+        column_names = [c.name for c in table_meta.columns] if table_meta is not None else []
+
+    _table_columns_cache[key] = list(column_names)
+    return list(column_names)
 
 
 class Universe(Base):
@@ -195,10 +287,7 @@ class Prediction(Base):
     horizon = Column(Integer, primary_key=True, nullable=False, default=5)
     created_at = Column(DateTime, primary_key=True, nullable=False, server_default=func.now())
     y_pred = Column(Float, nullable=False)
-    __table_args__ = (
-        Index("ix_predictions_ts", "ts"),
-        Index("ix_predictions_ts_model", "ts", "model_version"),
-    )
+    __table_args__ = tuple(_PREDICTION_INDEXES)
 
 
 class BacktestEquity(Base):
@@ -249,12 +338,58 @@ def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def _max_bind_params_for_connection(connection: Any) -> int:
+    """Return the maximum number of bind parameters supported by a connection."""
+
+    dialect_name: Optional[str] = None
+
+    try:
+        dialect = getattr(connection, "dialect", None)
+        if dialect and getattr(dialect, "name", None):
+            dialect_name = dialect.name
+    except Exception:  # pragma: no cover - defensive for mocks
+        dialect_name = None
+
+    if not dialect_name:
+        engine_obj = getattr(connection, "engine", None)
+        if engine_obj is not None:
+            try:
+                dialect_name = engine_obj.dialect.name
+            except Exception:  # pragma: no cover - defensive for mocks
+                url = getattr(engine_obj, "url", None)
+                if url is not None:
+                    dialect_name = str(url)
+
+    if not dialect_name and engine is not None:
+        try:
+            dialect_name = engine.dialect.name
+        except Exception:  # pragma: no cover - extremely defensive
+            dialect_name = None
+
+    normalized = str(dialect_name or "").lower()
+
+    if "postgres" in normalized or "psycopg" in normalized:
+        return 65535
+    if "mysql" in normalized or "mariadb" in normalized:
+        return 65535
+    if "oracle" in normalized:
+        return 65535
+    if "bigquery" in normalized:
+        return 100000
+    if "sqlite" in normalized:
+        return 999
+
+    # Fallback to SQLite's conservative default when dialect is unknown.
+    return 999
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: Any,
     conflict_cols: Optional[list[str]] = None,
     update_cols: Optional[list[str]] = None,
     chunk_size: Optional[int] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """
     Append a DataFrame to the given table.  Unknown columns are dropped and missing
@@ -269,34 +404,55 @@ def upsert_dataframe(
     table : Any
         Table object or name
     conflict_cols : Optional[list[str]]
-        Conflict columns (for backward compatibility, not used in current implementation)
+        Columns used to identify conflicting records.  When omitted the function
+        falls back to the table's primary key definition.
     update_cols : Optional[list[str]]
-        Update columns (for backward compatibility, not used in current implementation)
+        Explicit list of columns to update on conflict.  Defaults to all columns
+        except the conflict columns when not provided.
     chunk_size : Optional[int]
-        Number of rows to insert per batch. Defaults to 1000 if not specified.
+        Desired number of rows per insert batch.  The function automatically
+        caps this value based on the backend parameter limit.
+    conn : Optional[Connection]
+        Optional SQLAlchemy connection to reuse.  When not supplied the global
+        engine is used and the function manages its own transaction.
     """
     if df is None or df.empty:
         return
     # determine table_name from object or string
-    if hasattr(table, "name"):
-        table_name = table.name
-    elif hasattr(table, "__tablename__"):
+    if hasattr(table, "__tablename__"):
         table_name = table.__tablename__
+    elif hasattr(table, "name") and not isinstance(table, type):
+        table_name = table.name
     else:
         table_name = str(table)
 
-    if table_name not in Base.metadata.tables:
+    if table_name in Base.metadata.tables:
+        table_obj = Base.metadata.tables[table_name]
+    elif hasattr(table, "__table__"):
+        table_obj = table.__table__
+    else:
         raise ValueError(f"Unknown table: {table_name}")
 
+    target_engine = conn.engine if conn is not None else engine
+
     # gather valid columns for the target table using live inspection of the database
-    valid_cols = set(c.name for c in Base.metadata.tables[table_name].columns)
-    try:
-        insp = inspect(engine)
-        columns_info = insp.get_columns(table_name)
-        valid_cols = {col["name"] for col in columns_info}
-    except Exception:
-        # fallback to metadata-defined columns if inspection fails
-        valid_cols = {c.name for c in Base.metadata.tables[table_name].columns}
+    valid_cols = _get_cached_table_columns(table_name, target_engine)
+    if not valid_cols:
+        valid_cols = [c.name for c in table_obj.columns]
+
+    if not valid_cols:
+        raise ValueError(f"No columns available for table: {table_name}")
+
+    dropped_cols = {c for c in df.columns if c not in valid_cols}
+    if dropped_cols and _should_log_column_warning(table_name, dropped_cols):
+        if dropped_cols == {"adj_close"}:
+            logger.debug("Dropping adj_close column not present in %s", table_name)
+        else:
+            logger.warning(
+                "Dropping columns not present in %s: %s",
+                table_name,
+                ", ".join(sorted(dropped_cols)),
+            )
 
     # retain only columns that exist in the table
     filtered_df = df.copy()[[c for c in df.columns if c in valid_cols]]
@@ -305,15 +461,16 @@ def upsert_dataframe(
         if col not in filtered_df.columns:
             filtered_df[col] = None
 
+    # Reorder columns to match the table definition for stable INSERT statements
+    column_order = [col for col in valid_cols if col in filtered_df.columns]
+    filtered_df = filtered_df[column_order]
+
     # Cast DataFrame columns to appropriate types based on the database schema.
-    # When DataFrame dtypes are object (e.g. strings), pandas will generate
-    # VARCHAR parameters in to_sql, causing datatype mismatches for numeric,
-    # integer, date or datetime columns.  Inspect the table schema and coerce
-    # columns accordingly.  Float columns are cast to numeric; Integer columns
-    # are cast to pandas nullable Int64; Date and DateTime columns are parsed
-    # to datetime; Boolean columns are cast to bool.
+    inspector = None
+
     try:
-        insp_cols = inspect(engine).get_columns(table_name)
+        inspector = inspect(target_engine)
+        insp_cols = inspector.get_columns(table_name)
         float_cols = []
         int_cols = []
         date_cols = []
@@ -332,23 +489,18 @@ def upsert_dataframe(
                 datetime_cols.append(col_name)
             elif isinstance(col_type, Boolean):
                 bool_cols.append(col_name)
-        # Cast float columns
         for col in float_cols:
             if col in filtered_df.columns:
                 filtered_df[col] = pd.to_numeric(filtered_df[col], errors="coerce")
-        # Cast integer columns
         for col in int_cols:
             if col in filtered_df.columns:
                 filtered_df[col] = pd.to_numeric(filtered_df[col], errors="coerce").astype("Int64")
-        # Cast date columns to date objects
         for col in date_cols:
             if col in filtered_df.columns:
                 filtered_df[col] = pd.to_datetime(filtered_df[col], errors="coerce").dt.date
-        # Cast datetime columns to pandas datetime
         for col in datetime_cols:
             if col in filtered_df.columns:
                 filtered_df[col] = pd.to_datetime(filtered_df[col], errors="coerce")
-        # Cast boolean columns
         for col in bool_cols:
             if col in filtered_df.columns:
                 filtered_df[col] = filtered_df[col].astype(bool)
@@ -356,37 +508,93 @@ def upsert_dataframe(
         # If inspection fails, silently skip casting; invalid types will raise DB errors
         pass
 
-    # choose a sensible chunksize to avoid hitting Postgres parameter limits (65535)
-    chunksize = chunk_size if chunk_size is not None else 1000
-
     # prepare metadata objects used for conflict resolution
-    table_obj = Base.metadata.tables[table_name]
-    pk_columns = inspect(engine).get_pk_constraint(table_name).get("constrained_columns", [])
+    try:
+        if inspector is None:
+            inspector = inspect(target_engine)
+        pk_columns = inspector.get_pk_constraint(table_name).get("constrained_columns", [])
+    except Exception:
+        pk_columns = [col.name for col in table_obj.primary_key.columns]
 
-    # remove duplicate entries within the DataFrame when a primary key exists
-    if pk_columns:
-        filtered_df = filtered_df.drop_duplicates(subset=pk_columns, keep="last")
+    dedupe_cols = pk_columns or (conflict_cols or [])
+    if dedupe_cols:
+        filtered_df = filtered_df.drop_duplicates(subset=dedupe_cols, keep="last")
+
+    # Determine update columns for parameter counting
+    if conflict_cols is None:
+        conflict_cols = pk_columns
+    effective_conflict_cols = conflict_cols or []
+
+    if update_cols is None:
+        update_cols = [c for c in filtered_df.columns if c not in effective_conflict_cols]
+
+    params_per_row = len(filtered_df.columns)
+    if effective_conflict_cols:
+        params_per_row += len(update_cols)
+
+    safety_margin = max(10, params_per_row // 10) if params_per_row else 0
+
+    # Acquire connection / transaction handling
+    connection = conn if conn is not None else target_engine.connect()
+    close_connection = conn is None
+    transaction = None
+
+    try:
+        max_bind_params = _max_bind_params_for_connection(connection)
+    except Exception:
+        max_bind_params = 999
+
+    effective_limit = max_bind_params - safety_margin
+    if effective_limit <= 0 or params_per_row == 0:
+        calculated_chunksize = 1
+    else:
+        calculated_chunksize = max(1, effective_limit // max(1, params_per_row))
+
+    if chunk_size is not None:
+        chunksize = max(1, min(chunk_size, calculated_chunksize))
+    else:
+        chunksize = max(1, min(1000, calculated_chunksize))
 
     def _iter_chunks(seq: list[Any], size: int) -> Iterator[list[Any]]:
         for i in range(0, len(seq), size):
             yield seq[i : i + size]
 
-    # perform the insert inside a transaction so deletes + inserts are atomic
-    with engine.begin() as connection:
-        if pk_columns and not filtered_df.empty:
-            pk_cols = [table_obj.c[col] for col in pk_columns]
-            pk_tuples = list(filtered_df[pk_columns].itertuples(index=False, name=None))
-            # delete existing rows that would violate the primary key constraint
-            for chunk_values in _iter_chunks(pk_tuples, 1000):
-                delete_stmt = table_obj.delete().where(tuple_(*pk_cols).in_(chunk_values))
-                connection.execute(delete_stmt)
+    try:
+        if not connection.in_transaction():
+            transaction = connection.begin()
 
-        filtered_df.to_sql(
-            table_name,
-            con=connection,
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=chunksize,
-        )
+        if effective_conflict_cols and not filtered_df.empty:
+            pk_cols = [table_obj.c[col] for col in effective_conflict_cols if col in table_obj.c]
+            if pk_cols:
+                pk_tuples = list(filtered_df[effective_conflict_cols].itertuples(index=False, name=None))
+                for chunk_values in _iter_chunks(pk_tuples, 1000):
+                    delete_stmt = table_obj.delete().where(tuple_(*pk_cols).in_(chunk_values))
+                    try:
+                        connection.execute(delete_stmt)
+                    except ProgrammingError as exc:
+                        logger.warning(
+                            "Failed to delete existing rows for %s due to %s; continuing with insert",
+                            table_name,
+                            exc,
+                        )
+
+        if not filtered_df.empty:
+            filtered_df.to_sql(
+                table_name,
+                con=connection,
+                if_exists="append",
+                index=False,
+                method="multi",
+                chunksize=chunksize,
+            )
+
+        if transaction is not None:
+            transaction.commit()
+    except Exception:
+        if transaction is not None:
+            transaction.rollback()
+        raise
+    finally:
+        if close_connection:
+            connection.close()
 

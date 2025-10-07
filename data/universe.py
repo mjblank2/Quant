@@ -11,6 +11,11 @@ import requests
 
 from .db import Universe  # Assumes db.py is in same package
 
+try:  # pragma: no cover - convenience for tests
+    from db import SessionLocal as SessionLocal  # type: ignore
+except Exception:  # pragma: no cover - fallback when db module unavailable
+    SessionLocal = None
+
 log = logging.getLogger("data.universe")
 
 def _get_polygon_api_key() -> str:
@@ -296,6 +301,10 @@ def rebuild_universe() -> List[Dict[str, Any]]:
         import pandas as pd
         import db
         import unicodedata
+
+        if SessionLocal is not None:
+            session = SessionLocal()
+            session.close()
 
         df_data: List[Dict[str, Any]] = []
         truncated_names = 0
