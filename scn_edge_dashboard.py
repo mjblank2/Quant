@@ -30,6 +30,15 @@ Key features
   template (e.g. profitability quality, cash runway).  Users can
   assign 0–100 scores per subfactor; the weighted averages are used
   to compute the pillars.
+  * **Automatic fundamental scoring** – if a ``POLYGON_API_KEY``
+    environment variable is set, the dashboard fetches the latest
+    financial statements via Polygon’s Financials API and
+    pre‑populates the Quality and Balance subfactor sliders with
+    calculated scores based on profit margin, revenue growth, gross
+    margin, leverage, interest coverage, working capital health, share
+    dilution and cash runway【918312000758792†L130-L214】.  If the API is
+    unavailable or no data is returned, the sliders default to 50 and
+    can be manually adjusted.
 * **Gating and scaling** – applies the hard gate and balance/disclosure
   gate caps before scaling the raw edge score to 0–10 and mapping to
   a letter grade.
@@ -50,7 +59,7 @@ from typing import Dict, List, Tuple
 import numpy as _np
 import pandas as _pd
 import os as _os
-from typing import Optional
+from typing import Optional, Any, Callable
 
 # Requests is used to query external market data providers.  If
 # requests is unavailable, the import will fail and automatic price
@@ -100,6 +109,349 @@ DISCLOSURE_SUBFACTORS: List[Tuple[str, float]] = [
     ("Governance quality", 0.20),
     ("IR responsiveness", 0.10),
 ]
+
+# -----------------------------------------------------------------------------
+# Fundamental data helper functions
+#
+# In order to automatically assign scores for the Quality (Q), Balance (B) and
+# Disclosure (D) sub‑factors, we attempt to retrieve fundamental financial
+# statements via external APIs.  This implementation leverages the Polygon
+# Financials API to pull income statements, balance sheets and cash flow
+# statements.  The API is authenticated using the ``POLYGON_API_KEY``
+# environment variable.  If data cannot be retrieved or parsed, a neutral
+# score of 50 is used for each sub‑factor.  Tiingo and Alpaca are used for
+# price retrieval elsewhere but are not currently leveraged for fundamentals.
+
+def _safe_get(d: Any, *keys: str, default: Optional[float] = None) -> Optional[float]:
+    """Safely drill into nested dictionaries and return a float.
+
+    Args:
+        d: Base dictionary to traverse.
+        keys: Sequence of keys to follow.
+        default: Value to return if any key is missing or conversion fails.
+
+    Returns:
+        Float value if present, else ``default``.
+    """
+    try:
+        for key in keys:
+            if isinstance(d, list):
+                # if a list is encountered, take the first element
+                d = d[0]
+            d = d[key]
+        if d is None:
+            return default
+        return float(d)
+    except Exception:
+        return default
+
+
+def _fetch_financials_polygon(ticker: str, limit: int = 2) -> Optional[list[dict[str, Any]]]:
+    """Fetch financial statements from Polygon.io.
+
+    This helper queries the Polygon Financials endpoint to retrieve a list
+    of recent reporting periods for the given ticker.  The ``limit``
+    parameter controls how many periods to return (most recent first).  The
+    API is accessed via the ``POLYGON_API_KEY`` environment variable.  A
+    list of result dictionaries is returned if successful, otherwise
+    ``None``.
+
+    The endpoint used is ``https://api.polygon.io/vX/reference/financials``,
+    which consolidates income statements, balance sheets and cash flow
+    statements derived from SEC filings【918312000758792†L130-L214】.  Each result
+    dictionary contains a ``financials`` key with sub‑dictionaries for
+    ``income_statement``, ``balance_sheet``, and ``cash_flow_statement``.  See
+    Polygon's Financials API glossary for the list of possible fields【918312000758792†L130-L214】.
+
+    Args:
+        ticker: The ticker symbol to query (e.g. "AAPL").
+        limit: Number of financial periods to retrieve.
+
+    Returns:
+        A list of financial period dictionaries, or ``None`` on failure.
+    """
+    if not (_HAS_REQUESTS and ticker):
+        return None
+    token = _os.environ.get("POLYGON_API_KEY")
+    if not token:
+        return None
+    url = "https://api.polygon.io/vX/reference/financials"
+    params = {
+        "ticker": ticker,
+        "limit": limit,
+        "sort": "reportPeriod",
+        "order": "desc",
+        "apiKey": token,
+    }
+    try:
+        resp = _requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            results = data.get("results")
+            if isinstance(results, list) and results:
+                return results
+    except Exception:
+        pass
+    return None
+
+
+def _pick_field(d: dict[str, Any], keys: list[str]) -> Optional[float]:
+    """Pick the first available numeric field from a dictionary.
+
+    Many financial statement fields have multiple potential names (e.g. "revenues"
+    vs "revenue").  This helper iterates over the provided keys and returns the
+    first value that can be coerced to a float.  If no key is found or
+    conversion fails, ``None`` is returned.
+
+    Args:
+        d: Dictionary to search.
+        keys: List of candidate field names in order of preference.
+
+    Returns:
+        The numeric value of the first found field or ``None``.
+    """
+    for k in keys:
+        if k in d and d[k] is not None:
+            try:
+                return float(d[k])
+            except Exception:
+                continue
+    return None
+
+
+def _compute_metrics_from_polygon(results: list[dict[str, Any]]) -> dict[str, Optional[float]]:
+    """Compute fundamental metrics using Polygon financial statements.
+
+    The function expects a list of period dictionaries as returned by
+    ``_fetch_financials_polygon``.  The most recent period (index 0) and the
+    previous period (index 1) are used to calculate changes such as revenue
+    growth.  Metrics computed include profit margin, revenue growth, gross
+    margin, leverage, interest coverage, current ratio, share dilution and
+    cash runway.  Missing values are handled gracefully and result in
+    ``None``.
+
+    Returns:
+        Dictionary mapping metric names to numeric values or ``None``.
+    """
+    metrics: dict[str, Optional[float]] = {
+        "profit_margin": None,
+        "revenue_growth": None,
+        "gross_margin": None,
+        "net_debt_to_ebitda": None,
+        "interest_coverage": None,
+        "current_ratio": None,
+        "share_dilution": None,
+        "cash_runway_months": None,
+    }
+    if not results:
+        return metrics
+    try:
+        latest = results[0]
+        prev = results[1] if len(results) > 1 else None
+        fin_latest = latest.get("financials", {}) if isinstance(latest, dict) else {}
+        fin_prev = prev.get("financials", {}) if isinstance(prev, dict) else {}
+        inc_latest = fin_latest.get("income_statement", {}) or {}
+        bal_latest = fin_latest.get("balance_sheet", {}) or {}
+        cf_latest = fin_latest.get("cash_flow_statement", {}) or {}
+        inc_prev = fin_prev.get("income_statement", {}) if fin_prev else {}
+
+        # Profit margin: net income / revenue
+        revenue_latest = _pick_field(inc_latest, [
+            "revenues", "revenue", "total_revenue", "totalRevenues", "salesRevenueNet", "netRevenue"
+        ])
+        net_income_latest = _pick_field(inc_latest, [
+            "net_income_loss_attributable_to_parent", "net_income_loss", "net_income", "netIncome", "netIncomeLoss"
+        ])
+        if revenue_latest is not None and revenue_latest != 0 and net_income_latest is not None:
+            metrics["profit_margin"] = net_income_latest / revenue_latest
+
+        # Revenue growth: (revenue_current - revenue_prev) / revenue_prev
+        revenue_prev = None
+        if inc_prev:
+            revenue_prev = _pick_field(inc_prev, [
+                "revenues", "revenue", "total_revenue", "totalRevenues", "salesRevenueNet", "netRevenue"
+            ])
+            if revenue_latest is not None and revenue_prev and revenue_prev != 0:
+                metrics["revenue_growth"] = (revenue_latest - revenue_prev) / revenue_prev
+
+        # Gross margin: gross profit / revenue
+        gross_profit = _pick_field(inc_latest, [
+            "gross_profit", "grossProfit"
+        ])
+        if gross_profit is not None and revenue_latest and revenue_latest != 0:
+            metrics["gross_margin"] = gross_profit / revenue_latest
+
+        # Leverage: net debt / EBITDA
+        liabilities = _pick_field(bal_latest, ["liabilities", "total_liabilities", "totalLiabilities"])
+        cash = _pick_field(bal_latest, ["cash", "cash_and_cash_equivalents", "cash_and_equivalents", "cash_and_cash_equivalents_at_carrying_value"])
+        # There is no explicit short-term investments field in the glossary; cash proxy is used
+        net_debt = None
+        if liabilities is not None:
+            cash_total = cash or 0.0
+            net_debt = max(liabilities - cash_total, 0.0)
+        # EBITDA: approximate as operating income + depreciation and amortization
+        operating_income = _pick_field(inc_latest, ["operating_income_loss", "operatingIncome", "operating_income"])
+        depreciation = _pick_field(inc_latest, ["depreciation_and_amortization", "depreciation_and_amortization_total"])
+        ebitda = None
+        if operating_income is not None:
+            ebitda = operating_income + (depreciation or 0.0)
+        if net_debt is not None and ebitda and ebitda != 0:
+            metrics["net_debt_to_ebitda"] = net_debt / ebitda
+
+        # Interest coverage: operating income / interest expense
+        interest_exp = _pick_field(inc_latest, [
+            "interest_expense_operating", "interest_and_debt_expense", "interest_expense"
+        ])
+        if operating_income is not None and interest_exp and interest_exp != 0:
+            # Use absolute value of interest expense (should be positive number)
+            metrics["interest_coverage"] = operating_income / abs(interest_exp)
+
+        # Current ratio: current assets / current liabilities
+        current_assets = _pick_field(bal_latest, ["current_assets", "total_current_assets", "totalCurrentAssets"])
+        current_liabilities = _pick_field(bal_latest, ["current_liabilities", "total_current_liabilities", "totalCurrentLiabilities"])
+        if current_assets is not None and current_liabilities and current_liabilities != 0:
+            metrics["current_ratio"] = current_assets / current_liabilities
+
+        # Share dilution: difference between diluted and basic shares relative to basic
+        diluted_shares = _pick_field(inc_latest, ["diluted_average_shares", "diluted_average_shares_outstanding", "diluted_shares"])
+        basic_shares = _pick_field(inc_latest, ["basic_average_shares", "basic_shares"])
+        if diluted_shares is not None and basic_shares and basic_shares != 0:
+            metrics["share_dilution"] = (diluted_shares - basic_shares) / basic_shares
+
+        # Cash runway: (cash) / (monthly cash burn)
+        # Burn rate derived from operating cash flow in cash flow statement
+        operating_cf = _pick_field(cf_latest, [
+            "net_cash_flow_from_operating_activities", "net_cash_flow_from_operating_activities_continuing", "net_cash_flow_from_operating_activities_discontinued", "net_cash_flow_from_operating_activities_continuing_operations"
+        ])
+        if operating_cf is not None:
+            cash_total = cash or 0.0
+            # Positive operating CF means company generates cash; runway infinite
+            if operating_cf > 0:
+                metrics["cash_runway_months"] = float("inf")
+            else:
+                monthly_burn = -operating_cf / 12.0
+                if monthly_burn > 0:
+                    metrics["cash_runway_months"] = cash_total / monthly_burn
+    except Exception:
+        pass
+    return metrics
+
+
+def _map_value_to_score(value: Optional[float], thresholds: list[tuple[float, int]], higher_better: bool = True) -> float:
+    """Map a numeric value to a 0–100 score based on thresholds.
+
+    Args:
+        value: The raw metric value (may be ``None``).
+        thresholds: List of (threshold, score) tuples.  For ``higher_better`` metrics
+            the list should be sorted in increasing order of threshold; for
+            ``higher_better=False`` metrics, thresholds should be sorted in
+            decreasing order.  The function returns the score associated with
+            the first threshold that the value crosses.
+        higher_better: Whether higher values correspond to higher scores.
+
+    Returns:
+        A score between 0 and 100.  If ``value`` is ``None``, returns 50.
+    """
+    if value is None or _math.isnan(value):
+        return 50.0
+    try:
+        val = float(value)
+    except Exception:
+        return 50.0
+    if higher_better:
+        for threshold, score in thresholds:
+            if val < threshold:
+                return float(score)
+        return float(thresholds[-1][1])
+    else:
+        for threshold, score in thresholds:
+            if val > threshold:
+                return float(score)
+        return float(thresholds[-1][1])
+
+
+def _auto_compute_scores(ticker: str) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
+    """Automatically compute Q/B/D subfactor scores for a given ticker.
+
+    This function attempts to fetch fundamental data and derive meaningful
+    subfactor scores.  It returns three dictionaries mapping each subfactor
+    name to a score on the 0–100 scale and a dictionary of the raw metrics
+    used in the calculations.  If no data could be retrieved, all scores
+    default to 50.
+    """
+    # Initialize all scores to mid‑level values
+    q_scores = {name: 50.0 for name, _w in QUALITY_SUBFACTORS}
+    b_scores = {name: 50.0 for name, _w in BALANCE_SUBFACTORS}
+    d_scores = {name: 50.0 for name, _w in DISCLOSURE_SUBFACTORS}
+    raw_metrics: dict[str, float] = {}
+    ticker = ticker.strip().upper()
+    if not ticker:
+        return q_scores, b_scores, d_scores, raw_metrics
+    # Retrieve financial statements from Polygon to compute fundamental metrics
+    results = _fetch_financials_polygon(ticker, limit=2)
+    if results:
+        metrics = _compute_metrics_from_polygon(results)
+        raw_metrics = metrics
+        # Map metrics to subfactor scores
+        # Profitability quality -> use profit margin
+        q_scores["Profitability quality"] = _map_value_to_score(
+            metrics.get("profit_margin"),
+            [(-0.1, 10), (0.0, 25), (0.05, 40), (0.1, 60), (0.2, 80), (0.3, 90), (float("inf"), 100)],
+            higher_better=True,
+        )
+        # Growth durability -> use revenue growth
+        q_scores["Growth durability"] = _map_value_to_score(
+            metrics.get("revenue_growth"),
+            [(-0.2, 10), (0.0, 30), (0.05, 50), (0.1, 60), (0.2, 75), (0.4, 90), (float("inf"), 100)],
+            higher_better=True,
+        )
+        # Unit economics (GM, LTV/CAC) -> use gross margin
+        q_scores["Unit economics (GM, LTV/CAC)"] = _map_value_to_score(
+            metrics.get("gross_margin"),
+            [(-0.1, 10), (0.1, 20), (0.2, 40), (0.4, 60), (0.6, 80), (0.8, 90), (float("inf"), 100)],
+            higher_better=True,
+        )
+        # Management quality -> approximate as average of profit margin and revenue growth scores
+        q_scores["Management quality"] = (q_scores["Profitability quality"] + q_scores["Growth durability"]) / 2.0
+        # Competitive advantage (moat) -> approximate using gross margin score as a proxy
+        q_scores["Competitive advantage (moat)"] = q_scores["Unit economics (GM, LTV/CAC)"]
+        # Balance metrics
+        # Cash runway (months) – longer runway yields higher score
+        b_scores["Cash runway (months)"] = _map_value_to_score(
+            metrics.get("cash_runway_months"),
+            [
+                (6.0, 20), (12.0, 40), (18.0, 60), (24.0, 80), (36.0, 90), (float("inf"), 100)
+            ],
+            higher_better=True,
+        )
+        # Leverage (net debt/EBITDA)
+        b_scores["Leverage (net debt/EBITDA)"] = _map_value_to_score(
+            metrics.get("net_debt_to_ebitda"),
+            [(0.0, 100), (0.5, 90), (1.0, 80), (2.0, 60), (3.0, 40), (4.0, 20), (float("inf"), 10)],
+            higher_better=False,
+        )
+        # Interest coverage
+        b_scores["Interest coverage"] = _map_value_to_score(
+            metrics.get("interest_coverage"),
+            [(1.0, 10), (2.0, 30), (4.0, 50), (8.0, 70), (12.0, 85), (20.0, 95), (float("inf"), 100)],
+            higher_better=True,
+        )
+        # Working capital health
+        b_scores["Working capital health"] = _map_value_to_score(
+            metrics.get("current_ratio"),
+            [(1.0, 20), (1.5, 40), (2.0, 60), (3.0, 80), (5.0, 90), (float("inf"), 100)],
+            higher_better=True,
+        )
+        # Dilution risk (ATM/shelf usage) -> inverse of share dilution
+        dilution = metrics.get("share_dilution")
+        if dilution is not None:
+            b_scores["Dilution risk (ATM/shelf usage)"] = _map_value_to_score(
+                dilution,
+                [(-0.2, 100), (-0.1, 90), (0.0, 80), (0.05, 60), (0.1, 40), (0.2, 20), (float("inf"), 10)],
+                higher_better=False,
+            )
+    # Disclosure metrics remain neutral (50) due to lack of automated data
+    return q_scores, b_scores, d_scores, raw_metrics
 
 
 # -----------------------------------------------------------------------------
@@ -450,8 +802,25 @@ def main() -> None:
     st.sidebar.header("Pillar Scores (0–100)")
     st.sidebar.write(
         "Assign scores for each subfactor. The weighted averages form the Quality,"
-        " Balance and Disclosure pillars."
+        " Balance and Disclosure pillars.  If available, the fields below are"
+        " pre‑populated with automatically computed scores based on financial data."
     )
+    # Compute automatic scores and raw metrics for the selected ticker
+    auto_q, auto_b, auto_d, auto_raw = _auto_compute_scores(ticker)
+
+    # Display raw metrics if available
+    if auto_raw:
+        with st.sidebar.expander("Automated metrics (latest annual report)"):
+            for key, val in auto_raw.items():
+                if val is None:
+                    st.write(f"{key.replace('_', ' ').title()}: N/A")
+                else:
+                    # Format floats with reasonable precision
+                    if abs(val) < 1e6:
+                        st.write(f"{key.replace('_', ' ').title()}: {val:.4g}")
+                    else:
+                        st.write(f"{key.replace('_', ' ').title()}: {val:,.0f}")
+
     # Create expandable sections for each pillar
     q_values: Dict[str, float] = {}
     b_values: Dict[str, float] = {}
@@ -459,13 +828,16 @@ def main() -> None:
 
     with st.sidebar.expander("Quality (Q)"):
         for name, _weight in QUALITY_SUBFACTORS:
-            q_values[name] = st.slider(name, 0.0, 100.0, 50.0, step=1.0)
+            default_val = float(auto_q.get(name, 50.0))
+            q_values[name] = st.slider(name, 0.0, 100.0, default_val, step=1.0)
     with st.sidebar.expander("Balance (B)"):
         for name, _weight in BALANCE_SUBFACTORS:
-            b_values[name] = st.slider(name, 0.0, 100.0, 50.0, step=1.0)
+            default_val = float(auto_b.get(name, 50.0))
+            b_values[name] = st.slider(name, 0.0, 100.0, default_val, step=1.0)
     with st.sidebar.expander("Disclosure (D)"):
         for name, _weight in DISCLOSURE_SUBFACTORS:
-            d_values[name] = st.slider(name, 0.0, 100.0, 50.0, step=1.0)
+            default_val = float(auto_d.get(name, 50.0))
+            d_values[name] = st.slider(name, 0.0, 100.0, default_val, step=1.0)
 
     # Compute pillar aggregates
     q_score = _weighted_score(QUALITY_SUBFACTORS, q_values)
