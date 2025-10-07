@@ -30,15 +30,18 @@ Key features
   template (e.g. profitability quality, cash runway).  Users can
   assign 0–100 scores per subfactor; the weighted averages are used
   to compute the pillars.
-  * **Automatic fundamental scoring** – if a ``POLYGON_API_KEY``
-    environment variable is set, the dashboard fetches the latest
-    financial statements via Polygon’s Financials API and
-    pre‑populates the Quality and Balance subfactor sliders with
-    calculated scores based on profit margin, revenue growth, gross
-    margin, leverage, interest coverage, working capital health, share
-    dilution and cash runway【918312000758792†L130-L214】.  If the API is
-    unavailable or no data is returned, the sliders default to 50 and
-    can be manually adjusted.
+  * **Automatic fundamental scoring** – when a ``POLYGON_API_KEY`` or
+    ``TIINGO_API_KEY`` environment variable is available, the
+    dashboard attempts to download the latest income statement,
+    balance sheet and cash flow information from either Polygon’s
+    Financials API or Tiingo’s fundamentals API.  These data are
+    parsed to compute core metrics such as profit margin, revenue
+    growth, gross margin, leverage, interest coverage, working
+    capital health, share dilution and cash runway.  The resulting
+    scores pre‑populate the Quality and Balance subfactor sliders.
+    If neither API returns data, the sliders default to 50 and can
+    be manually adjusted.  Disclosure metrics remain neutral until a
+    suitable source is added.
 * **Gating and scaling** – applies the hard gate and balance/disclosure
   gate caps before scaling the raw edge score to 0–10 and mapping to
   a letter grade.
@@ -337,6 +340,196 @@ def _compute_metrics_from_polygon(results: list[dict[str, Any]]) -> dict[str, Op
     return metrics
 
 
+def _fetch_financials_tiingo(ticker: str, limit: int = 2) -> Optional[list[dict[str, Any]]]:
+    """Fetch financial statement data from Tiingo fundamentals.
+
+    Tiingo’s fundamentals API provides quarterly and annual income
+    statements, balance sheets and cash flow statements for U.S.
+    equities.  This helper queries the statements endpoint to
+    retrieve the most recent reporting periods for the specified
+    ticker.  The function uses the ``TIINGO_API_KEY`` environment
+    variable for authentication.  It constructs a request to
+    ``https://api.tiingo.com/tiingo/fundamentals/{ticker}/statements``
+    with a limited date range covering the last two years.  If the
+    request succeeds, the JSON response (a list of report
+    dictionaries) is returned.  Otherwise ``None`` is returned.
+
+    Args:
+        ticker: Ticker symbol (e.g. "AAPL").
+        limit: Desired number of periods to retrieve (used to slice
+            the returned list).  Since the Tiingo API does not
+            support an explicit limit parameter, the function
+            retrieves all available data in the date window and
+            returns only the most recent ``limit`` entries.
+
+    Returns:
+        A list of statement dictionaries or ``None`` if the call
+        fails or returns no data.
+    """
+    if not (_HAS_REQUESTS and ticker):
+        return None
+    token = _os.environ.get("TIINGO_API_KEY")
+    if not token:
+        return None
+    # Define a two‑year date window ending today.  Statements API
+    # accepts ISO‑8601 date strings.  Adjust the window length as
+    # necessary to capture at least two reporting periods.
+    end_date = _dt.date.today().isoformat()
+    start_date = (_dt.date.today() - _dt.timedelta(days=365 * 3)).isoformat()
+    url = f"https://api.tiingo.com/tiingo/fundamentals/{ticker}/statements"
+    params = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "token": token,
+        # Request the latest reported data; if you wish to see as‑reported
+        # numbers without restatements, set asReported=true.  Here we
+        # leave it unspecified to get the most recent values.
+    }
+    try:
+        resp = _requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Data is expected to be a list of statement objects ordered
+            # by date ascending.  Sort by fiscal end date descending
+            # and return the most recent ``limit`` entries.
+            if isinstance(data, list) and data:
+                # Each entry may include 'statementType' and list of
+                # statements, but the structure may vary.  We just
+                # return the raw list; the metrics function will
+                # interpret as needed.
+                # Sort by 'reportDate' or 'calendarDate' if present.
+                def get_date(item: Any) -> str:
+                    return item.get("reportDate") or item.get("calendarDate") or ""
+
+                sorted_data = sorted(data, key=get_date, reverse=True)
+                return sorted_data[:limit]
+    except Exception:
+        pass
+    return None
+
+
+def _compute_metrics_from_tiingo(results: list[dict[str, Any]]) -> dict[str, Optional[float]]:
+    """Compute fundamental metrics using Tiingo financial statements.
+
+    This function expects a list of report dictionaries as returned by
+    ``_fetch_financials_tiingo``.  Each report may contain keys such
+    as ``cashFlowStatement``, ``incomeStatement`` and
+    ``balanceSheet`` (case‑insensitive) holding dictionaries of
+    financial values.  Field names differ slightly from Polygon and
+    may use camelCase.  The computed metrics mirror those used in
+    ``_compute_metrics_from_polygon``.  Missing values are handled
+    gracefully.
+
+    Args:
+        results: List of statement dicts from Tiingo.
+
+    Returns:
+        Dictionary of metric name to value or ``None``.
+    """
+    metrics: dict[str, Optional[float]] = {
+        "profit_margin": None,
+        "revenue_growth": None,
+        "gross_margin": None,
+        "net_debt_to_ebitda": None,
+        "interest_coverage": None,
+        "current_ratio": None,
+        "share_dilution": None,
+        "cash_runway_months": None,
+    }
+    if not results:
+        return metrics
+    try:
+        latest = results[0]
+        prev = results[1] if len(results) > 1 else None
+        # Unpack statements.  Some keys may be camelCase or snake_case.
+        def to_lower_keys(d: dict[str, Any]) -> dict[str, Any]:
+            return {k.lower(): v for k, v in d.items()}
+
+        def get_stmt(report: dict[str, Any], name: str) -> dict[str, Any]:
+            for key in report.keys():
+                if key.lower().startswith(name.lower()):
+                    stmt = report.get(key) or {}
+                    if isinstance(stmt, dict):
+                        return stmt
+            return {}
+
+        inc_latest = get_stmt(latest, "incomeStatement")
+        bal_latest = get_stmt(latest, "balanceSheet")
+        cf_latest = get_stmt(latest, "cashFlowStatement")
+        inc_prev = get_stmt(prev, "incomeStatement") if prev else {}
+
+        # Convert keys to lowercase for easier matching
+        inc_latest_lower = to_lower_keys(inc_latest)
+        bal_latest_lower = to_lower_keys(bal_latest)
+        cf_latest_lower = to_lower_keys(cf_latest)
+        inc_prev_lower = to_lower_keys(inc_prev)
+
+        # Profit margin: net income / revenue
+        revenue_latest = _pick_field(inc_latest_lower, [
+            "revenue", "revenues", "total_revenue", "totalrevenues", "netrevenue"
+        ])
+        net_income_latest = _pick_field(inc_latest_lower, [
+            "net_income", "netincomeloss", "net_income_loss", "net_income_loss_attributable_to_parent"
+        ])
+        if revenue_latest is not None and revenue_latest != 0 and net_income_latest is not None:
+            metrics["profit_margin"] = net_income_latest / revenue_latest
+        # Revenue growth
+        revenue_prev = None
+        if inc_prev_lower:
+            revenue_prev = _pick_field(inc_prev_lower, [
+                "revenue", "revenues", "total_revenue", "totalrevenues", "netrevenue"
+            ])
+            if revenue_latest is not None and revenue_prev and revenue_prev != 0:
+                metrics["revenue_growth"] = (revenue_latest - revenue_prev) / revenue_prev
+        # Gross margin
+        gross_profit = _pick_field(inc_latest_lower, ["gross_profit", "grossprofit"])
+        if gross_profit is not None and revenue_latest and revenue_latest != 0:
+            metrics["gross_margin"] = gross_profit / revenue_latest
+        # Leverage: net debt / EBITDA
+        liabilities = _pick_field(bal_latest_lower, ["total_liabilities", "liabilities"])
+        cash = _pick_field(bal_latest_lower, ["cash", "cash_and_cash_equivalents", "cashandequivalents"])
+        net_debt = None
+        if liabilities is not None:
+            cash_total = cash or 0.0
+            net_debt = max(liabilities - cash_total, 0.0)
+        operating_income = _pick_field(inc_latest_lower, ["operating_income", "operatingincomeloss"])
+        depreciation = _pick_field(inc_latest_lower, ["depreciation_and_amortization", "depreciationandamortizationtotal"])
+        ebitda = None
+        if operating_income is not None:
+            ebitda = operating_income + (depreciation or 0.0)
+        if net_debt is not None and ebitda and ebitda != 0:
+            metrics["net_debt_to_ebitda"] = net_debt / ebitda
+        # Interest coverage
+        interest_exp = _pick_field(inc_latest_lower, ["interest_expense", "interest_and_debt_expense", "interestexpense"])
+        if operating_income is not None and interest_exp and interest_exp != 0:
+            metrics["interest_coverage"] = operating_income / abs(interest_exp)
+        # Current ratio
+        current_assets = _pick_field(bal_latest_lower, ["current_assets", "total_current_assets", "totalcurrentassets"])
+        current_liabilities = _pick_field(bal_latest_lower, ["current_liabilities", "total_current_liabilities", "totalcurrentliabilities"])
+        if current_assets is not None and current_liabilities and current_liabilities != 0:
+            metrics["current_ratio"] = current_assets / current_liabilities
+        # Share dilution
+        diluted_shares = _pick_field(inc_latest_lower, ["diluted_average_shares", "dilutedaveragesharesoutstanding", "dilutedshares"])
+        basic_shares = _pick_field(inc_latest_lower, ["basic_average_shares", "basicshares"])
+        if diluted_shares is not None and basic_shares and basic_shares != 0:
+            metrics["share_dilution"] = (diluted_shares - basic_shares) / basic_shares
+        # Cash runway
+        operating_cf = _pick_field(cf_latest_lower, [
+            "net_cash_flow_from_operating_activities", "netcashflowfromoperatingactivities"
+        ])
+        if operating_cf is not None:
+            cash_total = cash or 0.0
+            if operating_cf > 0:
+                metrics["cash_runway_months"] = float("inf")
+            else:
+                monthly_burn = -operating_cf / 12.0
+                if monthly_burn > 0:
+                    metrics["cash_runway_months"] = cash_total / monthly_burn
+    except Exception:
+        pass
+    return metrics
+
+
 def _map_value_to_score(value: Optional[float], thresholds: list[tuple[float, int]], higher_better: bool = True) -> float:
     """Map a numeric value to a 0–100 score based on thresholds.
 
@@ -387,12 +580,17 @@ def _auto_compute_scores(ticker: str) -> tuple[dict[str, float], dict[str, float
     ticker = ticker.strip().upper()
     if not ticker:
         return q_scores, b_scores, d_scores, raw_metrics
-    # Retrieve financial statements from Polygon to compute fundamental metrics
-    results = _fetch_financials_polygon(ticker, limit=2)
-    if results:
-        metrics = _compute_metrics_from_polygon(results)
+    # Retrieve financial statements from Polygon; if unavailable, fall back to Tiingo
+    metrics: dict[str, Optional[float]] | None = None
+    results_poly = _fetch_financials_polygon(ticker, limit=2)
+    if results_poly:
+        metrics = _compute_metrics_from_polygon(results_poly)
+    else:
+        results_tiingo = _fetch_financials_tiingo(ticker, limit=2)
+        if results_tiingo:
+            metrics = _compute_metrics_from_tiingo(results_tiingo)
+    if metrics:
         raw_metrics = metrics
-        # Map metrics to subfactor scores
         # Profitability quality -> use profit margin
         q_scores["Profitability quality"] = _map_value_to_score(
             metrics.get("profit_margin"),
@@ -914,6 +1112,10 @@ def main() -> None:
             st.session_state.watchlist.sort_values(by="Edge_0_10", ascending=False).reset_index(drop=True),
             hide_index=True,
         )
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
