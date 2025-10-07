@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np, pandas as pd, copy, logging, os
+from inspect import signature
 from os import cpu_count
 from typing import Dict, Any
 from sqlalchemy import text, inspect
@@ -251,6 +252,20 @@ def _define_pipeline(estimator: Any) -> Pipeline:
     ])
 
 
+def _supports_group_param(pipe: Pipeline) -> bool:
+    """Return True if the pipeline's estimator accepts a ``group`` argument in fit."""
+    if not isinstance(pipe, Pipeline):
+        return False
+    model = pipe.named_steps.get("model")
+    if model is None:
+        return False
+    try:
+        sig = signature(model.fit)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return "group" in sig.parameters
+
+
 def _model_specs() -> Dict[str, Pipeline]:
     """
     Define the base model specifications to be blended.
@@ -415,7 +430,7 @@ def _model_specs() -> Dict[str, Pipeline]:
     try:
         _ = HistGradientBoostingRegressor
         specs["hgb"] = _define_pipeline(HistGradientBoostingRegressor(
-            loss='lsquared_error',
+            loss='squared_error',
             max_depth=6,
             learning_rate=0.05,
             max_iter=300,
@@ -635,8 +650,7 @@ def train_with_cv(
         fit_params: dict[str, Any] = {}
         if sample_weight is not None:
             fit_params['model__sample_weight'] = sample_weight
-        # Pass group information only when tuning an LTR model (objectives containing 'rank')
-        if group is not None:
+        if group is not None and _supports_group_param(base_model):
             fit_params['model__group'] = group
         try:
             search.fit(X_train, y_train, **fit_params)
@@ -654,10 +668,14 @@ def train_with_cv(
             return base_model
     else:
         # No tuning; fit base model directly
+        fit_kwargs: dict[str, Any] = {}
         if sample_weight is not None:
-            return base_model.fit(X_train, y_train, model__sample_weight=sample_weight)  # type: ignore[call-arg]
-        else:
-            return base_model.fit(X_train, y_train)
+            fit_kwargs['model__sample_weight'] = sample_weight
+        if group is not None and _supports_group_param(base_model):
+            fit_kwargs['model__group'] = group
+        if fit_kwargs:
+            return base_model.fit(X_train, y_train, **fit_kwargs)
+        return base_model.fit(X_train, y_train)
 
 
 def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback_target: str, min_coverage: float) -> str:
@@ -708,8 +726,8 @@ def _ic_by_model(train_df: pd.DataFrame, feature_cols: list[str], target_variabl
         try:
             p2 = copy.deepcopy(pipe)
             fit_params: Dict[str, Any] = {}
-            # For LTR models (identified by 'ltr' in name), pass group parameter
-            if 'ltr' in name:
+            # Only pass group information when the estimator supports it
+            if _supports_group_param(p2):
                 fit_params['model__group'] = group_sizes
             # Fit on full training set (sorted by timestamp for LTR)
             if len(sorted_idx) == len(X_train):
@@ -858,7 +876,8 @@ def train_and_predict_all_models(window_years: int = 4):
         fit_params: Dict[str, Any] = {}
         if sample_weights is not None:
             fit_params['model__sample_weight'] = sample_weights.values
-        if 'ltr' in name:
+        supports_group = _supports_group_param(base_model)
+        if supports_group:
             fit_params['model__group'] = group_sizes
         try:
             if param_grid:
@@ -869,7 +888,7 @@ def train_and_predict_all_models(window_years: int = 4):
                     base_model,
                     param_grid,
                     sample_weight=sample_weights.values if sample_weights is not None else None,
-                    group=group_sizes if 'ltr' in name else None
+                    group=group_sizes if supports_group else None
                 )
                 p2 = tuned_model
             else:
@@ -890,7 +909,7 @@ def train_and_predict_all_models(window_years: int = 4):
                             base_model,
                             param_grid,
                             sample_weight=None,
-                            group=group_sizes if 'ltr' in name else None
+                            group=group_sizes if supports_group else None
                         )
                     else:
                         p2 = base_model.fit(X_train_sorted, y_train_sorted)
