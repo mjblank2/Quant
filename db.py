@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import date
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import pandas as pd
 from sqlalchemy import (
@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     create_engine,
     inspect,
+    tuple_,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
@@ -358,12 +359,34 @@ def upsert_dataframe(
     # choose a sensible chunksize to avoid hitting Postgres parameter limits (65535)
     chunksize = chunk_size if chunk_size is not None else 1000
 
-    filtered_df.to_sql(
-        table_name,
-        con=engine,
-        if_exists="append",
-        index=False,
-        method="multi",
-        chunksize=chunksize,
-    )
+    # prepare metadata objects used for conflict resolution
+    table_obj = Base.metadata.tables[table_name]
+    pk_columns = inspect(engine).get_pk_constraint(table_name).get("constrained_columns", [])
+
+    # remove duplicate entries within the DataFrame when a primary key exists
+    if pk_columns:
+        filtered_df = filtered_df.drop_duplicates(subset=pk_columns, keep="last")
+
+    def _iter_chunks(seq: list[Any], size: int) -> Iterator[list[Any]]:
+        for i in range(0, len(seq), size):
+            yield seq[i : i + size]
+
+    # perform the insert inside a transaction so deletes + inserts are atomic
+    with engine.begin() as connection:
+        if pk_columns and not filtered_df.empty:
+            pk_cols = [table_obj.c[col] for col in pk_columns]
+            pk_tuples = list(filtered_df[pk_columns].itertuples(index=False, name=None))
+            # delete existing rows that would violate the primary key constraint
+            for chunk_values in _iter_chunks(pk_tuples, 1000):
+                delete_stmt = table_obj.delete().where(tuple_(*pk_cols).in_(chunk_values))
+                connection.execute(delete_stmt)
+
+        filtered_df.to_sql(
+            table_name,
+            con=connection,
+            if_exists="append",
+            index=False,
+            method="multi",
+            chunksize=chunksize,
+        )
 
