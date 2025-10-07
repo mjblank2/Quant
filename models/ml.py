@@ -671,9 +671,7 @@ def train_with_cv(
             fit_kwargs['model__sample_weight'] = sample_weight
         if group is not None and _estimator_supports_group(base_model):
             fit_kwargs['model__group'] = group
-        if fit_kwargs:
-            return base_model.fit(X_train, y_train, **fit_kwargs)
-        return base_model.fit(X_train, y_train)
+        return base_model.fit(X_train, y_train, **fit_kwargs)
 
 
 def _select_target_with_fallback(df: pd.DataFrame, primary_target: str, fallback_target: str, min_coverage: float) -> str:
