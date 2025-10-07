@@ -344,10 +344,14 @@ def _model_specs() -> Dict[str, Pipeline]:
             n_jobs=_xgb_threads(),
             tree_method="hist"
         ))
-        # Always define the LTR model using XGBRegressor with rmse objective.  Using
-        # XGBRanker triggers integer-label constraints which are not met here.
+        # Always define the LTR model using XGBRegressor with a standard regression
+        # objective.  Using XGBRanker triggers integer-label constraints which are not
+        # met here, and XGBoost expects the canonical ``reg:squarederror`` identifier
+        # instead of the legacy ``rmse`` alias.  We still track RMSE as the evaluation
+        # metric to keep reporting consistent with previous runs.
         specs["xgb_ltr"] = _define_pipeline(XGBRegressor(
-            objective='rmse',
+            objective='reg:squarederror',
+            eval_metric='rmse',
             n_estimators=500,
             max_depth=4,
             learning_rate=0.05,
