@@ -258,7 +258,7 @@ def _estimator_supports_group(pipeline: Pipeline) -> bool:
     if estimator is None:
         return False
     try:
-        sig = pyinspect.signature(estimator.fit)
+        sig = signature(estimator.fit)
     except (TypeError, ValueError):
         return False
     return "group" in sig.parameters
