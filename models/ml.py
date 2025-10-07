@@ -99,6 +99,25 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Valid loss options for HistGradientBoostingRegressor.  Keeping the list local
+# avoids importing sklearn internals while still providing a guardrail against
+# typos in environment overrides.  If an invalid loss is supplied we log a
+# warning and revert to the default ``squared_error`` so model training does not
+# abort mid-run.
+_HGB_VALID_LOSSES = {
+    "squared_error",
+    "absolute_error",
+    "poisson",
+    "gamma",
+    "quantile",
+}
+HGB_LOSS = os.getenv("HGB_LOSS", "squared_error")
+if HGB_LOSS not in _HGB_VALID_LOSSES:
+    log.warning(
+        "Invalid HGB_LOSS '%s'; falling back to 'squared_error'", HGB_LOSS
+    )
+    HGB_LOSS = "squared_error"
+
 # Feature set used for model training and prediction.  Trimmed to include only
 # features that are actually computed by models/features.py.  The list is
 # intentionally ordered so that price/momentum/volatility features come first,
