@@ -653,6 +653,167 @@ def _auto_compute_scores(ticker: str) -> tuple[dict[str, float], dict[str, float
 
 
 # -----------------------------------------------------------------------------
+# Expectations Investing and DCF valuation helpers
+#
+# These functions implement simplified versions of the methods described in
+# Michael Mauboussin & Alfred Rappaport's *Expectations Investing* framework
+# and Aswath Damodaran's discounted cash‑flow teachings.  They are not
+# exhaustive or precise replicas of the authors' models; rather, they provide
+# reasonable approximations for educational purposes.
+
+def _project_fcfs(sales0: float, growth: float, margin: float, tax_rate: float,
+                  wc_rate: float, capex_rate: float, years: int) -> list[float]:
+    """Project free cash flows over a horizon given base sales and assumptions.
+
+    Args:
+        sales0: Most recent annual sales (revenue).
+        growth: Constant sales growth rate per year (e.g. 0.05 for 5%).
+        margin: Operating margin (EBIT/Sales).
+        tax_rate: Cash tax rate on EBIT (0–1).
+        wc_rate: Incremental working capital as a fraction of the change in sales.
+        capex_rate: Incremental fixed capital as a fraction of the change in sales.
+        years: Number of years to project.
+
+    Returns:
+        List of projected free cash flows for each year 1..years.
+    """
+    fcfs: list[float] = []
+    sales = sales0
+    for _ in range(years):
+        sales_next = sales * (1.0 + growth)
+        # Operating profit and NOPAT
+        ebit = sales_next * margin
+        nopat = ebit * (1.0 - tax_rate)
+        # Incremental investment: change in sales times working‑capital and capex rates
+        delta_sales = sales_next - sales
+        incremental_investment = delta_sales * (wc_rate + capex_rate)
+        fcf = nopat - incremental_investment
+        fcfs.append(fcf)
+        sales = sales_next
+    return fcfs
+
+
+def _present_value(cash_flows: list[float], discount_rate: float, start_year: int = 1) -> float:
+    """Compute the present value of a series of cash flows.
+
+    Args:
+        cash_flows: Sequence of cash flows.
+        discount_rate: Discount rate (WACC) expressed as a decimal.
+        start_year: Year of the first cash flow (default 1).
+
+    Returns:
+        Present value of the cash flows.
+    """
+    pv = 0.0
+    for i, cf in enumerate(cash_flows, start=start_year):
+        pv += cf / ((1.0 + discount_rate) ** i)
+    return pv
+
+
+def compute_expectations_forecast_period(sales0: float, price_per_share: float, shares_outstanding: float,
+                                         growth: float, margin: float, tax_rate: float,
+                                         wc_rate: float, capex_rate: float, wacc: float,
+                                         non_operating_assets: float, debt: float,
+                                         max_years: int = 20) -> int:
+    """Estimate the market‑implied forecast period given current price and assumptions.
+
+    This function implements a simplified Price‑Implied Expectations (PIE) analysis.
+    It projects free cash flows under the provided assumptions and discounts them
+    using WACC.  It gradually extends the forecast horizon until the present
+    value of projected FCFs plus non‑operating assets less debt matches or
+    exceeds the market value of equity (price × shares).  The function returns
+    the number of years required to justify the current price.  If the price
+    cannot be justified within ``max_years``, the function returns ``max_years``.
+
+    Args:
+        sales0: Latest annual revenue.
+        price_per_share: Current share price.
+        shares_outstanding: Number of shares outstanding.
+        growth: Sales growth rate assumption.
+        margin: Operating margin.
+        tax_rate: Cash tax rate.
+        wc_rate: Working capital investment rate.
+        capex_rate: Fixed capital investment rate.
+        wacc: Weighted average cost of capital.
+        non_operating_assets: Value of excess cash, securities and other non‑operating assets.
+        debt: Market value of debt.
+        max_years: Maximum horizon to search.
+
+    Returns:
+        The implied forecast period in years.
+    """
+    target_equity_value = price_per_share * shares_outstanding
+    enterprise_value_target = target_equity_value + debt - non_operating_assets
+    sales = sales0
+    fcfs: list[float] = []
+    for year in range(1, max_years + 1):
+        # Generate one year of free cash flow
+        sales_next = sales * (1.0 + growth)
+        ebit = sales_next * margin
+        nopat = ebit * (1.0 - tax_rate)
+        delta_sales = sales_next - sales
+        incremental_investment = delta_sales * (wc_rate + capex_rate)
+        fcf = nopat - incremental_investment
+        fcfs.append(fcf)
+        # Compute PV of current list of cash flows
+        pv_fcfs = _present_value(fcfs, wacc, start_year=1)
+        # Add non‑operating assets (at time zero) and subtract debt to get equity value estimate
+        estimated_equity_value = pv_fcfs + non_operating_assets - debt
+        if estimated_equity_value >= target_equity_value:
+            return year
+        sales = sales_next
+    return max_years
+
+
+def compute_dcf_valuation(sales0: float, growth: float, margin: float, tax_rate: float,
+                          wc_rate: float, capex_rate: float, wacc: float, terminal_growth: float,
+                          non_operating_assets: float, debt: float, shares_outstanding: float,
+                          years: int = 5) -> dict[str, float]:
+    """Compute an intrinsic share price using a simplified five‑year DCF.
+
+    Args:
+        sales0: Latest annual revenue.
+        growth: Annual revenue growth rate during the explicit forecast period.
+        margin: Operating margin.
+        tax_rate: Cash tax rate on EBIT.
+        wc_rate: Working capital investment rate.
+        capex_rate: Fixed capital investment rate.
+        wacc: Weighted average cost of capital.
+        terminal_growth: Constant growth rate in perpetuity after the explicit period.
+        non_operating_assets: Value of excess cash, securities and other non‑operating assets.
+        debt: Market value of debt.
+        shares_outstanding: Shares outstanding.
+        years: Length of explicit forecast horizon (default 5).
+
+    Returns:
+        Dictionary with keys ``enterprise_value``, ``equity_value`` and ``intrinsic_price``.
+    """
+    # Project FCFF for explicit period
+    fcfs = _project_fcfs(sales0, growth, margin, tax_rate, wc_rate, capex_rate, years)
+    # PV of explicit cash flows
+    pv_fcfs = _present_value(fcfs, wacc, start_year=1)
+    # Terminal cash flow (year n+1)
+    sales_terminal = sales0 * ((1.0 + growth) ** years) * (1.0 + growth)
+    ebit_terminal = sales_terminal * margin
+    nopat_terminal = ebit_terminal * (1.0 - tax_rate)
+    delta_sales_terminal = sales_terminal - sales0 * ((1.0 + growth) ** years)
+    reinvestment_terminal = delta_sales_terminal * (wc_rate + capex_rate)
+    fcff_terminal = nopat_terminal - reinvestment_terminal
+    # Terminal value using perpetual growth
+    terminal_value = fcff_terminal * (1.0 + terminal_growth) / (wacc - terminal_growth)
+    # PV of terminal value
+    pv_terminal = terminal_value / ((1.0 + wacc) ** years)
+    enterprise_value = pv_fcfs + pv_terminal + non_operating_assets - debt
+    equity_value = enterprise_value
+    intrinsic_price = equity_value / shares_outstanding if shares_outstanding > 0 else float('nan')
+    return {
+        "enterprise_value": enterprise_value,
+        "equity_value": equity_value,
+        "intrinsic_price": intrinsic_price,
+    }
+
+
+# -----------------------------------------------------------------------------
 # Price retrieval functions
 #
 # These helper functions attempt to retrieve the latest trade price from
@@ -1105,6 +1266,7 @@ def main() -> None:
             [st.session_state.watchlist, _pd.DataFrame([new_row])], ignore_index=True
         )
 
+
     # Display watchlist
     if not st.session_state.watchlist.empty:
         st.subheader("Watchlist")
@@ -1113,6 +1275,172 @@ def main() -> None:
             hide_index=True,
         )
 
+    # -------------------------------------------------------------------------
+    # Valuation Models Section (always visible when a ticker is provided)
+    #
+    # This section is placed outside of the edge score calculation so that
+    # expectations investing and DCF analysis can be run independently of the
+    # button click above.  When a ticker and valid price are provided, we
+    # attempt to fetch recent financials from Polygon or Tiingo to pre‑fill
+    # default inputs.  Users can override any assumption and compute either
+    # the market‑implied forecast period or a 5‑year DCF valuation.
+    if ticker and manual_price > 0.0:
+        # Attempt to fetch additional financial data for valuation defaults
+        sales0: Optional[float] = None
+        shares_out: Optional[float] = None
+        cash_excess: float = 0.0
+        debt_value: float = 0.0
+        # Try Polygon first
+        _val_results = _fetch_financials_polygon(ticker, limit=1)
+        if _val_results:
+            _fin = _val_results[0].get("financials", {}) if isinstance(_val_results[0], dict) else {}
+            _inc_val = _fin.get("income_statement", {}) or {}
+            _bal_val = _fin.get("balance_sheet", {}) or {}
+            sales0 = _pick_field(_inc_val, [
+                "revenues", "revenue", "total_revenue", "totalRevenues", "salesRevenueNet", "netRevenue"
+            ])
+            shares_out = _pick_field(_inc_val, [
+                "diluted_average_shares", "diluted_average_shares_outstanding", "diluted_shares"
+            ])
+            cash_excess = _pick_field(_bal_val, [
+                "cash", "cash_and_cash_equivalents", "cash_and_cash_equivalents_at_carrying_value"
+            ]) or 0.0
+            debt_value = _pick_field(_bal_val, [
+                "total_debt", "total_liabilities", "liabilities"
+            ]) or 0.0
+        else:
+            _val_results = _fetch_financials_tiingo(ticker, limit=1)
+            if _val_results:
+                _report = _val_results[0] if isinstance(_val_results[0], dict) else {}
+                def _extract_stmt_local(report_dict: dict[str, Any], name: str) -> dict[str, Any]:
+                    for key in report_dict.keys():
+                        if key.lower().startswith(name.lower()):
+                            stmt = report_dict.get(key) or {}
+                            if isinstance(stmt, dict):
+                                return stmt
+                    return {}
+                _inc_val = _extract_stmt_local(_report, "incomeStatement")
+                _bal_val = _extract_stmt_local(_report, "balanceSheet")
+                sales0 = _pick_field({k.lower(): v for k, v in _inc_val.items()}, [
+                    "revenue", "revenues", "total_revenue", "totalrevenues", "netrevenue"
+                ])
+                shares_out = _pick_field({k.lower(): v for k, v in _inc_val.items()}, [
+                    "diluted_average_shares", "dilutedaveragesharesoutstanding", "dilutedshares"
+                ])
+                cash_excess = _pick_field({k.lower(): v for k, v in _bal_val.items()}, [
+                    "cash", "cash_and_cash_equivalents", "cashandequivalents"
+                ]) or 0.0
+                debt_value = _pick_field({k.lower(): v for k, v in _bal_val.items()}, [
+                    "total_debt", "total_liabilities", "liabilities", "total_liabilities_net_debt"
+                ]) or 0.0
+
+        with st.expander("Valuation Models (Expectations Investing & DCF)"):
+            st.markdown(
+                "Use this section to explore what the market may be pricing in (Price‑Implied Expectations) "
+                "and to compute a five‑year DCF valuation using your assumptions.  Default values below "
+                "are pulled from the latest financial statements where available."
+            )
+            # Input columns for assumptions
+            col1, col2, col3 = st.columns(3)
+            # Current annual revenue
+            sales_input = col1.number_input(
+                "Current annual revenue (Sales)",
+                value=float(sales0 or 0.0),
+                step=1e6,
+                help="Latest annual revenue in dollars"
+            )
+            # Shares outstanding
+            shares_input = col2.number_input(
+                "Shares outstanding (diluted)",
+                value=float(shares_out or 0.0),
+                step=1e3,
+                help="Diluted shares outstanding"
+            )
+            # WACC
+            wacc_input = col3.number_input(
+                "WACC (decimal)",
+                value=0.10,
+                min_value=0.0,
+                max_value=1.0,
+                step=0.005,
+                help="Weighted average cost of capital"
+            )
+            # Growth, margin, tax, working capital and capex rates
+            col4, col5, col6, col7, col8 = st.columns(5)
+            growth_input = col4.number_input(
+                "Sales growth (%)", value=10.0, step=0.5, help="Annual revenue growth rate (percent)"
+            ) / 100.0
+            margin_input = col5.number_input(
+                "Operating margin (%)", value=10.0, step=0.5, help="EBIT as a percent of sales"
+            ) / 100.0
+            tax_input = col6.number_input(
+                "Tax rate (%)", value=25.0, step=0.5, help="Effective cash tax rate"
+            ) / 100.0
+            wc_input = col7.number_input(
+                "Working capital rate (%)", value=2.0, step=0.5, help="Δ Working capital / Δ Sales"
+            ) / 100.0
+            capex_input = col8.number_input(
+                "Capex rate (%)", value=4.0, step=0.5, help="Δ Fixed capital / Δ Sales"
+            ) / 100.0
+            # Non‑operating assets and debt
+            col9, col10, col11 = st.columns(3)
+            noa_input = col9.number_input(
+                "Non‑operating assets", value=float(cash_excess), step=1e6, help="Excess cash and investments"
+            )
+            debt_input = col10.number_input(
+                "Debt (market value)", value=float(debt_value), step=1e6, help="Total debt"
+            )
+            term_growth_input = col11.number_input(
+                "Terminal growth (%)", value=3.0, step=0.25, help="Perpetual growth rate after year 5"
+            ) / 100.0
+
+            # Buttons for computations use unique keys to avoid conflicts
+            if st.button("Compute Market‑Implied Forecast Period", key="pie_compute_global"):
+                if sales_input > 0 and shares_input > 0 and wacc_input > 0:
+                    implied_years = compute_expectations_forecast_period(
+                        sales0=sales_input,
+                        price_per_share=manual_price,
+                        shares_outstanding=shares_input,
+                        growth=growth_input,
+                        margin=margin_input,
+                        tax_rate=tax_input,
+                        wc_rate=wc_input,
+                        capex_rate=capex_input,
+                        wacc=wacc_input,
+                        non_operating_assets=noa_input,
+                        debt=debt_input,
+                        max_years=20,
+                    )
+                    st.success(f"Market‑implied forecast period: {implied_years} year(s)")
+                else:
+                    st.warning("Please provide positive values for sales, shares and WACC")
+            if st.button("Compute 5‑Year DCF", key="dcf_compute_global"):
+                if sales_input > 0 and shares_input > 0 and wacc_input > 0:
+                    dcf_result = compute_dcf_valuation(
+                        sales0=sales_input,
+                        growth=growth_input,
+                        margin=margin_input,
+                        tax_rate=tax_input,
+                        wc_rate=wc_input,
+                        capex_rate=capex_input,
+                        wacc=wacc_input,
+                        terminal_growth=term_growth_input,
+                        non_operating_assets=noa_input,
+                        debt=debt_input,
+                        shares_outstanding=shares_input,
+                        years=5,
+                    )
+                    st.success(
+                        f"DCF enterprise value: ${dcf_result['enterprise_value']:,.0f}\n"
+                        f"DCF equity value: ${dcf_result['equity_value']:,.0f}\n"
+                        f"Intrinsic share price: ${dcf_result['intrinsic_price']:,.2f}"
+                    )
+                else:
+                    st.warning("Please provide positive values for sales, shares and WACC")
+
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
