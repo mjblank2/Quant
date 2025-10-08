@@ -490,5 +490,75 @@ try:
             st.markdown("""
 The small‑cap quant system uses an ensemble of machine‑learning models—gradient boosting (XGBoost, LightGBM, CatBoost), random forests, neural networks and a simple reinforcement‑learning‑inspired model—to forecast expected returns.  Models are trained on historical price, volume, momentum, volatility and fundamental factors, and blended according to their information coefficient in the current regime.  A risk‑aware optimiser then translates signals into portfolio weights.  This section helps you see not just the final ranking but also the underlying features, so you understand why each stock appears in the list.
 """)
-except Exception as e:
-    st.error(f"Failed to load predictions: {e}")
+    except Exception as e:
+        st.error(f"Failed to load predictions: {e}")
+
+    # ---------------------------------------------------------------------------
+    # Top‑15 Portfolio Section
+    #
+    # This section surfaces the current rolling Top‑N portfolio on the dashboard.
+    # It loads the latest predictions with liquidity and market‑cap filters
+    # applied (leveraging the helper in trading.top15_portfolio_tracker) and
+    # computes normalized weights so users can see the composition at a glance.
+    # A second panel below displays the trades log produced by the daily update
+    # so you can review buy/sell signals over time.
+    # ---------------------------------------------------------------------------
+    st.subheader("Current Top‑15 Portfolio")
+    try:
+        # Import helper to get the filtered top predictions
+        from trading.top15_portfolio_tracker import get_top_predictions  # type: ignore
+        # Fetch the top 15 predictions after applying liquidity and size filters
+        top15_df = get_top_predictions(n=15, min_adv=1_000_000.0, max_market_cap=3_000_000_000.0)
+        if top15_df.empty:
+            st.info("No top‑15 portfolio available. Run the pipeline to generate predictions.")
+        else:
+            # Compute display weights using the helper defined above
+            top15_df["weight"] = compute_display_weights(top15_df)
+            # Round numeric columns for better readability
+            for col in top15_df.select_dtypes(include=["float", "int"]).columns:
+                top15_df[col] = top15_df[col].round(4)
+            # Display the table with symbols as the index
+            st.dataframe(top15_df.set_index("symbol"), use_container_width=True)
+            # Bar chart visualising the relative weights
+            fig_top15 = px.bar(
+                top15_df,
+                x="symbol",
+                y="weight",
+                title="Top‑15 Portfolio Weights",
+                labels={"weight": "Weight", "symbol": "Symbol"},
+            )
+            st.plotly_chart(fig_top15, use_container_width=True)
+            # Download button for users to export the current portfolio
+            st.download_button(
+                "Download Top‑15 Portfolio CSV",
+                top15_df.to_csv(index=False).encode(),
+                "top15_portfolio.csv",
+                "text/csv",
+                key="download_top15_portfolio",
+            )
+    except Exception as e:
+        st.error(f"Failed to load top‑15 portfolio: {e}")
+
+    st.subheader("Top‑15 Trades Log (latest 200)")
+    try:
+        import pandas as _pd  # Local import to avoid polluting global namespace
+        import os as _os
+        log_path = "top15_trades_log.csv"
+        if _os.path.exists(log_path):
+            log_df = _pd.read_csv(log_path)
+            if not log_df.empty:
+                # Show only the most recent 200 entries for brevity
+                st.dataframe(log_df.tail(200), width='stretch')
+                st.download_button(
+                    "Download Top‑15 Trades Log",
+                    log_df.to_csv(index=False).encode(),
+                    "top15_trades_log.csv",
+                    "text/csv",
+                    key="download_top15_log",
+                )
+            else:
+                st.info("The top‑15 trades log is empty.")
+        else:
+            st.info("No top‑15 trades log found. Run the pipeline to generate trades.")
+    except Exception as e:
+        st.error(f"Failed to load top‑15 trades log: {e}")
