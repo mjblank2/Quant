@@ -361,6 +361,20 @@ def main(
                         log.info("✅ Broker sync completed.")
                     else:
                         log.info("ℹ️ No trades to sync to broker.")
+
+                # After trade generation (and optional broker sync), update the top-N portfolio.
+                # This stage computes the latest top-N predictions, applies liquidity and
+                # market-cap filters, and logs buy/sell instructions so that a consistent
+                # portfolio can be maintained.  It does not place any orders but writes
+                # to a CSV log for monitoring.
+                log.info("📈 Stage 6: Updating top-N portfolio and logging trades")
+                try:
+                    from trading.top15_portfolio_tracker import run_daily_update
+                    # Use default parameters: n=15, min_adv=1M, max_market_cap=3B
+                    run_daily_update()
+                    log.info("✅ Top-N portfolio update completed.")
+                except Exception as e:
+                    log.error("❌ Top-N portfolio update failed: %s", e)
             else:
                 log.warning("⚠️ Stage 4/5: Skipping trade generation/sync due to missing modules.")
 
