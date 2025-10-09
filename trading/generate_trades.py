@@ -69,8 +69,43 @@ def _load_latest_predictions() -> pd.DataFrame:
     return preds
 
 
-def _load_tca_cols(symbols: Iterable[str]) -> pd.DataFrame:
+def _load_tca_cols(
+    symbols: Iterable[str],
+    *,
+    attempts: int = 3,
+    delay: float = 1.0,
+) -> pd.DataFrame:
+    """
+    Fetch supplementary columns (vol_21, adv_usd_21, size_ln, mom_21,
+    turnover_21, beta_63) for the given symbols from the ``features`` table.
+
+    This helper queries the most recent ``ts`` in the ``features`` table and
+    returns a DataFrame with one row per symbol.  It includes a simple
+    retry loop to mitigate transient database connection errors (e.g.,
+    ``psycopg.OperationalError: SSL SYSCALL error: EOF detected``).  By
+    default it will attempt the query up to three times, sleeping for
+    ``delay`` seconds between attempts.
+
+    Parameters
+    ----------
+    symbols : Iterable[str]
+        List of symbols to fetch supplementary columns for.
+    attempts : int, optional
+        Number of times to retry the query on connection failure.  Defaults
+        to 3.
+    delay : float, optional
+        Seconds to sleep between retry attempts.  Defaults to 1.0.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with columns ``[symbol, vol_21, adv_usd_21, size_ln,
+        mom_21, turnover_21, beta_63]``.  If ``symbols`` is empty or the
+        query fails on all attempts, an empty DataFrame with those columns
+        is returned.
+    """
     symbols = list(dict.fromkeys(symbols))
+    # Return an empty DataFrame with the correct schema if there are no symbols.
     if not symbols:
         return pd.DataFrame(
             columns=[
@@ -83,15 +118,64 @@ def _load_tca_cols(symbols: Iterable[str]) -> pd.DataFrame:
                 "beta_63",
             ]
         )
+
+    # Build the query once. Note: bindparams(expanding=True) is required when
+    # passing a list/tuple for the ``IN`` clause.
     stmt = text(
         """
         SELECT symbol, ts, vol_21, adv_usd_21, size_ln, mom_21, turnover_21, beta_63
         FROM features WHERE symbol IN :syms AND ts = (SELECT MAX(ts) FROM features)
     """
     ).bindparams(bindparam("syms", expanding=True))
-    with engine.connect() as con:
-        df = pd.read_sql_query(stmt, con, params={"syms": tuple(symbols)})
-    return df
+
+    # Import here to avoid unconditional dependency when not needed.
+    try:
+        from sqlalchemy.exc import OperationalError
+    except ImportError:
+        OperationalError = Exception  # fallback
+
+    params = {"syms": tuple(symbols)}
+    last_err: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            with engine.connect() as con:
+                df = pd.read_sql_query(stmt, con, params=params)
+            return df
+        except OperationalError as e:
+            last_err = e
+            # Log the error and retry if more attempts remain
+            log.warning(
+                "Supplementary data query attempt %s/%s failed: %s",
+                attempt,
+                attempts,
+                e,
+            )
+            if attempt < attempts:
+                # Delay before retrying
+                import time
+
+                time.sleep(max(0.0, delay))
+                continue
+            else:
+                break
+
+    # If all attempts failed, log and return an empty DataFrame
+    log.error(
+        "Failed to fetch supplementary TCA columns after %s attempts: %s",
+        attempts,
+        last_err,
+    )
+    return pd.DataFrame(
+        columns=[
+            "symbol",
+            "vol_21",
+            "adv_usd_21",
+            "size_ln",
+            "mom_21",
+            "turnover_21",
+            "beta_63",
+        ]
+    )
 
 
 def generate_today_trades() -> pd.DataFrame:
