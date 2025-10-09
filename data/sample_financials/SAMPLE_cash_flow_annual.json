@@ -1,0 +1,47 @@
+[
+  {
+    "fiscal_year": 2023,
+    "fiscal_period": "FY",
+    "data": {
+      "OperatingCashFlow": 21500000.0,
+      "CapitalExpenditures": -7500000.0,
+      "DepreciationAndAmortization": 3200000.0
+    }
+  },
+  {
+    "fiscal_year": 2022,
+    "fiscal_period": "FY",
+    "data": {
+      "OperatingCashFlow": 19800000.0,
+      "CapitalExpenditures": -7100000.0,
+      "DepreciationAndAmortization": 3000000.0
+    }
+  },
+  {
+    "fiscal_year": 2021,
+    "fiscal_period": "FY",
+    "data": {
+      "OperatingCashFlow": 18000000.0,
+      "CapitalExpenditures": -6700000.0,
+      "DepreciationAndAmortization": 2800000.0
+    }
+  },
+  {
+    "fiscal_year": 2020,
+    "fiscal_period": "FY",
+    "data": {
+      "OperatingCashFlow": 16200000.0,
+      "CapitalExpenditures": -6200000.0,
+      "DepreciationAndAmortization": 2500000.0
+    }
+  },
+  {
+    "fiscal_year": 2019,
+    "fiscal_period": "FY",
+    "data": {
+      "OperatingCashFlow": 14000000.0,
+      "CapitalExpenditures": -5800000.0,
+      "DepreciationAndAmortization": 2200000.0
+    }
+  }
+]

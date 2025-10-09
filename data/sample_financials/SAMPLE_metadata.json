@@ -1,0 +1,10 @@
+{
+  "ticker": "SAMPLE",
+  "name": "Sample Technologies Inc.",
+  "industry": "Application Software",
+  "sector": "Technology",
+  "price": 42.0,
+  "shares_outstanding": 15000000,
+  "beta": 1.15,
+  "volume": 250000
+}

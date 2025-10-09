@@ -1,0 +1,57 @@
+[
+  {
+    "fiscal_year": 2023,
+    "fiscal_period": "FY",
+    "data": {
+      "TotalAssets": 210000000.0,
+      "TotalLiabilities": 92000000.0,
+      "TotalDebt": 45000000.0,
+      "CashAndCashEquivalents": 12000000.0,
+      "WorkingCapital": 28000000.0
+    }
+  },
+  {
+    "fiscal_year": 2022,
+    "fiscal_period": "FY",
+    "data": {
+      "TotalAssets": 195000000.0,
+      "TotalLiabilities": 86000000.0,
+      "TotalDebt": 43000000.0,
+      "CashAndCashEquivalents": 11000000.0,
+      "WorkingCapital": 26000000.0
+    }
+  },
+  {
+    "fiscal_year": 2021,
+    "fiscal_period": "FY",
+    "data": {
+      "TotalAssets": 182000000.0,
+      "TotalLiabilities": 82000000.0,
+      "TotalDebt": 42000000.0,
+      "CashAndCashEquivalents": 9000000.0,
+      "WorkingCapital": 23000000.0
+    }
+  },
+  {
+    "fiscal_year": 2020,
+    "fiscal_period": "FY",
+    "data": {
+      "TotalAssets": 168000000.0,
+      "TotalLiabilities": 78000000.0,
+      "TotalDebt": 40000000.0,
+      "CashAndCashEquivalents": 8000000.0,
+      "WorkingCapital": 21000000.0
+    }
+  },
+  {
+    "fiscal_year": 2019,
+    "fiscal_period": "FY",
+    "data": {
+      "TotalAssets": 150000000.0,
+      "TotalLiabilities": 72000000.0,
+      "TotalDebt": 38000000.0,
+      "CashAndCashEquivalents": 7000000.0,
+      "WorkingCapital": 18000000.0
+    }
+  }
+]

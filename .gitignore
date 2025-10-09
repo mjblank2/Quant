@@ -8,6 +8,7 @@ venv/
 *.env
 logs/
 data_cache/
+node_modules/
 .DS_Store
 .streamlit/
 *.db

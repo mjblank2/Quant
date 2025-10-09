@@ -1,0 +1,62 @@
+[
+  {
+    "fiscal_year": 2023,
+    "fiscal_period": "FY",
+    "data": {
+      "Revenue": 145000000.0,
+      "EBIT": 24500000.0,
+      "InterestExpense": 1500000.0,
+      "IncomeBeforeTax": 23000000.0,
+      "IncomeTaxExpense": 4600000.0,
+      "NetIncome": 18400000.0
+    }
+  },
+  {
+    "fiscal_year": 2022,
+    "fiscal_period": "FY",
+    "data": {
+      "Revenue": 130000000.0,
+      "EBIT": 22100000.0,
+      "InterestExpense": 1500000.0,
+      "IncomeBeforeTax": 20600000.0,
+      "IncomeTaxExpense": 4120000.0,
+      "NetIncome": 16480000.0
+    }
+  },
+  {
+    "fiscal_year": 2021,
+    "fiscal_period": "FY",
+    "data": {
+      "Revenue": 118000000.0,
+      "EBIT": 19500000.0,
+      "InterestExpense": 1600000.0,
+      "IncomeBeforeTax": 17900000.0,
+      "IncomeTaxExpense": 3580000.0,
+      "NetIncome": 14320000.0
+    }
+  },
+  {
+    "fiscal_year": 2020,
+    "fiscal_period": "FY",
+    "data": {
+      "Revenue": 105000000.0,
+      "EBIT": 17000000.0,
+      "InterestExpense": 1600000.0,
+      "IncomeBeforeTax": 15400000.0,
+      "IncomeTaxExpense": 3080000.0,
+      "NetIncome": 12320000.0
+    }
+  },
+  {
+    "fiscal_year": 2019,
+    "fiscal_period": "FY",
+    "data": {
+      "Revenue": 92000000.0,
+      "EBIT": 14200000.0,
+      "InterestExpense": 1400000.0,
+      "IncomeBeforeTax": 12800000.0,
+      "IncomeTaxExpense": 2560000.0,
+      "NetIncome": 10240000.0
+    }
+  }
+]
