@@ -1,5 +1,6 @@
 numpy
 pandas
+scipy
 sqlalchemy>=2.0
 psycopg[binary]
 scikit-learn
@@ -8,6 +9,8 @@ streamlit
 plotly
 requests
 httpx
+alpaca-py
+tiingo
 alpaca-trade-api
 cvxpy
 alembic>=1.13,<2
