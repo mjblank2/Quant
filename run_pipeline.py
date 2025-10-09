@@ -384,21 +384,29 @@ def main(
         except Exception as e:
             log.exception("💥 Pipeline failed with an unexpected error during execution.")
             return False
-    finally:
-        # Clean up lock
-        try:
-            if "sqlite" in DATABASE_URL.lower():
-                lock_file = os.path.join(tempfile.gettempdir(), "pipeline_lock")
-                if os.path.exists(lock_file):
-                    os.unlink(lock_file)
-            else:
-                lock_conn.execute(text("SELECT pg_advisory_unlock(987654321)"))
-        except Exception as e:
-            log.warning(f"Lock cleanup failed: {e}")
         finally:
+            # Clean up advisory lock.  Use a fresh connection for the unlock to
+            # avoid "SSL SYSCALL error: EOF detected" errors when the original
+            # connection has been severed.  Any errors during unlock or close
+            # are logged and suppressed so they do not affect the pipeline's exit
+            # code.
+            try:
+                if "sqlite" in DATABASE_URL.lower():
+                    lock_file = os.path.join(tempfile.gettempdir(), "pipeline_lock")
+                    if os.path.exists(lock_file):
+                        os.unlink(lock_file)
+                else:
+                    # Acquire a new connection solely for unlocking.  This avoids
+                    # using a stale connection that may have been dropped by the DB
+                    # server during long‑running jobs.
+                    with engine.connect() as tmp_conn:
+                        tmp_conn.execute(text("SELECT pg_advisory_unlock(987654321)"))
+            except Exception as e:
+                log.warning(f"Lock cleanup failed (ignored): {e}")
+            # Always close the original lock connection if it exists
             try:
                 lock_conn.close()
-            except:
+            except Exception:
                 pass
 
 
