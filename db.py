@@ -37,11 +37,32 @@ def _normalise_dsn(url: str) -> str:
 
 
 def _create_engine_from_env() -> Any:
+    """
+    Create a SQLAlchemy engine from the ``DATABASE_URL`` environment variable.
+
+    In addition to enabling ``pool_pre_ping`` (which tests connections before
+    returning them to callers) this helper now also configures
+    ``pool_recycle`` to proactively recycle TCP connections after a period of
+    inactivity.  Without recycling, long‑lived connections can accumulate and
+    eventually be closed by the PostgreSQL server or a network proxy,
+    resulting in ``psycopg.OperationalError`` errors such as
+    ``SSL SYSCALL error: EOF detected``.  Recycling idle connections
+    mitigates these transient disconnections by ensuring that stale
+    connections are not reused.
+
+    Returns
+    -------
+    sqlalchemy.engine.Engine
+        A SQLAlchemy engine configured for the application's database.
+    """
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         raise RuntimeError("DATABASE_URL environment variable is not set")
     dsn = _normalise_dsn(dsn)
-    return create_engine(dsn, pool_pre_ping=True)
+    # Recycle connections after 10 minutes (600 seconds) of inactivity.  This
+    # prevents stale connections from causing SSL EOF errors when the server
+    # drops idle sessions.
+    return create_engine(dsn, pool_pre_ping=True, pool_recycle=600)
 
 
 engine = _create_engine_from_env()
