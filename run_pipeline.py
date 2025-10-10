@@ -438,8 +438,9 @@ def main(
                     # Acquire a new connection solely for unlocking.  This avoids
                     # using a stale connection that may have been dropped by the DB
                     # server during long‑running jobs.
-        try:                        
-                            with lock_engine.connect() as tmp_conn:
+                    pass
+                    try:                        
+                        with lock_engine.connect() as tmp_conn:
                         tmp_conn.execute(text("SELECT pg_advisory_unlock(987654321)"))
             except Exception as e:
                 log.warning(f"Lock cleanup failed (ignored): {e}")
