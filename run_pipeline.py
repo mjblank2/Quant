@@ -49,21 +49,40 @@ def _run_alembic_upgrade() -> tuple[bool, str]:
     try:
         import subprocess
         import shutil
+
         alembic_cmd = shutil.which("alembic")
-        if not alembic_cmd:
-            return False, "Alembic command not found in PATH"
-        
-        # Use 'heads' to resolve multiple migration branches if they exist.
-        result = subprocess.run(
-            [alembic_cmd, "upgrade", "heads"],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode == 0:
-            return True, "Database migrations completed successfully"
-        else:
-            # Log the full error for debugging
+        if alembic_cmd:
+            result = subprocess.run(
+                [alembic_cmd, "upgrade", "heads"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                return True, "Database migrations completed successfully"
+
             log.error("Alembic upgrade failed. STDERR:\n%s", result.stderr)
-            return False, f"Migration failed. See logs for details."
+        else:
+            log.info("Alembic CLI not found in PATH; attempting in-process upgrade")
+
+        # Either the CLI is missing or it failed. Fall back to programmatic upgrade.
+        from alembic import command
+        from alembic.config import Config
+
+        alembic_ini = os.path.join(os.path.dirname(__file__), "alembic.ini")
+        cfg = Config(alembic_ini)
+        # Ensure migrations use the same database URL as the application.
+        try:
+            from config import DATABASE_URL
+
+            if DATABASE_URL:
+                cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            log.warning("Unable to load DATABASE_URL for Alembic fallback: %s", exc)
+
+        command.upgrade(cfg, "heads")
+        return True, "Database migrations completed successfully (fallback)"
+
     except Exception as e:
         return False, f"Migration error: {str(e)}"
 
@@ -127,21 +146,48 @@ def _previous_market_day(ref: date) -> date:
         d -= timedelta(days=1)
     return d
 
-def _call_with_optional_date(func, target: date | None):
-    """
-    Call a function, passing a date if it supports one of the common parameter names.
-    """
-    if target is None:
-        return func()
+def _call_with_optional_date(
+    func,
+    target: date | None,
+    extra_kwargs: dict[str, object] | None = None,
+):
+    """Invoke ``func`` once, forwarding only supported keyword arguments."""
+
+    kwargs: dict[str, object] = {}
+    accepts_var_kwargs = False
     try:
         sig = inspect.signature(func)
-        for pname in ("target_date", "as_of", "run_date", "trade_date", "date"):
-            if pname in sig.parameters:
-                return func(**{pname: target})
-    except Exception:
-        # If anything goes wrong with introspection, fall back to calling without args
-        pass
-    return func()
+        accepts_var_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+    except (TypeError, ValueError):
+        sig = None
+
+    if extra_kwargs:
+        if sig is None:
+            kwargs.update(extra_kwargs)
+        else:
+            for key, value in extra_kwargs.items():
+                if key in sig.parameters or accepts_var_kwargs:
+                    kwargs[key] = value
+
+    if target is not None:
+        forwarded = False
+        if sig is not None:
+            for pname in ("target_date", "as_of", "run_date", "trade_date", "date"):
+                if pname in sig.parameters or accepts_var_kwargs:
+                    kwargs[pname] = target
+                    forwarded = True
+                    break
+        if not forwarded and accepts_var_kwargs:
+            kwargs["target_date"] = target
+
+    try:
+        return func(**kwargs)
+    except TypeError as exc:
+        # If the constructed kwargs are not accepted, fall back to a plain call
+        log.debug("Function %s rejected kwargs %s (%s); retrying without extras", func, kwargs, exc)
+        return func()
 
 def main(
     sync_broker: bool = False,
@@ -310,30 +356,17 @@ def main(
             log.info("✅ Data ingestion completed.")
 
             log.info("🧮 Stage 2: Feature engineering")
-            # Use a small batch size to limit memory usage during feature building
-            # (default batch_size=200 helps avoid OOM errors on limited-memory plans)
-            # Try to pass a date if supported by build_features
-            try:
-                _call_with_optional_date(modules['build_features'], target_date)
-            except Exception:
-                modules['build_features'](batch_size=200)
-            else:
-                # If build_features accepted a date, still ensure batch size if possible
-                try:
-                    sig = inspect.signature(modules['build_features'])
-                    if "batch_size" in sig.parameters:
-                        modules['build_features'](batch_size=200)
-                except Exception:
-                    pass
+            # Use a small batch size to limit memory usage during feature building.
+            _call_with_optional_date(
+                modules['build_features'],
+                target_date,
+                extra_kwargs={"batch_size": 200},
+            )
             log.info("✅ Feature engineering completed.")
 
             if modules.get('train_and_predict_all_models'):
                 log.info("🤖 Stage 3: Model training and prediction")
-                # Try to pass a date if supported
-                try:
-                    _call_with_optional_date(modules['train_and_predict_all_models'], target_date)
-                except Exception:
-                    modules['train_and_predict_all_models']()
+                _call_with_optional_date(modules['train_and_predict_all_models'], target_date)
                 log.info("✅ Model training and prediction completed.")
             else:
                 log.warning("⚠️ Stage 3: Skipping model training due to missing modules.")
@@ -344,10 +377,16 @@ def main(
                     # Prefer enhanced version if available
                     trades = None
                     if modules.get('enhanced_generate_today_trades'):
-                        trades = _call_with_optional_date(modules['enhanced_generate_today_trades'], target_date)
+                        trades = _call_with_optional_date(
+                            modules['enhanced_generate_today_trades'],
+                            target_date,
+                        )
                     if trades is None:
                         # Fallback to original implementation
-                        trades = _call_with_optional_date(modules['generate_today_trades'], target_date)
+                        trades = _call_with_optional_date(
+                            modules['generate_today_trades'],
+                            target_date,
+                        )
                     log.info("✅ Trade generation completed.")
                 except Exception as e:
                     log.error("❌ Trade generation failed: %s", e)
@@ -399,7 +438,7 @@ def main(
                     # Acquire a new connection solely for unlocking.  This avoids
                     # using a stale connection that may have been dropped by the DB
                     # server during long‑running jobs.
-                    with engine.connect() as tmp_conn:
+                    with lock_engine.connect() as tmp_conn:
                         tmp_conn.execute(text("SELECT pg_advisory_unlock(987654321)"))
             except Exception as e:
                 log.warning(f"Lock cleanup failed (ignored): {e}")
@@ -441,9 +480,6 @@ if __name__ == "__main__":
             sys.exit(0)
         else:
             sys.exit(1)
-    except KeyboardInterrupt:
-        log.warning("⚠️ Pipeline execution interrupted by user.")
-        sys.exit(130)
     except KeyboardInterrupt:
         log.warning("⚠️ Pipeline execution interrupted by user.")
         sys.exit(130)
