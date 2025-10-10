@@ -105,7 +105,7 @@ def build_portfolio(pred_df: pd.DataFrame, as_of: date, current_symbols: list[st
         return pd.Series(dtype=float)
     if USE_MVO:
         try:
-            from portfolio.mvo import build_portfolio_mvo
+        from portfolio.mvo_jaxopt import build_portfolio_mvo
             alpha = pred_df.set_index('symbol')['y_pred']
             return build_portfolio_mvo(alpha, as_of)
         except Exception as e:
