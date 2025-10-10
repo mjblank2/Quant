@@ -442,7 +442,7 @@ def main(
                     pass
                     try:                        
                         with lock_engine.connect() as tmp_conn:
-                        tmp_co  nn.execute(text("SELECT pg_advisory_u nlock(987654321)"))
+        tmp_conn.execute(text("SELECT pg_advisory_unlock(987654321)"))
             except Exception as e:
                 log.warning(f"Lock cleanup failed (ignored): {e}")
             # Always close the original lock connection if it exists
