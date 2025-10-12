@@ -351,7 +351,90 @@ def rebuild_universe() -> List[Dict[str, Any]]:
         log.error("Failed to rebuild universe: %s", e, exc_info=True)
         raise
 
-if __name__ == "__main__":
+def _safe_get_json(
+    url: str,
+    params: dict | None = None,
+    timeout: int = 30,
+    retries: int = 3,
+    backoff_factor: float = 0.5,
+) -> dict | None:
+    """
+    Make a safe HTTP GET request that returns a JSON object or `None` on failure.
+
+    This helper performs an initial request and, if the request fails due to a temporary
+    server error (HTTP 5xx), it will retry up to `retries` times with exponential
+    backoff. All errors are logged with the actual URL requested (including any query
+    parameters).
+
+    Parameters
+    ----------
+    url : str
+        The URL to request.
+    params : dict | None, optional
+        Query parameters to include in the request. Defaults to `None`.
+    timeout : int, default 30
+        The request timeout in seconds.
+    retries : int, default 3
+        The number of times to retry on HTTP 5xx errors.
+    backoff_factor : float, default 0.5
+        Factor used to compute the sleep between retries. The wait time is
+        calculated as `backoff_factor * (2 ** attempt)` where `attempt` is zero-indexed.
+
+    Returns
+    -------
+    dict | None
+        The parsed JSON response if successful, or `None` if any error occurs.
+    """
+    # Validate input types early
+    if not isinstance(url, str):
+        raise TypeError("url must be a string")
+    if params is not None and not isinstance(params, dict):
+        raise TypeError("params must be a dict or None")
+    if not isinstance(timeout, (int, float)):
+        raise TypeError("timeout must be numeric")
+    if timeout <= 0:
+        raise ValueError("timeout must be positive")
+    if retries < 0:
+        raise ValueError("retries must be non-negative")
+    if backoff_factor < 0:
+        raise ValueError("backoff_factor must be non-negative")
+
+    # Perform the request with optional retries
+    for attempt in range(retries + 1):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            actual_url: str = str(getattr(response, "url", url))
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as exc:
+            # Extract the HTTP status code if present
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            # Retry only for 5xx errors and if we have attempts left
+            if status_code is not None and 500 <= status_code < 600 and attempt < retries:
+                sleep_seconds: float = backoff_factor * (2 ** attempt)
+                log.warning(
+                    "Request failed for %s with status %s, retrying in %.1fs (attempt %d/%d)",
+                    actual_url,
+                    status_code,
+                    sleep_seconds,
+                    attempt + 1,
+                    retries + 1,
+                )
+                time.sleep(sleep_seconds)
+                continue
+            # For other errors or final failure, log and exit the loop
+            log.warning("Request failed for %s: %s", actual_url, str(exc))
+        except Exception as exc:
+            # Catch any unexpected exceptions, log and break
+            log.warning("Unexpected error requesting %s: %s", url, str(exc))
+            break
+
+    # All attempts failed
+    return None
+
+
+
+__name__ == "__main__":
     import sys
 
     logging.basicConfig(
