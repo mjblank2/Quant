@@ -433,8 +433,7 @@ def _safe_get_json(
     return None
 
 
-
-__name__ == "__main__":
+if  __name__ == "__main__":
     import sys
 
     logging.basicConfig(
