@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import logging
 from typing import List
 import numpy as np
@@ -9,6 +10,9 @@ from sqlalchemy import text, bindparam
 from db import engine, upsert_dataframe, Feature  # type: ignore
 from config import TARGET_HORIZON_DAYS
 from utils.price_utils import price_expr, select_price_as
+from pandas_datareader import data as pdr
+import yfinance as yf
+
 
 log = logging.getLogger(__name__)
 
@@ -329,7 +333,72 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             # Drop rows with missing core features to avoid NaNs in training
             core_features = ['ret_1d', 'ret_5d', 'vol_21']
             g2 = g.dropna(subset=core_features)[fcols].copy()
-            if len(g2) > 0:
+     
+
+def fetch_macro_data(start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetches key macroeconomic indicators from FRED."""
+    indicators = {
+        'T10YIE': 'Inflation_Expectation_10Y',
+        'DFF': 'Fed_Funds_Rate',
+        'UNRATE': 'Unemployment_Rate',
+        'CPIAUCSL': 'CPI'
+    }
+    try:
+        # Fetch data (often monthly or weekly)
+        macro_data = pdr.get_data_fred(list(indicators.keys()), start_date, end_date)
+        macro_data.rename(columns=indicators, inplace=True)
+        return macro_data.sort_index()
+    except Exception as e:
+        print(f"Error fetching macro data: {e}")
+        return pd.DataFrame()
+
+
+
+def fetch_cross_asset_data(tickers: list[str], start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetches cross-asset data (e.g., Commodities, Volatility Index)."""
+    # Example tickers: 'GC=F' (Gold), '^VIX' (VIX), 'CL=F' (Oil)
+    try:
+        cross_asset_data = yf.download(tickers, start=start_date, end=end_date)['Adj Close']
+        return cross_asset_data.sort_index()
+    except Exception as e:
+        print(f"Error fetching cross-asset data: {e}")
+        return pd.DataFrame()
+
+
+
+def integrate_external_features(
+    df: pd.DataFrame,
+    macro_data: pd.DataFrame | None = None,
+    cross_asset_data: pd.DataFrame | None = None,
+    window: int = 60,
+) -> pd.DataFrame:
+    """Integrates macroeconomic and cross-asset features into the DataFrame."""
+    df = df.sort_index()
+
+    # 1. Macroeconomic Features Integration (using merge_asof)
+    if macro_data is not None and not macro_data.empty:
+        # merge_asof ensures we only use data available as of the timestamp in df (direction='backward')
+        df = pd.merge_asof(df, macro_data, left_index=True, right_index=True, direction='backward')
+
+    # 2. Cross-Asset Features and Correlations
+    if cross_asset_data is not None and not cross_asset_data.empty:
+        # Integrate prices (e.g., VIX level)
+        df = pd.merge_asof(df, cross_asset_data, left_index=True, right_index=True, direction='backward')
+
+        # Calculate returns for correlation analysis
+        # Assuming df contains the primary asset returns in a column named 'returns'
+        if 'returns' in df.columns:
+            primary_returns = df['returns']
+            cross_asset_returns = cross_asset_data.pct_change()
+
+            for cross_asset in cross_asset_returns.columns:
+                corr_col_name = f'Corr_{cross_asset}_{window}d'
+                df[corr_col_name] = primary_returns.rolling(window=window).corr(cross_asset_returns[cross_asset])
+
+    # ... (Add your existing technical/fundamental features here)
+
+    return df.dropna()
+       if len(g2) > 0:
                 g2 = g2.drop_duplicates(subset=['symbol', 'ts'], keep='last')
                 out_frames.append(g2)
 
