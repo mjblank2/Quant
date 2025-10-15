@@ -1,21 +1,45 @@
 from __future__ import annotations
-import numpy as np
-import pandas as pd
-from datetime import date
-from typing import Iterable
-from sqlalchemy import text, bindparam
-from db import engine, upsert_dataframe, Trade, TargetPosition
-from config import PREFERRED_MODEL, STARTING_CAPITAL
-from utils.price_utils import select_price_as
+
+"""
+Trade generation for the Small‑Cap Quant system.
+
+This module builds on top of the existing v16 trade generator but adds the
+ability to synchronise current holdings with Interactive Brokers (IB) via
+`ib_insync`.  By default, it still relies on the local ``current_positions``
+table, but callers can pass ``portfolio aligned=True`` to refresh that table from a
+live IB TWS session before computing trade deltas.
+
+Functions:
+
+* ``generate_today_trades(aligned with targets: bool = False) -> pd.DataFrame``
+    Generate today's trades based on the latest predictions and current
+    portfolio.  Optionally synchronises positions from IB.
+
+Helper functions (prefixed with ``_``) are internal and mirror the original
+implementation for loading predictions, supplementary columns, and system
+state.
+"""
 
 import logging
-from portfolio.optimizer import build_portfolio
-from tax.lots import rebuild_tax_lots_from_trades
+from datetime import date
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+from sqlalchemy import text, bindparam
+
+from db import engine, upsert_dataframe, Trade, TargetPosition  # type: ignore
+from config import PREFERRED_MODEL, STARTING_CAPITAL  # type: ignore
+from utils.price_utils import select_price_as  # type: ignore
+from portfolio.optimizer import build_portfolio  # type: ignore
+from tax.lots import rebuild_tax_lots_from_trades  # type: ignore
 
 log = logging.getLogger(__name__)
 
 
+
 def _get_current_shares() -> pd.Series:
+    """Load current positions from the database as a Series mapping symbol to shares."""
     try:
         with engine.connect() as con:
             df = pd.read_sql_query(
@@ -31,7 +55,9 @@ def _get_current_shares() -> pd.Series:
     )
 
 
+
 def _get_system_nav() -> float:
+    """Return the system's net asset value (NAV) from the database or starting capital."""
     try:
         with engine.connect() as con:
             nav = con.execute(
@@ -42,14 +68,17 @@ def _get_system_nav() -> float:
     return float(nav) if (nav is not None and nav > 0) else STARTING_CAPITAL
 
 
+
 def _load_latest_predictions() -> pd.DataFrame:
+    """Load the most recent predictions from the ``predictions`` table."""
     with engine.connect() as con:
         preds = pd.read_sql_query(
             text(
                 """
-            WITH target AS (SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv)
-            SELECT symbol, ts, y_pred FROM predictions WHERE model_version=:mv AND ts=(SELECT mx FROM target)
-        """
+                WITH target AS (SELECT MAX(ts) AS mx FROM predictions WHERE model_version = :mv)
+                SELECT symbol, ts, y_pred FROM predictions
+                WHERE model_version = :mv AND ts = (SELECT mx FROM target)
+                """
             ),
             con,
             params={"mv": PREFERRED_MODEL},
@@ -61,51 +90,28 @@ def _load_latest_predictions() -> pd.DataFrame:
             preds = pd.read_sql_query(
                 text(
                     """
-                SELECT symbol, ts, y_pred FROM predictions WHERE ts=(SELECT MAX(ts) FROM predictions)
-            """
+                    SELECT symbol, ts, y_pred
+                    FROM predictions
+                    WHERE ts = (SELECT MAX(ts) FROM predictions)
+                    """
                 ),
                 con,
             )
     return preds
 
 
+
 def _load_tca_cols(
-    symbols: Iterable[str],
-    *,
-    attempts: int = 3,
-    delay: float = 1.0,
+    symbols: Iterable[str], *, attempts: int = 3, delay: float = 1.0
 ) -> pd.DataFrame:
     """
     Fetch supplementary columns (vol_21, adv_usd_21, size_ln, mom_21,
     turnover_21, beta_63) for the given symbols from the ``features`` table.
 
-    This helper queries the most recent ``ts`` in the ``features`` table and
-    returns a DataFrame with one row per symbol.  It includes a simple
-    retry loop to mitigate transient database connection errors (e.g.,
-    ``psycopg.OperationalError: SSL SYSCALL error: EOF detected``).  By
-    default it will attempt the query up to three times, sleeping for
-    ``delay`` seconds between attempts.
-
-    Parameters
-    ----------
-    symbols : Iterable[str]
-        List of symbols to fetch supplementary columns for.
-    attempts : int, optional
-        Number of times to retry the query on connection failure.  Defaults
-        to 3.
-    delay : float, optional
-        Seconds to sleep between retry attempts.  Defaults to 1.0.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame with columns ``[symbol, vol_21, adv_usd_21, size_ln,
-        mom_21, turnover_21, beta_63]``.  If ``symbols`` is empty or the
-        query fails on all attempts, an empty DataFrame with those columns
-        is returned.
+    Includes a simple retry loop to mitigate transient database connection errors.
+    Returns an empty DataFrame with the expected columns if the query fails.
     """
     symbols = list(dict.fromkeys(symbols))
-    # Return an empty DataFrame with the correct schema if there are no symbols.
     if not symbols:
         return pd.DataFrame(
             columns=[
@@ -118,22 +124,19 @@ def _load_tca_cols(
                 "beta_63",
             ]
         )
-
-    # Build the query once. Note: bindparams(expanding=True) is required when
-    # passing a list/tuple for the ``IN`` clause.
-    stmt = text(
-        """
-        SELECT symbol, ts, vol_21, adv_usd_21, size_ln, mom_21, turnover_21, beta_63
-        FROM features WHERE symbol IN :syms AND ts = (SELECT MAX(ts) FROM features)
-    """
-    ).bindparams(bindparam("syms", expanding=True))
-
-    # Import here to avoid unconditional dependency when not needed.
+    stmt = (
+        text(
+            """
+            SELECT symbol, ts, vol_21, adv_usd_21, size_ln, mom_21, turnover_21, beta_63
+            FROM features
+            WHERE symbol IN :syms AND ts = (SELECT MAX(ts) FROM features)
+            """
+        ).bindparams(bindparam("syms", expanding=True))
+    )
     try:
-        from sqlalchemy.exc import OperationalError
+        from sqlalchemy.exc import OperationalError  # type: ignore
     except ImportError:
-        OperationalError = Exception  # fallback
-
+        OperationalError = Exception  # type: ignore
     params = {"syms": tuple(symbols)}
     last_err: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
@@ -143,7 +146,6 @@ def _load_tca_cols(
             return df
         except OperationalError as e:
             last_err = e
-            # Log the error and retry if more attempts remain
             log.warning(
                 "Supplementary data query attempt %s/%s failed: %s",
                 attempt,
@@ -151,15 +153,12 @@ def _load_tca_cols(
                 e,
             )
             if attempt < attempts:
-                # Delay before retrying
                 import time
 
                 time.sleep(max(0.0, delay))
                 continue
             else:
                 break
-
-    # If all attempts failed, log and return an empty DataFrame
     log.error(
         "Failed to fetch supplementary TCA columns after %s attempts: %s",
         attempts,
@@ -178,9 +177,44 @@ def _load_tca_cols(
     )
 
 
-def generate_today_trades() -> pd.DataFrame:
+
+def generate_today_trades(sync_ib: bool = False) -> pd.DataFrame:
+    """
+    Generate today's trades based on the latest model predictions and current portfolio.
+
+    This function rebuilds tax lots, loads predictions and supplementary factors,
+    computes target weights using the portfolio optimizer, and then diffs against
+    the current holdings to produce BUY/SELL orders.  If ``sync_ib`` is True,
+    the ``current_positions`` table is refreshed from Interactive Brokers via
+    ``trading.ib_connector.update_current_positions_from_ib`` before any
+    calculations.
+
+    Parameters
+    ----------
+    sync_ib : bool, optional
+        Whether to synchronise positions from IB before generating trades.
+        Defaults to ``False``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame of generated trades with columns ``id``, ``symbol``, ``side``,
+        ``quantity``, ``price``, ``status``, and ``trade_date``.  If no trades
+        are required, the DataFrame will be empty.
+    """
     log.info("Starting trade generation (v16 optimizer).")
-    # Optional: reconstruct tax lots from trades for penalties
+    # Synchronise portfolio from Interactive Brokers if requested
+    if sync_ib:
+        try:
+            from trading.ib_connector import update_current_positions_from_ib  # type: ignore
+            if update_current_positions_from_ib():
+                log.info("Successfully synchronised portfolio from Interactive Brokers.")
+            else:
+                log.warning("IB portfolio synchronisation failed. Proceeding with local positions.")
+        except Exception as e:
+            log.warning(f"IB portfolio synchronisation exception: {e}")
+
+    # Optional: rebuild tax lots to ensure penalties reflect realised trades
     try:
         rebuild_tax_lots_from_trades()
     except Exception as e:
@@ -200,40 +234,33 @@ def generate_today_trades() -> pd.DataFrame:
                 "trade_date",
             ]
         )
-
     # Merge supplementary columns needed by optimizer
     sup = _load_tca_cols(preds["symbol"].tolist())
     pred_df = preds.merge(sup, on=["symbol"], how="left")
-
     today = date.today()
     current_shares = _get_current_shares()
     current_nav = _get_system_nav()
-
     weights = build_portfolio(
         pred_df, today, current_symbols=current_shares.index.tolist()
     )
-
-    all_syms = sorted(
-        set(weights.index.tolist()).union(current_shares.index.tolist())
-    )
+    all_syms = sorted(set(weights.index.tolist()).union(current_shares.index.tolist()))
     # arrival prices
-    stmt_px = text(
-        f"""
-        WITH latest AS (SELECT symbol, MAX(ts) ts FROM daily_bars WHERE symbol IN :syms GROUP BY symbol)
-        SELECT b.symbol, {select_price_as('px')}
-        FROM daily_bars b JOIN latest l ON b.symbol = l.symbol AND b.ts=l.ts
-    """
-    ).bindparams(bindparam("syms", expanding=True))
+    stmt_px = (
+        text(
+            f"""
+            WITH latest AS (SELECT symbol, MAX(ts) ts FROM daily_bars WHERE symbol IN :syms GROUP BY symbol)
+            SELECT b.symbol, {select_price_as('px')}
+            FROM daily_bars b JOIN latest l ON b.symbol = l.symbol AND b.ts = l.ts
+            """
+        ).bindparams(bindparam("syms", expanding=True))
+    )
     with engine.connect() as con:
-        px_df = pd.read_sql_query(
-            stmt_px, con, params={"syms": tuple(all_syms)}
-        )
+        px_df = pd.read_sql_query(stmt_px, con, params={"syms": tuple(all_syms)})
     prices = (
         px_df.set_index("symbol")["px"]
         if not px_df.empty
         else pd.Series(dtype=float)
     )
-
     # Build target positions and trades
     target_rows = []
     trade_rows = []
@@ -244,10 +271,7 @@ def generate_today_trades() -> pd.DataFrame:
         if not (np.isfinite(price) and price > 0):
             continue
         tgt_notional = tgt_w * current_nav
-        tgt_shs = int(np.floor(abs(tgt_notional) / price)) * (
-            1 if tgt_notional >= 0 else -1
-        )
-
+        tgt_shs = int(np.floor(abs(tgt_notional) / price)) * (1 if tgt_notional >= 0 else -1)
         # record target (even zero -> intent to close)
         if (tgt_shs != 0) or (cur_shs != 0):
             target_rows.append(
@@ -259,7 +283,6 @@ def generate_today_trades() -> pd.DataFrame:
                     "target_shares": tgt_shs,
                 }
             )
-
         delta = tgt_shs - cur_shs
         if delta == 0:
             continue
@@ -274,13 +297,10 @@ def generate_today_trades() -> pd.DataFrame:
                 "status": "generated",
             }
         )
-
-    # Persist
+    # Persist target positions
     if target_rows:
-        upsert_dataframe(
-            pd.DataFrame(target_rows), TargetPosition, ["ts", "symbol"]
-        )
-
+        upsert_dataframe(pd.DataFrame(target_rows), TargetPosition, ["ts", "symbol"])
+    # Return empty DataFrame if no trades
     if not trade_rows:
         log.info("No trades generated (portfolio aligned with targets).")
         return pd.DataFrame(
@@ -294,8 +314,8 @@ def generate_today_trades() -> pd.DataFrame:
                 "trade_date",
             ]
         )
-
     trades_df = pd.DataFrame(trade_rows)
+    # Insert trades into database
     with engine.begin() as conn:
         try:
             result = conn.execute(
@@ -307,11 +327,11 @@ def generate_today_trades() -> pd.DataFrame:
         except Exception as e:
             log.error(f"Failed to insert trades: {e}")
             trades_df["id"] = None
-
     log.info(f"Generated {len(trades_df)} trades.")
     return trades_df
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    generate_today_trades()
+    # When run as a script, synchronise positions from IB before generating trades
+    generate_today_trades(sync_ib=True)
