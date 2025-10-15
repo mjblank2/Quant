@@ -334,6 +334,19 @@ def build_features(batch_size: int = 200, warmup_days: int = 90) -> pd.DataFrame
             core_features = ['ret_1d', 'ret_5d', 'vol_21']
             g2 = g.dropna(subset=core_features)[fcols].copy()
      
+                if len(g2) > 0:
+                    g2 = g2.drop_duplicates(subset=['symbol', 'ts'], keep='last')
+                    out_frames.append(g2)
+        
+                     # Upsert new rows for this batch
+        if out_frames:
+            feats = pd.concat(out_frames, ignore_index=True)
+            feats = feats.sort_values('ts').drop_duplicates(['symbol', 'ts'], keep='last').reset_index(drop=True)
+            upsert_dataframe(feats, Feature, ['symbol', 'ts'], chunk_size=200)
+            new_rows.append(feats)
+            log.info(f"Batch completed. New rows upserted: {len(feats)}")
+
+
 
 def fetch_macro_data(start_date: str, end_date: str) -> pd.DataFrame:
     """Fetches key macroeconomic indicators from FRED."""
@@ -397,21 +410,8 @@ def integrate_external_features(
 
     # ... (Add your existing technical/fundamental features here)
 
-    return df.dropna()
-       if len(g2) > 0:
-                g2 = g2.drop_duplicates(subset=['symbol', 'ts'], keep='last')
-                out_frames.append(g2)
-
-        # Upsert new rows for this batch
-        if out_frames:
-            feats = pd.concat(out_frames, ignore_index=True)
-            feats = feats.sort_values('ts').drop_duplicates(['symbol', 'ts'], keep='last').reset_index(drop=True)
-            upsert_dataframe(feats, Feature, ['symbol', 'ts'], chunk_size=200)
-            new_rows.append(feats)
-            log.info(f"Batch completed. New rows upserted: {len(feats)}")
-
-    return pd.concat(new_rows, ignore_index=True) if new_rows else pd.DataFrame()
-
+        return df.dropna()
+    
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
