@@ -142,7 +142,7 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            with st.spinner("Ingesting market data (Polygon -> Tiingo
+            with st.spinner("Ingesting market data (Polygon -> Tiingo)..."):
                 try:
                     ingest_bars_for_universe(int(days))
                     st.toast("Ingestion complete.", icon="✅")
