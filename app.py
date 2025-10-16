@@ -1,5 +1,6 @@
 from __future__ import annotations
 import streamlit as st
+import os
 import pandas as pd
 import plotly.express as px
 from sqlalchemy import text, bindparam
@@ -123,8 +124,8 @@ with st.sidebar:
                 st.session_state[f"task_{task_id}"] = {"name": "Rebuild Universe", "id": task_id}
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
-        else:
-            with st.spinner("Rebuilding universe (Alpaca + Polygon)..."):
+        else
+            with st.spinner("Rebuilding universe (Polygon)..."):
                 try:
                     uni = rebuild_universe()
                     st.toast(f"Universe size: {len(uni)}", icon="✅")
@@ -141,7 +142,7 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Failed to dispatch task: {e}")
         else:
-            with st.spinner("Ingesting market data (Alpaca → Polygon → Tiingo)..."):
+            with st.spinner("Ingesting market data (Polygon -> Tiingo
                 try:
                     ingest_bars_for_universe(int(days))
                     st.toast("Ingestion complete.", icon="✅")
@@ -231,7 +232,7 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Trade generation failed: {e}")
 
-    if st.button("🔗 Sync with Broker (Alpaca)"):
+    if st.button("🔗 Sync with Broker (Interactive Brokers)"):
         if use_task_queue and TASK_QUEUE_AVAILABLE:
             try:
                 task_id = dispatch_task(sync_broker_task)
